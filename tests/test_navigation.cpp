@@ -79,6 +79,13 @@ class TestNavigation : public QObject
 {
     Q_OBJECT
 private slots:
+    void initTestCase()
+    {
+        // Without these, QSettings can't read or write at all on Windows (Linux falls back).
+        QCoreApplication::setOrganizationName(QStringLiteral("yadiff-tests"));
+        QCoreApplication::setApplicationName(QStringLiteral("test_navigation"));
+    }
+
     void f3WalksChangesThenFiles()
     {
         QTemporaryDir tmp;
