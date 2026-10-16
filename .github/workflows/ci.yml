@@ -97,6 +97,19 @@ jobs:
           $env:PATH = "$env:KF_PREFIX\bin;$env:PATH"
           ctest --test-dir build --output-on-failure
 
+      - name: Show GUI test output
+        if: failure()
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          YADIFF_SYNCHRONOUS: "1"
+          XDG_CONFIG_HOME: ${{ github.workspace }}\test-config
+        run: |
+          $env:PATH = "$env:KF_PREFIX\bin;$env:PATH"
+          & build\test_navigation.exe -o test_navigation.txt,txt -o -,txt 2>&1 | Out-Host
+          Write-Host "exit code: $LASTEXITCODE"
+          Get-Content test_navigation.txt -ErrorAction SilentlyContinue | Select-String -Pattern 'FAIL|Loc:|Actual|Expected|QWARN' | Out-Host
+
       - name: Package
         shell: pwsh
         run: |
