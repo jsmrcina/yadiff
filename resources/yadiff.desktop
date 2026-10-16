@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=yadiff
+GenericName=Git Diff Viewer
+Comment=Graphical diff viewer for Git
+Exec=yadiff %F
+Icon=yadiff
+Terminal=false
+Categories=Development;RevisionControl;
+NoDisplay=true

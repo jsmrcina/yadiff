@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # attach the Windows zip to releases on version tags
+
+env:
+  QT_VERSION: "6.8.3"
+  KF_VERSION: "6.10.0" # extra-cmake-modules + KSyntaxHighlighting
+
+jobs:
+  linux:
+    name: Linux (Arch)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel qt6-base syntax-highlighting cmake ninja git
+      - uses: actions/checkout@v4
+      - name: Configure git for the tests
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          git config --global init.defaultBranch main
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-latest
+    env:
+      KF_PREFIX: ${{ github.workspace }}\kf6
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache KSyntaxHighlighting
+        id: kf-cache
+        uses: actions/cache@v4
+        with:
+          path: kf6
+          key: kf6-${{ env.KF_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022
+
+      - name: Build KSyntaxHighlighting
+        if: steps.kf-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch "v$env:KF_VERSION" https://github.com/KDE/extra-cmake-modules.git ecm
+          cmake -S ecm -B ecm/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_HTML_DOCS=OFF -DBUILD_MAN_DOCS=OFF -DBUILD_QTHELP_DOCS=OFF
+          cmake --build ecm/build --target install
+          git clone --depth 1 --branch "v$env:KF_VERSION" https://github.com/KDE/syntax-highlighting.git ksh
+          cmake -S ksh -B ksh/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DCMAKE_PREFIX_PATH="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_QCH=OFF -DQT_MAJOR_VERSION=6
+          cmake --build ksh/build --target install
+
+      - name: Configure git for the tests
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:KF_PREFIX"
+          cmake --build build
+
+      - name: Test
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $env:PATH = "$env:KF_PREFIX\bin;$env:PATH"
+          ctest --test-dir build --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/yadiff | Out-Null
+          Copy-Item build/yadiff.exe dist/yadiff/
+          Copy-Item "$env:KF_PREFIX\bin\KF6SyntaxHighlighting*.dll" dist/yadiff/
+          windeployqt --release --no-translations --compiler-runtime dist/yadiff/yadiff.exe
+          Copy-Item README.md dist/yadiff/
+          Compress-Archive -Path dist/yadiff -DestinationPath yadiff-windows-x64.zip -Force
+
+      - name: Smoke test the package
+        shell: pwsh
+        run: |
+          # The packaged exe must run on its own (no Qt or KF6 on PATH). --export is
+          # headless; --version would open a message box in a GUI-subsystem exe.
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'Qt|kf6' }) -join ';'
+          Set-Content a.txt "one`ntwo`n"
+          Set-Content b.txt "one`nTWO`n"
+          $p = Start-Process -FilePath dist/yadiff/yadiff.exe -ArgumentList '--no-index','a.txt','b.txt','--export','smoke.html' -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "yadiff.exe hung" }
+          if ($p.ExitCode -ne 0) { throw "yadiff.exe exited with $($p.ExitCode)" }
+          if (-not (Select-String -Path smoke.html -Pattern '<!doctype html>' -Quiet)) { throw "no report written" }
+          if (-not (Select-String -Path smoke.html -Pattern 'TWO' -Quiet)) { throw "report is missing the diff" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yadiff-windows-x64
+          path: yadiff-windows-x64.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yadiff-windows-x64.zip

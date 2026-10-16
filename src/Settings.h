@@ -3,6 +3,8 @@
 #include <QColor>
 #include <QFont>
 
+#include "GitRepo.h"
+
 struct DiffColors {
     QColor added;
     QColor removed;
@@ -30,6 +32,21 @@ void setSideBySide(bool on);
 
 bool unstagedAgainstHead();
 void setUnstagedAgainstHead(bool on);
+
+bool allChanges();
+void setAllChanges(bool on);
+
+bool collapseUnchanged();
+void setCollapseUnchanged(bool on);
+bool showWhitespace();
+void setShowWhitespace(bool on);
+bool wordWrap();
+void setWordWrap(bool on);
+bool autoReload();
+void setAutoReload(bool on);
+
+DiffOptions diffOptions();
+void setDiffOptions(const DiffOptions &o);
 
 void resetAppearance();
 

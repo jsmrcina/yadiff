@@ -49,13 +49,13 @@ namespace DiffModel {
 
 // Parse `git diff` unified output for exactly one file. Use a very large -U so
 // the whole file is present; multiple hunks are still handled.
-FileDiff parseUnified(const QString &diffText);
+FileDiff parseUnified(const QString &diffText, bool detectMoves = true);
 
 // Treat `content` as an entirely new file (e.g. an untracked file).
 FileDiff allAdded(const QString &content);
 
 // Splits lines into chunks, detects moved blocks and intra-line differences.
-void finalize(FileDiff &d);
+void finalize(FileDiff &d, bool detectMoves = true);
 
 // Exposed for tests.
 void computeChunks(FileDiff &d);

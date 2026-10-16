@@ -139,7 +139,7 @@ const QRegularExpression &hunkRe()
 
 namespace DiffModel {
 
-FileDiff parseUnified(const QString &diffText)
+FileDiff parseUnified(const QString &diffText, bool detectMoves)
 {
     FileDiff d;
     const QStringList raw = diffText.split(u'\n');
@@ -187,7 +187,7 @@ FileDiff parseUnified(const QString &diffText)
         }
         d.lines.push_back(std::move(dl));
     }
-    finalize(d);
+    finalize(d, detectMoves);
     return d;
 }
 
@@ -339,10 +339,11 @@ void computeIntraLine(FileDiff &d)
     }
 }
 
-void finalize(FileDiff &d)
+void finalize(FileDiff &d, bool moves)
 {
     computeChunks(d);
-    detectMoves(d);
+    if (moves)
+        detectMoves(d);
     computeIntraLine(d);
 }
 

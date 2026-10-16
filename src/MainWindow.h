@@ -1,13 +1,30 @@
 #pragma once
 
+#include "FileFilter.h"
+#include "GitHubReview.h"
 #include "GitRepo.h"
+#include "ReviewStore.h"
 
+#include <QFutureWatcher>
+#include <QHash>
 #include <QMainWindow>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <atomic>
+#include <functional>
+#include <memory>
 
 class DiffPane;
 class FileList;
 class QAction;
+class QActionGroup;
+class QComboBox;
 class QLabel;
+class QLineEdit;
+class QMenu;
+class QTimer;
+class QToolButton;
+class SearchBar;
 
 class MainWindow : public QMainWindow
 {
@@ -15,7 +32,13 @@ class MainWindow : public QMainWindow
 public:
     MainWindow(GitRepo repo, Comparison cmp, QWidget *parent = nullptr);
 
-    void reload();
+    // Reloads the change list in the background. `afterFile` runs once the reselected
+    // file is shown (by default the previous change position is restored).
+    void reload(std::function<void()> afterFile = {});
+    void setComparison(const Comparison &cmp);
+
+    // True while git work runs in the background (tests wait on this).
+    bool isBusy() const { return m_listBusy || m_fileBusy || m_searchBusy || m_jobs > 0; }
 
     // Developer aid: render every file in both view modes to <prefix>-NN-<mode>.png.
     void grabAll(const QString &prefix);
@@ -24,26 +47,143 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
+    // Runs `job` on a worker thread and `done` back on the UI thread. With
+    // YADIFF_SYNCHRONOUS set (tests, screenshots) both run immediately, in order.
+    template<class R>
+    void runJob(std::function<R()> job, std::function<void(R)> done)
+    {
+        if (m_sync) {
+            done(job());
+            return;
+        }
+        ++m_jobs;
+        auto *watcher = new QFutureWatcher<R>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, done] {
+            --m_jobs;
+            done(watcher->result());
+            watcher->deleteLater();
+        });
+        watcher->setFuture(QtConcurrent::run(std::move(job)));
+    }
+
     void createActions();
+    void createToolBar();
+    QWidget *createFilePanel();
+    void updateModeUi();
     void showFile(int index);
+    void reloadCurrentFile();
     void nextChange();
     void prevChange();
     void setSideBySide(bool on);
+    void setAllChanges(bool on);
+    void setDiffOptions(const DiffOptions &o);
+    void syncOptionControls();
     void openPreferences();
-    void updateChangeLabel(int index, int count);
+    void openHistory();
+    void registerDifftool();
+    void exportReport();
+    void onReviewToggled(int index, bool reviewed);
+    void updateSummary();
+    void updateViewToggle();
+    void updateTitle();
+    void updateEditActions();
+    void updateSyntaxCombo();
+    void applyFilter();
     QString describeComparison() const;
+    QString reviewRoot() const;
+
+    // Editing and writing files.
+    bool maybeKeepEdits(); // false = user cancelled
+    bool saveEdits();
+    void toggleEditing(bool on);
+    void copyChange(int chunk, bool toNewSide);
+
+    // Search.
+    void runSearch();
+    void searchNext(bool forward);
+    void updateSearchResult();
+
+    // Reload when files change.
+    void pollForChanges();
+
+    // GitHub pull request review.
+    void loadComments();
+    QVector<GitHubReview::Thread> threadsFor(const FileChange &fc) const;
+    void addComment(const QString &path, const QString &side, int line, int startLine);
+    void replyToThread(qint64 threadId);
+    void submitReview(GitHubReview::Verdict verdict);
+    GitHubReview::PrId prId() const { return {m_cmp.prOwner, m_cmp.prRepo, m_cmp.prNumber}; }
 
     GitRepo m_repo;
     Comparison m_cmp;
     QVector<FileChange> m_changes;
+    std::unique_ptr<ReviewStore> m_reviews;
+    int m_shownIndex = -1;
+    bool m_revertingSelection = false;
+
+    // Background work.
+    bool m_sync = false;
+    int m_jobs = 0;
+    quint64 m_listGen = 0, m_fileGen = 0, m_searchGen = 0;
+    bool m_listBusy = false, m_fileBusy = false, m_searchBusy = false, m_pollBusy = false;
+    std::function<void()> m_afterFileLoad; // runs after the next file finishes loading
+    std::shared_ptr<std::atomic_bool> m_searchCancel;
+    QSet<int> m_showLarge; // files the user chose to show despite their size
 
     FileList *m_files = nullptr;
     DiffPane *m_pane = nullptr;
-    QLabel *m_changeLabel = nullptr;
+    SearchBar *m_search = nullptr;
     QLabel *m_summary = nullptr;
+    QTimer *m_searchTimer = nullptr;
+    QTimer *m_pollTimer = nullptr;
+    QByteArray m_lastSignature;
 
+    QHash<int, FileDiff> m_diffCache;       // shown and searched diffs
+    QHash<int, int> m_matchCounts;          // change index -> matches
+    QHash<QString, QString> m_syntaxBySuffix; // user overrides, per file extension
+
+    // File list filter.
+    QLineEdit *m_filterEdit = nullptr;
+    QLabel *m_filterCount = nullptr;
+    QAction *m_hideReviewedAct = nullptr;
+    QHash<QChar, QAction *> m_statusActs;
+
+    // PR review.
+    QVector<GitHubReview::Comment> m_comments;
+    QMenu *m_reviewMenu = nullptr;
+    QAction *m_reviewMenuAction = nullptr;
+    QAction *m_reviewToolAction = nullptr;
+
+    QToolButton *m_viewToggle = nullptr;
+    QToolButton *m_whitespaceToggle = nullptr;
+    QToolButton *m_editToggle = nullptr;
+    QComboBox *m_scopeCombo = nullptr;
+    QAction *m_scopeComboAction = nullptr;
+    QComboBox *m_algoCombo = nullptr;
+    QComboBox *m_syntaxCombo = nullptr;
+
+    QAction *m_historyAct = nullptr;
+    QAction *m_toggleViewAct = nullptr;
     QAction *m_inlineAct = nullptr;
     QAction *m_sideAct = nullptr;
+    QAction *m_allChangesAct = nullptr;
+    QAction *m_vsHeadAct = nullptr;
+    QAction *m_collapseAct = nullptr;
+    QAction *m_expandAllAct = nullptr;
+    QAction *m_showWhitespaceAct = nullptr;
+    QAction *m_wordWrapAct = nullptr;
     QAction *m_prevAct = nullptr;
     QAction *m_nextAct = nullptr;
+    QAction *m_editAct = nullptr;
+    QAction *m_saveAct = nullptr;
+    QAction *m_discardAct = nullptr;
+    QAction *m_copyRightAct = nullptr;
+    QAction *m_copyLeftAct = nullptr;
+    QAction *m_autoReloadAct = nullptr;
+    QActionGroup *m_algoGroup = nullptr;
+    QAction *m_ignoreSpaceChangeAct = nullptr;
+    QAction *m_ignoreAllSpaceAct = nullptr;
+    QAction *m_ignoreBlankLinesAct = nullptr;
+    QAction *m_ignoreCrAct = nullptr;
+    QAction *m_detectMovesAct = nullptr;
 };

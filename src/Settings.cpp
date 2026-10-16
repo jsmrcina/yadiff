@@ -118,6 +118,63 @@ void setUnstagedAgainstHead(bool on)
     QSettings().setValue(QStringLiteral("compare/unstagedAgainstHead"), on);
 }
 
+bool allChanges()
+{
+    return QSettings().value(QStringLiteral("compare/allChanges"), false).toBool();
+}
+
+void setAllChanges(bool on)
+{
+    QSettings().setValue(QStringLiteral("compare/allChanges"), on);
+}
+
+namespace {
+bool flag(const char *key, bool def)
+{
+    return QSettings().value(QLatin1String(key), def).toBool();
+}
+void setFlag(const char *key, bool on)
+{
+    QSettings().setValue(QLatin1String(key), on);
+}
+} // namespace
+
+bool collapseUnchanged() { return flag("view/collapseUnchanged", false); }
+void setCollapseUnchanged(bool on) { setFlag("view/collapseUnchanged", on); }
+bool showWhitespace() { return flag("view/showWhitespace", false); }
+void setShowWhitespace(bool on) { setFlag("view/showWhitespace", on); }
+bool wordWrap() { return flag("view/wordWrap", false); }
+void setWordWrap(bool on) { setFlag("view/wordWrap", on); }
+bool autoReload() { return flag("behaviour/autoReload", false); }
+void setAutoReload(bool on) { setFlag("behaviour/autoReload", on); }
+
+DiffOptions diffOptions()
+{
+    QSettings s;
+    DiffOptions o;
+    const QString algo = s.value(QStringLiteral("diff/algorithm"), QStringLiteral("patience")).toString();
+    for (DiffAlgorithm a : {DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers, DiffAlgorithm::Minimal})
+        if (algorithmName(a) == algo)
+            o.algorithm = a;
+    o.ignoreSpaceChange = s.value(QStringLiteral("diff/ignoreSpaceChange"), false).toBool();
+    o.ignoreAllSpace = s.value(QStringLiteral("diff/ignoreAllSpace"), false).toBool();
+    o.ignoreBlankLines = s.value(QStringLiteral("diff/ignoreBlankLines"), false).toBool();
+    o.ignoreCrAtEol = s.value(QStringLiteral("diff/ignoreCrAtEol"), false).toBool();
+    o.detectMoves = s.value(QStringLiteral("diff/detectMoves"), true).toBool();
+    return o;
+}
+
+void setDiffOptions(const DiffOptions &o)
+{
+    QSettings s;
+    s.setValue(QStringLiteral("diff/algorithm"), algorithmName(o.algorithm));
+    s.setValue(QStringLiteral("diff/ignoreSpaceChange"), o.ignoreSpaceChange);
+    s.setValue(QStringLiteral("diff/ignoreAllSpace"), o.ignoreAllSpace);
+    s.setValue(QStringLiteral("diff/ignoreBlankLines"), o.ignoreBlankLines);
+    s.setValue(QStringLiteral("diff/ignoreCrAtEol"), o.ignoreCrAtEol);
+    s.setValue(QStringLiteral("diff/detectMoves"), o.detectMoves);
+}
+
 void resetAppearance()
 {
     QSettings s;
