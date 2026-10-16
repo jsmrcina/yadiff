@@ -11,6 +11,9 @@ yadiff REV1..REV2           same as REV1 REV2
 yadiff REV1...REV2          merge-base of REV1 and REV2 compared against REV2
 yadiff [REV...] -- PATH...  limit any of the above to PATHs
 yadiff -ghpr URL            a GitHub pull request, e.g. https://github.com/OWNER/REPO/pull/12
+yadiff -ado URL             an Azure DevOps pull request,
+                           e.g. https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/12
+yadiff --ado-login [ORG]    sign in to Azure DevOps (--ado-logout ORG forgets the saved token)
 yadiff --no-index A B       two directories or two files, in or outside a repository
                            (automatic when A and B aren't both inside the current repository)
 yadiff --register-difftool  make yadiff git's difftool (--unregister-difftool undoes it)
@@ -93,6 +96,14 @@ path looks like a revision.
   reply. The Review menu approves, requests changes, or comments on the PR. Everything goes
   through `gh` and posts straight away. GitHub only accepts comments on or near changed lines.
   Outdated comments, whose line no longer exists, aren't shown.
+- **Azure DevOps pull requests:** `yadiff -ado URL` shows what the PR's Files tab shows, which is the
+  source branch against its merge base with the target. Links can be `dev.azure.com`,
+  `ORG.visualstudio.com`, or Azure DevOps Server collection URLs. If the current repository has a
+  remote for that Azure Repo, the PR is fetched into it, trying your own git credentials first.
+  Otherwise yadiff keeps a blob-less partial clone in `~/.cache/yadiff/ado/`. Review threads,
+  comments, replies and votes work as for GitHub. Approve votes 10, and Request changes votes −5
+  ("waiting for author"). A message becomes a PR-level comment. Signing in is covered in the
+  next section.
 - **Background loading.** Git runs off the UI thread, so big repositories and PRs don't freeze the
   window, and switching files quickly only shows the last one. "All changes" searches show
   progress and can be stopped. Diffs over 100,000 lines ask before showing, and files over 30,000
@@ -129,6 +140,30 @@ path looks like a revision.
 Diffs come from `git diff` with full-file context. Moves, line pairing and word highlights are
 computed by yadiff.
 
+## Signing in to Azure DevOps
+
+yadiff looks for a credential in this order and uses the first that works:
+
+1. **Environment variables.** `YADIFF_ADO_PAT` or `AZURE_DEVOPS_EXT_PAT` hold a personal access
+   token. `YADIFF_ADO_TOKEN` or `SYSTEM_ACCESSTOKEN` hold a bearer token, such as the one in a
+   pipeline.
+2. **A personal access token saved by yadiff** in the system keyring. On Linux that's the Secret
+   Service, through `secret-tool`, so KDE Wallet or GNOME Keyring. On Windows it's the Credential
+   Manager.
+3. **The Azure CLI** (`az login`), if it's installed. Its Microsoft Entra token is used.
+4. **Git's credential helper** for the organization, such as Git Credential Manager. It's only
+   asked when one is configured for that URL.
+
+If none works, or Azure DevOps rejects the credential, `yadiff -ado` opens a sign-in dialog. Paste a
+token created at `https://dev.azure.com/ORG/_usersSettings/tokens` with the **Code: Read & write**
+scope. Read alone is enough to view; commenting and voting need write. yadiff checks the token with
+Azure DevOps before saving it. With the Azure CLI installed, the dialog also offers a browser
+sign-in. Run `yadiff --ado-login ORG-URL` to sign in ahead of time.
+
+Tokens are never put on a command line. Git gets them through `GIT_CONFIG_*` environment variables
+as an `http.extraHeader`. yadiff refuses to send credentials over plain HTTP, except to
+`localhost`, which the tests use.
+
 ## Building
 
 ### Linux
@@ -140,8 +175,12 @@ needs KSyntaxHighlighting (`syntax-highlighting` on Arch), which is optional.
 ./install.sh
 ```
 
-This builds into `build/`, runs the tests, and symlinks `~/.local/bin/yadiff` to the built binary. It also
-installs the icon and a hidden desktop entry, which KDE on Wayland uses to show the window icon.
+This builds into `build/` and runs the tests. It then installs a snapshot to
+`~/.local/opt/yadiff-<version>`, where the version comes from `git describe`, such as `v0.1.0`. It
+points `~/.local/bin/yadiff` at that snapshot. Development builds in `build/` therefore never change
+the installed yadiff, which is also what `git difftool` runs, until you run `./install.sh` again.
+It also installs the icon and a hidden desktop entry, which KDE on Wayland uses to show the window
+icon.
 
 ### Windows
 
@@ -182,6 +221,10 @@ ctest --test-dir build --output-on-failure
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
   options, review fingerprints, line counts, directory and file comparison, and `/dev/null` sides.
+- `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
+  repository. It covers link and remote parsing, credential order, keyring storage, rejected
+  credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
+  line. The keyring is redirected to a temporary file there.
 - `test_navigation` drives the real window offscreen. It checks F3 and Shift+F3 across files, the
   view toggle, review marks, right-click copy, and that unchanged lines never inherit a highlight.
   It also covers folds, find in all three scopes, editing and saving (with highlighting on), applying
@@ -214,6 +257,9 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/ImageDiffView.*` | Image comparison modes |
 | `src/Report.*` | HTML report |
 | `src/GitHubReview.*` | PR review comments through `gh` |
+| `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |
+| `src/PrReview.*` | Review operations for whichever host a PR is on |
+| `src/Http.*`, `src/SecretStore.*` | HTTP client, system keyring |
 | `src/ReviewStore.*` | Persisted review marks |
 | `src/CodeView.*` | Text view: gutter, move annotations, folds, search hits, wrap padding, editing |
 | `src/DiffPane.*` | Inline and side-by-side layout, change navigation |

@@ -5,11 +5,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Network)
 qt_standard_project_setup()
 
 # UI-independent core: git access and diff model (unit tested).
 add_library(yadiffcore STATIC
+    src/AdoAuth.cpp src/AdoAuth.h
+    src/AdoPr.cpp src/AdoPr.h
     src/DiffFormat.cpp src/DiffFormat.h
     src/DiffModel.cpp src/DiffModel.h
     src/Difftool.cpp src/Difftool.h
@@ -17,16 +19,23 @@ add_library(yadiffcore STATIC
     src/GitHubPr.cpp src/GitHubPr.h
     src/GitHubReview.cpp src/GitHubReview.h
     src/GitRepo.cpp src/GitRepo.h
+    src/Http.cpp src/Http.h
+    src/PrReview.cpp src/PrReview.h
     src/Report.cpp src/Report.h
     src/ReviewStore.cpp src/ReviewStore.h
     src/Search.cpp src/Search.h
+    src/SecretStore.cpp src/SecretStore.h
     src/TextFile.cpp src/TextFile.h
 )
 target_include_directories(yadiffcore PUBLIC src)
-target_link_libraries(yadiffcore PUBLIC Qt6::Core)
+target_link_libraries(yadiffcore PUBLIC Qt6::Core Qt6::Network)
+if(WIN32)
+    target_link_libraries(yadiffcore PRIVATE advapi32) # Credential Manager (CredReadW/CredWriteW)
+endif()
 
 # Widgets: shared by the app and the GUI tests.
 add_library(yadiffui STATIC
+    src/AdoLoginDialog.cpp src/AdoLoginDialog.h
     src/CodeView.cpp src/CodeView.h
     src/DiffPane.cpp src/DiffPane.h
     src/FileList.cpp src/FileList.h
@@ -99,6 +108,12 @@ if(BUILD_TESTING)
     qt_add_executable(test_format tests/test_format.cpp)
     target_link_libraries(test_format PRIVATE yadiffcore Qt6::Test)
     add_test(NAME test_format COMMAND test_format)
+
+    qt_add_executable(test_ado tests/test_ado.cpp)
+    target_link_libraries(test_ado PRIVATE yadiffcore Qt6::Test)
+    target_compile_definitions(test_ado PRIVATE YADIFF_BINARY="$<TARGET_FILE:yadiff>")
+    add_dependencies(test_ado yadiff)
+    add_test(NAME test_ado COMMAND test_ado)
 
     qt_add_executable(test_navigation tests/test_navigation.cpp)
     target_link_libraries(test_navigation PRIVATE yadiffui Qt6::Test)

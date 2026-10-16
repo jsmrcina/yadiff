@@ -68,8 +68,11 @@ struct Comparison {
     QString leftPath, rightPath;
     bool pathsAreFiles = false;
 
-    // GitHub pull request being reviewed (prNumber 0 when none).
+    // Pull request being reviewed (prNumber 0 when none). prHost is "github" or "ado".
+    // GitHub: prOwner/prRepo. Azure DevOps: prCollectionUrl/prProject/prRepo.
+    QString prHost;
     QString prOwner, prRepo;
+    QString prCollectionUrl, prProject, prWebUrl;
     int prNumber = 0;
 
     // Shown in the window title instead of the default description (e.g. a PR title).

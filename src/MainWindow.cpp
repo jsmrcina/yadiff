@@ -8,6 +8,7 @@
 #include "SearchBar.h"
 #include "Settings.h"
 #include "Syntax.h"
+#include "PrReview.h"
 #include "Report.h"
 #include "TextFile.h"
 
@@ -471,7 +472,7 @@ void MainWindow::createActions()
     });
     reviewedNext->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_M));
 
-    // Review (GitHub pull requests only)
+    // Review (pull requests only)
     m_reviewMenu = menuBar()->addMenu(tr("&Review"));
     m_reviewMenuAction = m_reviewMenu->menuAction();
     m_reviewMenu->addAction(tr("&Approve\u2026"), this, [this] { submitReview(GitHubReview::Verdict::Approve); });
@@ -481,9 +482,7 @@ void MainWindow::createActions()
     m_reviewMenu->addSeparator();
     m_reviewMenu->addAction(tr("&Reload comments"), this, &MainWindow::loadComments);
     m_reviewMenu->addAction(tr("&Open pull request in browser"), this, [this] {
-        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/%1/%2/pull/%3")
-                                           .arg(m_cmp.prOwner, m_cmp.prRepo)
-                                           .arg(m_cmp.prNumber)));
+        QDesktopServices::openUrl(QUrl(PrReview::webUrl(m_cmp)));
     });
 
     // Preferences
@@ -1589,7 +1588,7 @@ void MainWindow::exportReport()
         });
 }
 
-// ---- GitHub review ----------------------------------------------------------
+// ---- Pull request review ----------------------------------------------------
 
 QVector<GitHubReview::Thread> MainWindow::threadsFor(const FileChange &fc) const
 {
@@ -1605,9 +1604,9 @@ void MainWindow::loadComments()
     if (m_cmp.prNumber <= 0)
         return;
     runJob<std::pair<QVector<GitHubReview::Comment>, QString>>(
-        [pr = prId()] {
+        [cmp = m_cmp] {
             QString error;
-            auto c = GitHubReview::fetch(pr, &error);
+            auto c = PrReview::fetch(cmp, &error);
             return std::make_pair(c.value_or(QVector<GitHubReview::Comment>()), c ? QString() : error);
         },
         [this](std::pair<QVector<GitHubReview::Comment>, QString> r) {
@@ -1632,21 +1631,21 @@ void MainWindow::addComment(const QString &path, const QString &side, int line, 
     const QString where = startLine ? tr("lines %1–%2").arg(startLine).arg(line) : tr("line %1").arg(line);
     const QString body = QInputDialog::getMultiLineText(
         this, tr("Add review comment"),
-        tr("Comment on %1, %2 (%3 side).\nIt is posted to GitHub straight away.")
-            .arg(path, where, side == QLatin1String("LEFT") ? tr("old") : tr("new")),
+        tr("Comment on %1, %2 (%3 side).\nIt is posted to %4 straight away.")
+            .arg(path, where, side == QLatin1String("LEFT") ? tr("old") : tr("new"), PrReview::hostName(m_cmp)),
         QString(), &ok);
     if (!ok || body.trimmed().isEmpty())
         return;
     statusBar()->showMessage(tr("Posting comment…"));
     runJob<std::pair<std::optional<GitHubReview::Comment>, QString>>(
-        [pr = prId(), head = m_cmp.rev2, path, side, line, startLine, body] {
+        [cmp = m_cmp, path, side, line, startLine, body] {
             QString error;
-            auto c = GitHubReview::post(pr, head, path, side, line, startLine, body, &error);
+            auto c = PrReview::post(cmp, path, side, line, startLine, body, &error);
             return std::make_pair(c, error);
         },
         [this](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
             if (!r.first) {
-                QMessageBox::warning(this, tr("Add review comment"), tr("GitHub refused the comment:\n%1").arg(r.second));
+                QMessageBox::warning(this, tr("Add review comment"), tr("%1 refused the comment:\n%2").arg(PrReview::hostName(m_cmp), r.second));
                 return;
             }
             m_comments << *r.first;
@@ -1659,22 +1658,34 @@ void MainWindow::addComment(const QString &path, const QString &side, int line, 
 void MainWindow::replyToThread(qint64 threadId)
 {
     bool ok = false;
-    const QString body = QInputDialog::getMultiLineText(this, tr("Reply"), tr("Reply (posted to GitHub straight away):"),
+    const QString body = QInputDialog::getMultiLineText(this, tr("Reply"), tr("Reply (posted to %1 straight away):").arg(PrReview::hostName(m_cmp)),
                                                         QString(), &ok);
     if (!ok || body.trimmed().isEmpty())
         return;
     runJob<std::pair<std::optional<GitHubReview::Comment>, QString>>(
-        [pr = prId(), threadId, body] {
+        [cmp = m_cmp, threadId, body] {
             QString error;
-            auto c = GitHubReview::reply(pr, threadId, body, &error);
+            auto c = PrReview::reply(cmp, threadId, body, &error);
             return std::make_pair(c, error);
         },
-        [this](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
+        [this, threadId](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
             if (!r.first) {
-                QMessageBox::warning(this, tr("Reply"), tr("GitHub refused the reply:\n%1").arg(r.second));
+                QMessageBox::warning(this, tr("Reply"), tr("%1 refused the reply:\n%2").arg(PrReview::hostName(m_cmp), r.second));
                 return;
             }
-            m_comments << *r.first;
+            GitHubReview::Comment c = *r.first;
+            for (const GitHubReview::Comment &root : std::as_const(m_comments)) {
+                if (root.id == threadId || root.id == c.inReplyTo) {
+                    c.path = root.path;
+                    c.side = root.side;
+                    c.line = root.line;
+                    c.startLine = root.startLine;
+                    if (c.inReplyTo == 0)
+                        c.inReplyTo = root.id;
+                    break;
+                }
+            }
+            m_comments << c;
             statusBar()->showMessage(tr("Reply posted"), 3000);
             if (m_shownIndex >= 0)
                 m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
@@ -1691,21 +1702,20 @@ void MainWindow::submitReview(GitHubReview::Verdict verdict)
     bool ok = false;
     const QString body = QInputDialog::getMultiLineText(
         this, what,
-        tr("%1 on %2/%3#%4.%5")
-            .arg(what, m_cmp.prOwner, m_cmp.prRepo)
-            .arg(m_cmp.prNumber)
+        tr("%1 on %2.%3")
+            .arg(what, m_cmp.title.isEmpty() ? PrReview::webUrl(m_cmp) : m_cmp.title)
             .arg(verdict == GitHubReview::Verdict::Approve ? tr(" A message is optional.") : tr(" A message is required.")),
         QString(), &ok);
     if (!ok || (verdict != GitHubReview::Verdict::Approve && body.trimmed().isEmpty()))
         return;
     runJob<QString>(
-        [pr = prId(), verdict, body] {
+        [cmp = m_cmp, verdict, body] {
             QString error;
-            return GitHubReview::submitReview(pr, verdict, body, &error) ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
+            return PrReview::submit(cmp, verdict, body, &error) ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
         },
         [this, what](QString error) {
             if (!error.isEmpty())
-                QMessageBox::warning(this, what, tr("GitHub refused the review:\n%1").arg(error));
+                QMessageBox::warning(this, what, tr("%1 refused the review:\n%2").arg(PrReview::hostName(m_cmp), error));
             else
                 statusBar()->showMessage(tr("%1: submitted").arg(what), 4000);
         });

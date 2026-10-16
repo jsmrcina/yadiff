@@ -106,13 +106,12 @@ private:
     // Reload when files change.
     void pollForChanges();
 
-    // GitHub pull request review.
+    // Pull request review (GitHub or Azure DevOps).
     void loadComments();
     QVector<GitHubReview::Thread> threadsFor(const FileChange &fc) const;
     void addComment(const QString &path, const QString &side, int line, int startLine);
     void replyToThread(qint64 threadId);
     void submitReview(GitHubReview::Verdict verdict);
-    GitHubReview::PrId prId() const { return {m_cmp.prOwner, m_cmp.prRepo, m_cmp.prNumber}; }
 
     GitRepo m_repo;
     Comparison m_cmp;

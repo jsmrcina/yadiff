@@ -387,7 +387,8 @@ Row DiffPane::makeSpacerRow(const Row &comment) const
 
 bool DiffPane::nearChange(int lineIndex) const
 {
-    // GitHub only accepts comments inside its diff hunks (3 lines of context).
+    // GitHub only accepts comments inside its diff hunks (3 lines of context); keep the
+    // same rule for Azure DevOps so comments land where reviewers will see them.
     for (const Chunk &c : m_file.diff.chunks)
         if (lineIndex >= c.first - 3 && lineIndex <= c.last + 3)
             return true;
@@ -1083,7 +1084,7 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
             for (const GitHubReview::Thread &t : std::as_const(m_file.threads))
                 if (t.first().id == id && !t.first().url.isEmpty()) {
                     const QString url = t.first().url;
-                    menu.addAction(tr("Open comment on GitHub"), this, [url] { QDesktopServices::openUrl(QUrl(url)); });
+                    menu.addAction(tr("Open comment in the browser"), this, [url] { QDesktopServices::openUrl(QUrl(url)); });
                 }
         } else {
             QString side;

@@ -1,3 +1,6 @@
+#include "AdoAuth.h"
+#include "AdoLoginDialog.h"
+#include "AdoPr.h"
 #include "Difftool.h"
 #include "GitHubPr.h"
 #include "GitRepo.h"
@@ -10,6 +13,8 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFileInfo>
 #include <QIcon>
 #include <QMessageBox>
@@ -99,6 +104,9 @@ int main(int argc, char *argv[])
         "  yadiff REV1...REV2          merge-base of REV1 and REV2 compared against REV2\n"
         "  yadiff [REV...] -- PATH...  limit any of the above to PATHs\n"
         "  yadiff -ghpr URL            a GitHub pull request (https://github.com/OWNER/REPO/pull/N)\n"
+        "  yadiff -ado URL             an Azure DevOps pull request\n"
+        "                             (https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/N)\n"
+        "  yadiff --ado-login [ORG]    sign in to Azure DevOps (token saved in the system keyring)\n"
         "  yadiff --no-index A B       two directories or two files, in or outside a repository\n"
         "                             (automatic when A and B are outside the current repository)\n"
         "  yadiff --register-difftool  make yadiff a git difftool (git difftool -t yadiff, git difftool -d)"));
@@ -112,6 +120,13 @@ int main(int argc, char *argv[])
                                     QStringLiteral("Show all changes against HEAD in one list, not staged/unstaged."));
     const QCommandLineOption prOpt(QStringList{QStringLiteral("ghpr"), QStringLiteral("pr")},
                                    QStringLiteral("Open a GitHub pull request."), QStringLiteral("url"));
+    const QCommandLineOption adoOpt(QStringLiteral("ado"), QStringLiteral("Open an Azure DevOps pull request."),
+                                    QStringLiteral("url"));
+    const QCommandLineOption adoLoginOpt(QStringLiteral("ado-login"),
+                                         QStringLiteral("Sign in to Azure DevOps (for the -ado link or the organisation URL "
+                                                        "given as an argument) and exit."));
+    const QCommandLineOption adoLogoutOpt(QStringLiteral("ado-logout"),
+                                          QStringLiteral("Forget the saved Azure DevOps token for an organisation and exit."));
     const QCommandLineOption algoOpt(QStringLiteral("algorithm"),
                                      QStringLiteral("Diff algorithm: patience (default), histogram, myers or minimal."),
                                      QStringLiteral("name"));
@@ -126,8 +141,8 @@ int main(int argc, char *argv[])
                                          QStringLiteral("Register yadiff as the default git difftool and exit."));
     const QCommandLineOption unregisterOpt(QStringLiteral("unregister-difftool"),
                                            QStringLiteral("Remove yadiff's git difftool registration and exit."));
-    parser.addOptions({dirOpt, waitOpt, allOpt, prOpt, algoOpt, inlineOpt, sideOpt, noIndexOpt, registerOpt, unregisterOpt,
-                       exportOpt});
+    parser.addOptions({dirOpt, waitOpt, allOpt, prOpt, adoOpt, adoLoginOpt, adoLogoutOpt, algoOpt, inlineOpt, sideOpt,
+                       noIndexOpt, registerOpt, unregisterOpt, exportOpt});
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("Revisions and/or paths (see above)."),
                                  QStringLiteral("[REV [REV]] [[--] PATH...]"));
     parser.process(app);
@@ -147,6 +162,36 @@ int main(int argc, char *argv[])
         if (!ok)
             return fail(toolError);
         std::fprintf(stdout, "%s", qPrintable(summary));
+        return 0;
+    }
+
+    if (parser.isSet(adoLoginOpt) || parser.isSet(adoLogoutOpt)) {
+        // The organisation comes from the -ado link, or a URL argument.
+        QUrl org;
+        if (parser.isSet(adoOpt)) {
+            if (const auto ref = AdoPr::parse(parser.value(adoOpt)))
+                org = ref->collectionUrl;
+        } else if (!parser.positionalArguments().isEmpty()) {
+            org = QUrl(parser.positionalArguments().first());
+            if (const auto ref = AdoPr::parse(org.toString()))
+                org = ref->collectionUrl;
+        }
+        if (parser.isSet(adoLogoutOpt)) {
+            if (org.isEmpty() || org.host().isEmpty())
+                return fail(QStringLiteral("--ado-logout needs the organisation URL (e.g. https://dev.azure.com/ORG)"));
+            QString err;
+            if (!AdoAuth::forget(org, &err))
+                return fail(err);
+            std::fprintf(stdout, "Forgot the saved token for %s\n",
+                         qPrintable(AdoAuth::organizationUrl(org).toString(QUrl::StripTrailingSlash)));
+            return 0;
+        }
+        AdoLoginDialog dlg(org, QString());
+        if (dlg.exec() != QDialog::Accepted)
+            return 1;
+        std::fprintf(stdout, "Signed in to %s as %s%s\n",
+                     qPrintable(AdoAuth::organizationUrl(dlg.collectionUrl()).toString(QUrl::StripTrailingSlash)),
+                     qPrintable(dlg.signedInAs()), dlg.remembered() ? " (token saved)" : "");
         return 0;
     }
 
@@ -183,7 +228,7 @@ int main(int argc, char *argv[])
         return p == QLatin1String("/dev/null") || p.compare(QLatin1String("nul"), Qt::CaseInsensitive) == 0;
     };
     bool pathsMode = false;
-    if (positional.size() == 2 && forcedPaths == 0 && !parser.isSet(prOpt)) {
+    if (positional.size() == 2 && forcedPaths == 0 && !parser.isSet(prOpt) && !parser.isSet(adoOpt)) {
         const QFileInfo a(QDir(cwd).absoluteFilePath(positional[0]));
         const QFileInfo b(QDir(cwd).absoluteFilePath(positional[1]));
         const bool nullA = isNullPath(positional[0]), nullB = isNullPath(positional[1]);
@@ -212,45 +257,88 @@ int main(int argc, char *argv[])
 
     if (pathsMode) {
         // Nothing else to resolve.
-    } else if (parser.isSet(prOpt)) {
-        const auto ref = GitHubPr::parse(parser.value(prOpt));
-        if (!ref)
-            return fail(QStringLiteral("not a GitHub pull request link: %1").arg(parser.value(prOpt)));
+    } else if (parser.isSet(prOpt) || parser.isSet(adoOpt)) {
+        const bool isAdo = parser.isSet(adoOpt);
+        const QString link = parser.value(isAdo ? adoOpt : prOpt);
         // The parent process resolves the PR and hands the result to the detached child.
-        GitHubPr::Resolved pr;
-        const QStringList handedOver = qEnvironmentVariable("YADIFF_PR_RESOLVED").split(u'\n');
-        if (handedOver.size() == 9) {
-            pr.ref = {handedOver[0], handedOver[1], handedOver[2].toInt()};
-            pr.repoPath = handedOver[3];
-            pr.baseOid = handedOver[4];
-            pr.headOid = handedOver[5];
-            pr.baseName = handedOver[6];
-            pr.headName = handedOver[7];
-            pr.title = handedOver[8];
-        } else {
-            auto resolved = GitHubPr::resolve(*ref, cwd, &error, [](const QString &msg) {
-                std::fprintf(stderr, "yadiff: %s\n", qPrintable(msg));
-            });
-            if (!resolved)
-                return fail(error);
-            pr = *resolved;
+        QJsonObject handed = QJsonDocument::fromJson(qgetenv("YADIFF_PR_RESOLVED")).object();
+        if (handed.isEmpty()) {
+            auto progress = [](const QString &msg) { std::fprintf(stderr, "yadiff: %s\n", qPrintable(msg)); };
+            if (!isAdo) {
+                const auto ref = GitHubPr::parse(link);
+                if (!ref)
+                    return fail(QStringLiteral("not a GitHub pull request link: %1").arg(link));
+                auto pr = GitHubPr::resolve(*ref, cwd, &error, progress);
+                if (!pr)
+                    return fail(error);
+                handed = {{QStringLiteral("host"), QStringLiteral("github")}, {QStringLiteral("owner"), pr->ref.owner},
+                          {QStringLiteral("repo"), pr->ref.repo},           {QStringLiteral("number"), pr->ref.number},
+                          {QStringLiteral("repoPath"), pr->repoPath},       {QStringLiteral("base"), pr->baseOid},
+                          {QStringLiteral("head"), pr->headOid},            {QStringLiteral("baseName"), pr->baseName},
+                          {QStringLiteral("headName"), pr->headName},       {QStringLiteral("title"), pr->title}};
+            } else {
+                const auto ref = AdoPr::parse(link);
+                if (!ref)
+                    return fail(QStringLiteral("not an Azure DevOps pull request link: %1\n"
+                                               "Expected https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/ID")
+                                    .arg(link));
+                // Find a credential; sign in when there is none or it is rejected.
+                QString diag;
+                auto cred = AdoAuth::find(ref->collectionUrl, &diag);
+                std::optional<AdoPr::Resolved> pr;
+                for (int attempt = 0; attempt < 2 && !pr; ++attempt) {
+                    if (!cred) {
+                        AdoLoginDialog dlg(ref->collectionUrl, attempt == 0 ? diag : error);
+                        if (dlg.exec() != QDialog::Accepted || !dlg.credential())
+                            return fail(attempt == 0 ? diag + QStringLiteral(" Sign-in was cancelled.") : error);
+                        cred = dlg.credential();
+                        if (!dlg.remembered()) // let the window reach the PR without a keyring entry
+                            qputenv(cred->kind == AdoAuth::Credential::Kind::Bearer ? "YADIFF_ADO_TOKEN" : "YADIFF_ADO_PAT",
+                                    cred->secret.toUtf8());
+                    }
+                    int status = 0;
+                    pr = AdoPr::resolve(*ref, *cred, cwd, &error, &status, progress);
+                    if (!pr && AdoAuth::authProblem(status).isEmpty())
+                        return fail(error); // not a sign-in problem: retrying won't help
+                    if (!pr) {
+                        error = QStringLiteral("%1 (credential from %2)").arg(AdoAuth::authProblem(status), cred->source);
+                        cred.reset();
+                    }
+                }
+                if (!pr)
+                    return fail(error);
+                handed = {{QStringLiteral("host"), QStringLiteral("ado")},
+                          {QStringLiteral("collection"), ref->collectionUrl.toString()},
+                          {QStringLiteral("project"), ref->project},
+                          {QStringLiteral("repo"), ref->repo},
+                          {QStringLiteral("number"), ref->id},
+                          {QStringLiteral("webUrl"), ref->webUrl.toString()},
+                          {QStringLiteral("repoPath"), pr->repoPath},
+                          {QStringLiteral("base"), pr->baseOid},
+                          {QStringLiteral("head"), pr->headOid},
+                          {QStringLiteral("baseName"), pr->baseName},
+                          {QStringLiteral("headName"), pr->headName},
+                          {QStringLiteral("title"), pr->title}};
+            }
+            qputenv("YADIFF_PR_RESOLVED", QJsonDocument(handed).toJson(QJsonDocument::Compact));
         }
-        repo = GitRepo::open(pr.repoPath, &error);
+        auto str = [&](const char *k) { return handed.value(QLatin1String(k)).toString(); };
+        repo = GitRepo::open(str("repoPath"), &error);
         if (!repo)
             return fail(error);
         cmp.mode = Comparison::Mode::Revisions;
-        cmp.rev1 = pr.baseOid;
-        cmp.rev2 = pr.headOid;
-        cmp.rev1Name = pr.baseName;
-        cmp.rev2Name = pr.headName;
-        cmp.title = pr.title;
-        cmp.prOwner = pr.ref.owner;
-        cmp.prRepo = pr.ref.repo;
-        cmp.prNumber = pr.ref.number;
-        qputenv("YADIFF_PR_RESOLVED", QStringList{pr.ref.owner, pr.ref.repo, QString::number(pr.ref.number), pr.repoPath,
-                                                 pr.baseOid, pr.headOid, pr.baseName, pr.headName, pr.title}
-                                         .join(u'\n')
-                                         .toUtf8());
+        cmp.rev1 = str("base");
+        cmp.rev2 = str("head");
+        cmp.rev1Name = str("baseName");
+        cmp.rev2Name = str("headName");
+        cmp.title = str("title");
+        cmp.prHost = str("host");
+        cmp.prOwner = str("owner");
+        cmp.prRepo = str("repo");
+        cmp.prCollectionUrl = str("collection");
+        cmp.prProject = str("project");
+        cmp.prWebUrl = str("webUrl");
+        cmp.prNumber = handed.value(QStringLiteral("number")).toInt();
         pathArgs = positional; // anything else limits the PR to those paths
     } else {
         repo = GitRepo::open(cwd, &error);

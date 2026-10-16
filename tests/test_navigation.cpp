@@ -1,3 +1,4 @@
+#include "AdoLoginDialog.h"
 #include "CodeView.h"
 #include "DiffPane.h"
 #include "FileList.h"
@@ -14,6 +15,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QTimer>
+#include <QLabel>
 #include <QImage>
 #include <QStackedWidget>
 #include <QPushButton>
@@ -814,6 +816,33 @@ private slots:
         QVERIFY(show && show->isVisibleTo(&pane));
         show->click();
         QVERIFY(asked);
+    }
+
+    void adoLoginDialogLooksRight()
+    {
+        AdoLoginDialog dlg(QUrl(QStringLiteral("https://contoso.visualstudio.com/DefaultCollection")),
+                           QStringLiteral("No Azure DevOps credential found."));
+        QLineEdit *org = nullptr;
+        for (QLineEdit *e : dlg.findChildren<QLineEdit *>())
+            if (e->echoMode() == QLineEdit::Normal)
+                org = e;
+        QVERIFY(org);
+        QCOMPARE(org->text(), QStringLiteral("https://dev.azure.com/contoso")); // normalised, read-only
+        QVERIFY(org->isReadOnly());
+        bool linksToTokens = false;
+        for (QLabel *l : dlg.findChildren<QLabel *>())
+            linksToTokens |= l->text().contains(QStringLiteral("https://dev.azure.com/contoso/_usersSettings/tokens"));
+        QVERIFY(linksToTokens);
+        // Signing in with an empty token asks for one instead of contacting the server.
+        for (QPushButton *b : dlg.findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("Sign in"))
+                b->click();
+        QVERIFY(!dlg.credential());
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            dlg.show();
+            QApplication::processEvents();
+            dlg.grab().save(out + QStringLiteral("/ado-login.png"));
+        }
     }
 };
 
