@@ -15,6 +15,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QTimer>
+#include <QTextBrowser>
 #include <QLabel>
 #include <QImage>
 #include <QStackedWidget>
@@ -764,13 +765,16 @@ private slots:
         root.side = QStringLiteral("RIGHT");
         root.line = 2;
         root.author = QStringLiteral("alice");
-        root.body = QStringLiteral("Why uppercase?\nSecond line");
-        root.createdAt = QStringLiteral("2026-01-01");
+        root.body = QStringLiteral("<span style=\"font-weight:600\">PR Assistant</span>\n\nWhy **uppercase**?\n\n"
+                                   "Second paragraph with `code`.\n<!-- hidden-agent-marker -->");
+        root.createdAt = QStringLiteral("2026-10-12T14:03:00Z");
+        root.url = QStringLiteral("https://dev.azure.com/o/p/_git/r/pullrequest/1?discussionId=1");
         GitHubReview::Comment reply = root;
         reply.id = 2;
         reply.inReplyTo = 1;
         reply.author = QStringLiteral("bob");
         reply.body = QStringLiteral("Style guide");
+        reply.createdAt = QStringLiteral("2026-10-12T15:30:00Z");
         FileView v;
         v.diff = diff;
         v.title = v.fileName = QStringLiteral("f.txt");
@@ -778,7 +782,10 @@ private slots:
         v.threads = GitHubReview::threads({root, reply});
         v.reviewEnabled = true;
         DiffPane pane;
+        pane.resize(1000, 400);
         pane.setMode(DiffPane::Mode::SideBySide);
+        pane.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&pane));
         pane.setFile(v);
         QList<CodeView *> views;
         for (CodeView *cv : pane.findChildren<CodeView *>())
@@ -788,19 +795,52 @@ private slots:
         CodeView *left = views[0]->rows()[1].kind == LineKind::Removed ? views[0] : views[1];
         CodeView *right = left == views[0] ? views[1] : views[0];
         QCOMPARE(right->rows().size(), left->rows().size());
-        // Row 1 is the b/B pair; row 2 is the thread on the right and a spacer on the left.
-        QVERIFY(right->rows()[2].comment);
-        QVERIFY(right->rows()[2].text.contains(QStringLiteral("alice")));
-        QVERIFY(right->rows()[2].text.contains(QStringLiteral("bob")));
+
+        // Collapsed by default: one summary line under the B row, with the time and the gist.
+        const Row &summary = right->rows()[2];
+        QVERIFY(summary.comment);
+        QVERIFY(!summary.commentExpanded);
+        QVERIFY(summary.text.contains(QStringLiteral("alice")));
+        QVERIFY(summary.text.contains(GitHubReview::displayTime(root.createdAt)));
+        QVERIFY(summary.text.contains(QStringLiteral(":"))); // a time, not just a date
+        QVERIFY(summary.text.contains(QStringLiteral("1 reply")));
+        QVERIFY(summary.text.contains(QStringLiteral("PR Assistant"))); // markup stripped
+        QVERIFY(!summary.text.contains(QStringLiteral("<span")));
+        QVERIFY(!summary.text.contains(QChar(0x2028)));
         QVERIFY(left->rows()[2].filler);
-        QCOMPARE(left->document()->findBlockByNumber(2).text().size(),
-                 right->rows()[2].text.count(QChar(0x2028))); // same number of visual lines
+        QVERIFY(!right->findChild<QTextBrowser *>());
+
+        // Expanding renders the thread over the row, and both sides reserve its height.
+        emit right->commentToggled(summary.threadId);
+        QVERIFY(pane.isThreadExpanded(1));
+        auto *browser = right->findChild<QTextBrowser *>();
+        QVERIFY(browser);
+        const QString html = browser->toHtml();
+        QVERIFY(html.contains(root.url.toHtmlEscaped())); // author links to the comment
+        QVERIFY(html.contains(QStringLiteral("bob")));
+        QVERIFY(html.contains(GitHubReview::displayTime(reply.createdAt)));
+        QVERIFY(!html.contains(QStringLiteral("hidden-agent-marker")));
+        QVERIFY(!browser->toPlainText().contains(QStringLiteral("**")));
+        bool bold = false;
+        for (QTextBlock b = browser->document()->begin(); b.isValid(); b = b.next())
+            for (auto it = b.begin(); !it.atEnd(); ++it)
+                bold |= it.fragment().text().contains(QStringLiteral("uppercase")) && it.fragment().charFormat().fontWeight() >= QFont::Bold;
+        QVERIFY(bold); // Markdown rendered, not shown raw
+        const int lines = right->document()->findBlockByNumber(2).text().size() + 1;
+        QVERIFY(lines > 3);
+        QCOMPARE(left->document()->findBlockByNumber(2).text().size(), lines - 1); // spacer matches
+        QVERIFY(browser->height() >= lines * right->fontMetrics().lineSpacing() - 2);
         if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
-            pane.resize(1000, 300);
-            pane.show();
             QApplication::processEvents();
             pane.grab().save(out + QStringLiteral("/comments.png"));
         }
+
+        // The ▾ link in the thread collapses it again.
+        emit browser->anchorClicked(QUrl(QStringLiteral("yadiff:collapse")));
+        QVERIFY(!pane.isThreadExpanded(1));
+        QVERIFY(!right->findChild<QTextBrowser *>());
+        pane.setCommentsExpanded(true);
+        QVERIFY(right->findChild<QTextBrowser *>());
     }
 
     void largeDiffsAskFirst()
@@ -842,6 +882,122 @@ private slots:
             dlg.show();
             QApplication::processEvents();
             dlg.grab().save(out + QStringLiteral("/ado-login.png"));
+        }
+    }
+
+    void reviewCommentsDontBreakHighlighting()
+    {
+        // Regression: a comment containing "/*" opened a C++ block comment that ran to
+        // the end of the file, so everything after it was coloured as a comment.
+        const FileDiff diff = DiffModel::parseUnified(
+            QStringLiteral("@@ -1,3 +1,3 @@\n-int a = 1;\n+int a = 2;\n int b = 3;\n int c = 4;\n"));
+        GitHubReview::Comment c;
+        c.id = 1;
+        c.path = QStringLiteral("main.cpp");
+        c.side = QStringLiteral("RIGHT");
+        c.line = 1;
+        c.author = QStringLiteral("bot");
+        c.body = QStringLiteral("Applies to **/*.{cpp,h} and \"unterminated 'quotes\n```\nint x;");
+        c.createdAt = QStringLiteral("2026-10-12T14:03:00Z");
+        auto formatsOf = [&](bool withComment, bool expand) {
+            FileView v;
+            v.diff = diff;
+            v.title = v.fileName = QStringLiteral("main.cpp");
+            v.paths = {QStringLiteral("main.cpp"), QStringLiteral("main.cpp")};
+            if (withComment)
+                v.threads = GitHubReview::threads({c});
+            v.reviewEnabled = true;
+            auto *pane = new DiffPane;
+            pane->setMode(DiffPane::Mode::Inline);
+            pane->resize(900, 400);
+            pane->show();
+            pane->setFile(v);
+            if (expand)
+                pane->setCommentsExpanded(true);
+            QApplication::processEvents();
+            CodeView *view = nullptr;
+            for (CodeView *cv : pane->findChildren<CodeView *>())
+                if (!cv->rows().isEmpty())
+                    view = cv;
+            // Formats on the last code line ("int c = 4;").
+            QTextBlock last = view->document()->lastBlock();
+            QStringList out;
+            for (const QTextLayout::FormatRange &r : last.layout()->formats())
+                out << QStringLiteral("%1+%2:%3").arg(r.start).arg(r.length).arg(r.format.foreground().color().name());
+            delete pane;
+            return out;
+        };
+        const QStringList plain = formatsOf(false, false);
+        QVERIFY(!plain.isEmpty()); // "int" is highlighted
+        QCOMPARE(formatsOf(true, false), plain);
+        QCOMPARE(formatsOf(true, true), plain);
+    }
+
+    void botCommentsRenderReadably()
+    {
+        // Shaped like the review bots on Azure DevOps: Markdown mixed with styled HTML spans,
+        // tables of links, <details> and hidden HTML comments.
+        const QString body = QStringLiteral(
+            "<span style=\"font-family:'Segoe UI'; font-size:14px; font-weight:600;\">Review Bot</span>\n\n"
+            "<small class=\"flex-row\"><span style=\"border: 1px solid rgba(var(--palette-tint), 1);\">Severity</span>"
+            "<span>High</span></small>\n\n"
+            "The buffer length is not written back to `BlockInfo.dwCurrentSize`. Applies to `**/*.{cpp,h}`.\n"
+            "Here is the suggested code:\n```\nif (!buffer)\n{\n    return ERROR_INVALID_DATA;\n}\n```\n"
+            "<table><tr><td><p>Rate this:</p></td><td><a href=\"https://example.com/useful\">Useful</a></td></tr></table>\n\n"
+            "<details><summary>About the bot</summary>\n\n#### About\nIt reviews code.\n\n</details>\n"
+            "<!-- BotUserAgent=example -->\n");
+        GitHubReview::Comment c;
+        c.id = 9;
+        c.path = QStringLiteral("main.cpp");
+        c.side = QStringLiteral("RIGHT");
+        c.line = 1;
+        c.author = QStringLiteral("Review Bot");
+        c.body = body;
+        c.createdAt = QStringLiteral("2026-10-12T14:03:00Z");
+        c.url = QStringLiteral("https://dev.azure.com/o/p/_git/r/pullrequest/1?discussionId=9");
+        FileView v;
+        v.diff = DiffModel::parseUnified(QStringLiteral("@@ -1,2 +1,2 @@\n-int a;\n+int b;\n int c;\n"));
+        v.title = v.fileName = QStringLiteral("main.cpp");
+        v.paths = {QStringLiteral("main.cpp"), QStringLiteral("main.cpp")};
+        v.threads = GitHubReview::threads({c});
+        v.reviewEnabled = true;
+        DiffPane pane;
+        pane.resize(1000, 700);
+        pane.setMode(DiffPane::Mode::Inline);
+        pane.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&pane));
+        pane.setFile(v);
+        CodeView *view = nullptr;
+        for (CodeView *cv : pane.findChildren<CodeView *>())
+            if (!cv->rows().isEmpty())
+                view = cv;
+        const Row &summary = view->rows()[2];
+        QVERIFY(summary.comment);
+        QVERIFY(summary.text.startsWith(QStringLiteral("\U0001F4AC Review Bot")));
+        QVERIFY(summary.text.contains(QStringLiteral("Review Bot · 2026-10-12")));
+        QVERIFY(!summary.text.contains(u'<'));
+        QVERIFY(summary.text.contains(QStringLiteral("The buffer length is not written back"))); // gist skips short title and badge lines
+        pane.setCommentsExpanded(true);
+        auto *browser = view->findChild<QTextBrowser *>();
+        QVERIFY(browser);
+        const QString text = browser->toPlainText();
+        QVERIFY(!text.contains(QStringLiteral("<span")));
+        QVERIFY(!text.contains(QStringLiteral("BotUserAgent")));
+        QVERIFY(!text.contains(QStringLiteral("```")));
+        QVERIFY(text.contains(QStringLiteral("return ERROR_INVALID_DATA;")));
+        QVERIFY(text.contains(QStringLiteral("Useful")));
+        QVERIFY(text.contains(QStringLiteral("Severity High"))); // badges stay apart
+        QVERIFY(text.contains(QStringLiteral("\u25B8 About the bot"))); // <details> folded to its summary
+        QVERIFY(!text.contains(QStringLiteral("It reviews code")));
+        // The fenced code is monospace on a shaded band.
+        bool monoCode = false;
+        for (QTextBlock b = browser->document()->begin(); b.isValid(); b = b.next())
+            if (b.text().contains(QStringLiteral("ERROR_INVALID_DATA")))
+                monoCode = b.begin().fragment().charFormat().fontFamilies().toStringList().contains(Settings::font().family());
+        QVERIFY(monoCode);
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            QApplication::processEvents();
+            pane.grab().save(out + QStringLiteral("/bot-comment.png"));
         }
     }
 };

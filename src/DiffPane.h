@@ -68,6 +68,10 @@ public:
     void setShowWhitespace(bool on);
     void setWordWrap(bool on);
 
+    // Review threads start collapsed to one summary line; these open or close them all.
+    void setCommentsExpanded(bool expanded);
+    bool isThreadExpanded(qint64 threadId) const { return m_expandedThreads.contains(threadId); }
+
     // Syntax: empty `language` means auto-detect from the file name.
     void setLanguageOverride(const QString &language);
     QString detectedLanguage() const;
@@ -132,6 +136,10 @@ private:
     CodeView *activeView() const;
     void indexThreads();
     Row makeCommentRow(const GitHubReview::Thread &t) const;
+    QString threadHtml(const GitHubReview::Thread &t) const;
+    void toggleThread(qint64 threadId);
+    void relayout();
+    void applyCommentHeights();
     Row makeSpacerRow(const Row &comment) const;
     bool nearChange(int lineIndex) const;
 
@@ -171,6 +179,7 @@ private:
     ImageDiffView *m_image = nullptr;
     // Review threads anchored to FileDiff lines: line index -> thread indices.
     QHash<int, QVector<int>> m_threadsAt;
+    QSet<qint64> m_expandedThreads; // review threads shown in full
     OverviewBar *m_overview = nullptr;
     QTimer *m_wrapTimer = nullptr;
 

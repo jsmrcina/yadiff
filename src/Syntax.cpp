@@ -23,9 +23,15 @@ public:
 protected:
     void highlightBlock(const QString &text) override
     {
-        KSyntaxHighlighting::SyntaxHighlighter::highlightBlock(text);
-        if (currentBlock().blockFormat().boolProperty(Syntax::kPlainBlockProperty))
+        if (currentBlock().blockFormat().boolProperty(Syntax::kPlainBlockProperty)) {
+            // Placeholder rows (comments, folds, fillers) must not feed the highlighter:
+            // a "/*" in a review comment would otherwise turn the rest of the file into a
+            // comment. Highlight them as an empty line, so multi-line state passes through.
+            KSyntaxHighlighting::SyntaxHighlighter::highlightBlock(QString());
             setFormat(0, int(text.size()), QTextCharFormat());
+            return;
+        }
+        KSyntaxHighlighting::SyntaxHighlighter::highlightBlock(text);
     }
 };
 } // namespace

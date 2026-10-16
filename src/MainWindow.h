@@ -152,6 +152,8 @@ private:
     QMenu *m_reviewMenu = nullptr;
     QAction *m_reviewMenuAction = nullptr;
     QAction *m_reviewToolAction = nullptr;
+    QAction *m_expandCommentsAct = nullptr;
+    QAction *m_collapseCommentsAct = nullptr;
 
     QToolButton *m_viewToggle = nullptr;
     QToolButton *m_whitespaceToggle = nullptr;

@@ -28,6 +28,9 @@ struct Comment {
 
 using Thread = QVector<Comment>; // first comment, then replies in order
 
+// "2026-10-12T14:03:21Z" -> "2026-10-12 16:03" in local time (falls back to the input).
+QString displayTime(const QString &iso);
+
 enum class Verdict { Comment, Approve, RequestChanges };
 
 // Parses GitHub's JSON (a list, or gh --slurp's list of pages).

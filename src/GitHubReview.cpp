@@ -1,5 +1,6 @@
 #include "GitHubReview.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -62,6 +63,16 @@ GitHubReview::Comment fromJson(const QJsonObject &o)
 } // namespace
 
 namespace GitHubReview {
+
+QString displayTime(const QString &iso)
+{
+    QDateTime t = QDateTime::fromString(iso, Qt::ISODateWithMs);
+    if (!t.isValid())
+        t = QDateTime::fromString(iso, Qt::ISODate);
+    if (!t.isValid())
+        return iso;
+    return t.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
 
 QVector<Comment> parseComments(const QByteArray &json)
 {

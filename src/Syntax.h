@@ -11,8 +11,8 @@ class QTextDocument;
 // otherwise every function is a harmless no-op and available() is false.
 namespace Syntax {
 
-// Blocks whose QTextBlockFormat has this property set to true are left unhighlighted
-// (yadiff's "N unchanged lines" placeholders).
+// Blocks whose QTextBlockFormat has this property set to true are left unhighlighted and
+// are seen by the highlighter as empty lines (yadiff's fold, filler and comment rows).
 constexpr int kPlainBlockProperty = QTextFormat::UserProperty + 100;
 
 bool available();

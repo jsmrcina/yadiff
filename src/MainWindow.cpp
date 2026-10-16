@@ -393,6 +393,12 @@ void MainWindow::createActions()
         Settings::setWordWrap(on);
         m_pane->setWordWrap(on);
     });
+    m_expandCommentsAct = viewMenu->addAction(tr("Expand all review c&omments"), this,
+                                              [this] { m_pane->setCommentsExpanded(true); });
+    m_expandCommentsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_O));
+    m_collapseCommentsAct = viewMenu->addAction(tr("Collapse all review comme&nts"), this,
+                                                [this] { m_pane->setCommentsExpanded(false); });
+    m_collapseCommentsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_O));
     viewMenu->addSeparator();
     m_allChangesAct = viewMenu->addAction(tr("Show &all changes (working tree vs HEAD)"));
     m_allChangesAct->setCheckable(true);
@@ -637,6 +643,8 @@ void MainWindow::updateModeUi()
     m_vsHeadAct->setEnabled(working);
     m_historyAct->setEnabled(m_repo.isRepository());
     m_reviewMenuAction->setVisible(m_cmp.prNumber > 0);
+    m_expandCommentsAct->setVisible(m_cmp.prNumber > 0);
+    m_collapseCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_reviewToolAction->setVisible(m_cmp.prNumber > 0);
     syncOptionControls();
 }

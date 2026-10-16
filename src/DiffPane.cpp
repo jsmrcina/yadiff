@@ -19,6 +19,8 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTextBlock>
+#include <QTextDocumentFragment>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -141,12 +143,13 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
     m_wrapTimer = new QTimer(this);
     m_wrapTimer->setSingleShot(true);
     m_wrapTimer->setInterval(80);
-    connect(m_wrapTimer, &QTimer::timeout, this, &DiffPane::applyWrapPadding);
+    connect(m_wrapTimer, &QTimer::timeout, this, &DiffPane::relayout);
 
     for (CodeView *v : {m_inline, m_left, m_right}) {
         connect(v, &CodeView::moveJumpRequested, this, [this, v](int row) { jumpToMovePartner(v, row); });
         connect(v, &CodeView::contextMenuRequested, this,
                 [this, v](int row, const QPoint &pos) { showContextMenu(v, row, pos); });
+        connect(v, &CodeView::commentToggled, this, &DiffPane::toggleThread);
         connect(v, &CodeView::foldClicked, this, [v, this](int row) {
             if (row >= 0 && row < v->rows().size())
                 expandFold(v->rows()[row].foldFirstLine);
@@ -343,45 +346,213 @@ void DiffPane::indexThreads()
     }
 }
 
+namespace {
+// Tidies comment markup the way Azure DevOps shows it: hidden HTML comments dropped,
+// <details> folded to its summary, and badge-like adjacent tags kept apart.
+QString cleanMarkup(QString body)
+{
+    static const QRegularExpression htmlComment(QStringLiteral("<!--[\\s\\S]*?-->"));
+    static const QRegularExpression details(
+        QStringLiteral("<details[^>]*>(?:\\s*<summary[^>]*>([\\s\\S]*?)</summary>)?[\\s\\S]*?</details>"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression tags(QStringLiteral("<[^>]+>"));
+    static const QRegularExpression adjacent(QStringLiteral("(</(?:span|small|b|strong|em|code)>)(?=<)"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    body.remove(htmlComment);
+    QString out;
+    qsizetype pos = 0;
+    for (auto it = details.globalMatch(body); it.hasNext();) {
+        const auto m = it.next();
+        out += body.mid(pos, m.capturedStart() - pos);
+        QString summary = m.captured(1);
+        summary.remove(tags);
+        summary = summary.simplified();
+        if (!summary.isEmpty())
+            out += QStringLiteral("\n\n*▸ %1*\n\n").arg(summary);
+        pos = m.capturedEnd();
+    }
+    out += body.mid(pos);
+    out.replace(adjacent, QStringLiteral("\\1 "));
+    return out;
+}
+
+// Plain-text gist of a comment for its summary row: the first substantial line (short
+// title lines such as a bot's name come second), else the first non-empty one.
+QString firstLine(const QString &body)
+{
+    const QString text =
+        QTextDocumentFragment::fromMarkdown(cleanMarkup(body), QTextDocument::MarkdownDialectGitHub).toPlainText();
+    QString fallback;
+    for (const QString &line : text.split(QRegularExpression(QStringLiteral("[\\n\\x{2029}\\x{2028}]")))) {
+        const QString t = line.simplified();
+        if (t.isEmpty())
+            continue;
+        if (fallback.isEmpty())
+            fallback = t;
+        if (t.size() >= 30)
+            return t;
+    }
+    return fallback;
+}
+} // namespace
+
 Row DiffPane::makeCommentRow(const GitHubReview::Thread &t) const
 {
-    // One row holding the whole thread; U+2028 breaks lines inside the row.
-    QStringList lines;
-    for (int i = 0; i < t.size(); ++i) {
-        const GitHubReview::Comment &c = t[i];
-        QString head = (i == 0 ? QStringLiteral("\U0001F4AC ") : QStringLiteral("    \u21B3 ")) + c.author
-                     + QStringLiteral("  \u00b7  ") + c.createdAt.left(10);
-        if (i == 0 && c.startLine > 0 && c.startLine < c.line)
-            head += tr("  \u00b7  lines %1\u2013%2").arg(c.startLine).arg(c.line);
-        lines << head;
-        const QString indent = i == 0 ? QStringLiteral("   ") : QStringLiteral("       ");
-        for (QString para : c.body.split(u'\n')) {
-            para.remove(u'\r');
-            // Soft-wrap long paragraphs so the row stays readable without word wrap.
-            while (para.size() > 110) {
-                qsizetype cut = para.lastIndexOf(u' ', 110);
-                if (cut <= 0)
-                    cut = 110;
-                lines << indent + para.left(cut);
-                para = para.mid(cut).trimmed();
-            }
-            lines << indent + para;
-        }
-    }
+    const GitHubReview::Comment &first = t.first();
     Row r;
     r.comment = true;
-    r.threadId = t.first().id;
-    r.text = lines.join(QChar(0x2028));
-    r.tooltip = tr("Review comment by %1. Right-click to reply.").arg(t.first().author);
+    r.threadId = first.id;
+    r.commentExpanded = m_expandedThreads.contains(first.id);
+    if (r.commentExpanded) {
+        // The text is only reserved space; the thread is drawn over it (see CodeView).
+        r.commentHtml = threadHtml(t);
+        r.tooltip = tr("Right-click to reply.");
+        return r;
+    }
+    // Collapsed: one line. Click it (or the arrow in the gutter) to read the thread.
+    QString summary = QStringLiteral("\U0001F4AC %1 · %2").arg(first.author, GitHubReview::displayTime(first.createdAt));
+    if (t.size() > 1)
+        summary += t.size() == 2 ? tr(" · 1 reply") : tr(" · %1 replies").arg(t.size() - 1);
+    QString gist = firstLine(first.body);
+    if (gist.size() > 110)
+        gist = gist.left(108) + QStringLiteral("…");
+    if (!gist.isEmpty())
+        summary += QStringLiteral(" — ") + gist;
+    r.text = summary;
+    r.tooltip = tr("Review comment by %1. Click to read it; right-click to reply.").arg(first.author);
     return r;
+}
+
+QString DiffPane::threadHtml(const GitHubReview::Thread &t) const
+{
+    // Built as a document so each comment's Markdown (and the HTML inside it, as Azure
+    // DevOps bots write) is rendered properly, then handed to the overlay as HTML.
+    QTextDocument doc;
+    QTextCursor c(&doc);
+    const QString muted = palette().color(QPalette::PlaceholderText).name();
+    for (int i = 0; i < t.size(); ++i) {
+        const GitHubReview::Comment &cm = t[i];
+        QTextBlockFormat head;
+        head.setTopMargin(i == 0 ? 2 : 10);
+        head.setBottomMargin(4);
+        head.setLeftMargin(i == 0 ? 0 : 24);
+        if (i > 0)
+            c.insertBlock(head);
+        else
+            c.setBlockFormat(head);
+        QString line;
+        if (i == 0)
+            line += QStringLiteral("<a href=\"yadiff:collapse\" style=\"text-decoration:none\">▾</a>&nbsp;");
+        else
+            line += QStringLiteral("↳&nbsp;");
+        const QString who = QStringLiteral("<b>%1</b>").arg(cm.author.toHtmlEscaped());
+        line += cm.url.isEmpty() ? who : QStringLiteral("<a href=\"%1\">%2</a>").arg(cm.url.toHtmlEscaped(), who);
+        line += QStringLiteral(" <span style=\"color:%1\">· %2</span>").arg(muted, GitHubReview::displayTime(cm.createdAt));
+        if (i == 0 && cm.startLine > 0 && cm.startLine < cm.line)
+            line += QStringLiteral(" <span style=\"color:%1\">· %2</span>")
+                        .arg(muted, tr("lines %1–%2").arg(cm.startLine).arg(cm.line));
+        c.insertHtml(line);
+        // The body, indented like its header.
+        QTextBlockFormat bodyFormat;
+        bodyFormat.setLeftMargin(i == 0 ? 16 : 40);
+        c.insertBlock(bodyFormat);
+        const int bodyStart = c.position();
+        c.insertFragment(QTextDocumentFragment::fromMarkdown(cleanMarkup(cm.body), QTextDocument::MarkdownDialectGitHub));
+        for (QTextBlock b = doc.findBlock(bodyStart); b.isValid() && b.position() <= c.position(); b = b.next()) {
+            QTextCursor bc(b);
+            QTextBlockFormat f = b.blockFormat();
+            f.setLeftMargin(f.leftMargin() + (i == 0 ? 16 : 40));
+            bc.setBlockFormat(f);
+        }
+    }
+    // Code (inline and fenced blocks) in the diff's monospace font; blocks on a shaded band.
+    const QFont mono = Settings::font();
+    QColor codeBg = palette().color(QPalette::Text);
+    codeBg.setAlpha(22);
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+        const bool fence = b.blockFormat().hasProperty(QTextFormat::BlockCodeFence);
+        if (fence) {
+            QTextCursor bc(b);
+            QTextBlockFormat f = b.blockFormat();
+            f.setBackground(codeBg);
+            bc.setBlockFormat(f);
+        }
+        for (auto it = b.begin(); !it.atEnd(); ++it) {
+            const QTextFragment frag = it.fragment();
+            if (!fence && !frag.charFormat().fontFixedPitch())
+                continue;
+            QTextCursor fc(&doc);
+            fc.setPosition(frag.position());
+            fc.setPosition(frag.position() + frag.length(), QTextCursor::KeepAnchor);
+            QTextCharFormat cf;
+            cf.setFontFamilies({mono.family()});
+            cf.setFontPointSize(std::max(7.0, mono.pointSizeF() * 0.95));
+            if (!fence)
+                cf.setBackground(codeBg);
+            fc.mergeCharFormat(cf);
+        }
+    }
+    return doc.toHtml();
+}
+
+void DiffPane::toggleThread(qint64 threadId)
+{
+    if (!m_expandedThreads.remove(threadId))
+        m_expandedThreads.insert(threadId);
+    CodeView *v = activeView();
+    const int top = v->verticalScrollBar()->value();
+    rebuild();
+    v->verticalScrollBar()->setValue(top);
+}
+
+void DiffPane::setCommentsExpanded(bool expanded)
+{
+    m_expandedThreads.clear();
+    if (expanded)
+        for (const GitHubReview::Thread &t : std::as_const(m_file.threads))
+            m_expandedThreads.insert(t.first().id);
+    if (!m_hasDiff || m_file.threads.isEmpty())
+        return;
+    CodeView *v = activeView();
+    const int top = v->verticalScrollBar()->value();
+    rebuild();
+    v->verticalScrollBar()->setValue(top);
+}
+
+void DiffPane::applyCommentHeights()
+{
+    // Expanded threads reserve exactly the height their text needs, on both sides.
+    auto apply = [](CodeView *v, CodeView *other) {
+        const QVector<Row> &rows = v->rows();
+        for (int i = 0; i < rows.size(); ++i) {
+            if (!rows[i].comment || !rows[i].commentExpanded)
+                continue;
+            const int lines = v->commentLinesNeeded(i);
+            v->setRowLineCount(i, lines);
+            if (other)
+                other->setRowLineCount(i, lines);
+        }
+    };
+    if (m_mode == Mode::Inline) {
+        apply(m_inline, nullptr);
+    } else {
+        apply(m_left, m_right);
+        apply(m_right, m_left);
+    }
+}
+
+void DiffPane::relayout()
+{
+    applyCommentHeights();
+    applyWrapPadding();
 }
 
 Row DiffPane::makeSpacerRow(const Row &comment) const
 {
-    // Same height as the comment row on the other side, so rows stay aligned.
+    // Opposite a comment: an empty row, resized to match when the thread is expanded.
+    Q_UNUSED(comment);
     Row r;
     r.filler = true;
-    r.text = QString(comment.text.count(QChar(0x2028)), QChar(0x2028));
     return r;
 }
 
@@ -686,6 +857,7 @@ void DiffPane::rebuild()
     }
     m_overview->setColors(Settings::emphasis(pal.added), Settings::emphasis(pal.removed), pal.movedEmph,
                           pal.currentMatch);
+    applyCommentHeights();
     updateOverview();
     applySearchHighlights();
     scheduleWrapPadding();
@@ -717,8 +889,8 @@ void DiffPane::updateVisibleRange()
 
 void DiffPane::scheduleWrapPadding()
 {
-    if (m_mode == Mode::SideBySide && m_hasDiff)
-        m_wrapTimer->start();
+    if (m_hasDiff)
+        m_wrapTimer->start(); // comment heights and (side by side) wrap padding
 }
 
 void DiffPane::applyWrapPadding()

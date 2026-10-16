@@ -3,7 +3,10 @@
 #include "DiffModel.h"
 
 #include <QBrush>
+#include <QHash>
 #include <QPlainTextEdit>
+
+class QTextBrowser;
 
 // One displayed row in a CodeView. Filler rows pad side-by-side views so that
 // both sides stay aligned; fold rows stand in for a collapsed run of unchanged lines.
@@ -13,6 +16,8 @@ struct Row {
     bool fold = false;
     bool comment = false;   // a review-comment thread shown under the line it belongs to
     qint64 threadId = 0;    // comment rows: id of the thread's first comment
+    bool commentExpanded = false; // shown in full (rich text over the row) instead of one summary line
+    QString commentHtml;          // expanded comment rows: the rendered thread
     int foldFirstLine = -1; // fold rows: first hidden FileDiff line
     int foldCount = 0;      // fold rows: number of hidden lines
     int oldNo = 0;
@@ -69,6 +74,13 @@ public:
 
     void setSearchHits(const QVector<ViewHit> &hits, int current);
 
+    // Expanded review threads are rich-text views laid over their row. The row reserves
+    // the height: commentLinesNeeded() says how many lines a thread needs at the current
+    // width, and setRowLineCount() resizes a row (also used for the spacer opposite).
+    int commentLinesNeeded(int row);
+    void setRowLineCount(int row, int lines);
+    void layoutCommentWidgets();
+
     // Editing (working-tree side only). Lines added by the user are shown as additions.
     void setEditing(bool on);
     bool isEditing() const { return m_editing; }
@@ -88,6 +100,7 @@ public:
 signals:
     void moveJumpRequested(int row);
     void foldClicked(int row);
+    void commentToggled(qint64 threadId);
     void contextMenuRequested(int row, const QPoint &globalPos);
     void modifiedChanged(bool modified);
 
@@ -107,12 +120,15 @@ private:
     void applyTextOptions();
     void rebuildRowsAfterEdit();
     static QString stripPadding(const QString &s);
+    void clearCommentWidgets();
+    QTextBrowser *makeCommentWidget(int row);
 
     class Gutter;
     Gutter *m_gutter = nullptr;
     Numbers m_numbers;
     QVector<Row> m_rows;
     QVector<int> m_padding;
+    QHash<int, QTextBrowser *> m_commentWidgets; // row -> overlay
     ViewPalette m_pal;
     QObject *m_highlighter = nullptr;
     QString m_language;

@@ -3,12 +3,18 @@
 #include "Syntax.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QApplication>
+#include <QDesktopServices>
+#include <QTextBrowser>
+#include <QWheelEvent>
 #include <QContextMenuEvent>
 #include <QHelpEvent>
 #include <QPainter>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QToolTip>
+
+#include <cmath>
 
 namespace {
 constexpr int kPad = 6;
@@ -42,8 +48,12 @@ protected:
     void mousePressEvent(QMouseEvent *e) override
     {
         const int row = m_view->rowAt(QPoint(0, int(e->position().y())));
-        if (row >= 0 && row < m_view->rows().size() && m_view->rows()[row].fold)
+        if (row < 0 || row >= m_view->rows().size())
+            return;
+        if (m_view->rows()[row].fold)
             emit m_view->foldClicked(row);
+        else if (m_view->rows()[row].comment)
+            emit m_view->commentToggled(m_view->rows()[row].threadId);
     }
     void mouseDoubleClickEvent(QMouseEvent *e) override
     {
@@ -75,6 +85,8 @@ CodeView::CodeView(Numbers numbers, QWidget *parent) : QPlainTextEdit(parent), m
             m_gutter->scroll(0, dy);
         else
             m_gutter->update(0, rect.y(), m_gutter->width(), rect.height());
+        if (!m_commentWidgets.isEmpty())
+            layoutCommentWidgets(); // keep comment overlays on their rows while scrolling
     });
     connect(document(), &QTextDocument::contentsChanged, this, [this] {
         if (m_editing && !m_rebuildingAfterEdit)
@@ -116,6 +128,7 @@ void CodeView::resizeEvent(QResizeEvent *event)
     QPlainTextEdit::resizeEvent(event);
     const QRect cr = contentsRect();
     m_gutter->setGeometry(QRect(cr.left(), cr.top(), gutterWidth(), cr.height()));
+    layoutCommentWidgets();
 }
 
 QColor CodeView::rowColor(const Row &r) const
@@ -150,6 +163,7 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
 {
     if (m_editing)
         setEditing(false);
+    clearCommentWidgets();
     m_rows = rows;
     m_pal = palette;
     m_padding.fill(0, rows.size());
@@ -194,7 +208,7 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
         if (bg.style() != Qt::NoBrush)
             f.setBackground(bg);
         f.setProperty(kRowProperty, r.filler ? kFillerState : r.fold ? kFoldState : r.comment ? kCommentState : i);
-        if (r.fold || r.comment)
+        if (r.fold || r.comment || r.filler)
             f.setProperty(Syntax::kPlainBlockProperty, true);
         c.setBlockFormat(f);
         if (r.fold) {
@@ -223,6 +237,9 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
     m_gutter->setPalette(this->palette());
     updateGutterWidth();
     setExtraSelections({});
+    for (int i = 0; i < m_rows.size(); ++i)
+        if (m_rows[i].comment && m_rows[i].commentExpanded)
+            m_commentWidgets.insert(i, makeCommentWidget(i));
     verticalScrollBar()->setValue(0);
     horizontalScrollBar()->setValue(0);
 }
@@ -375,6 +392,15 @@ void CodeView::rebuildRowsAfterEdit()
         if (emptyFiller) {
             r.filler = true;
         } else {
+            if (b.blockFormat().boolProperty(Syntax::kPlainBlockProperty)) {
+                // Typed into a former filler row: it is code now, so highlight it.
+                QTextCursor bc(b);
+                QTextBlockFormat f = b.blockFormat();
+                f.clearProperty(Syntax::kPlainBlockProperty);
+                f.clearProperty(kRowProperty);
+                f.clearBackground();
+                bc.setBlockFormat(f);
+            }
             if (state >= 0 && state < original.size())
                 r = original[state];
             else
@@ -468,6 +494,10 @@ void CodeView::paintGutter(QPaintEvent *event)
             p.setPen(m_pal.gutterText);
             if (r.fold) {
                 p.drawText(QRect(0, top, w, textH), Qt::AlignCenter, QStringLiteral("⋯"));
+            } else if (r.comment) {
+                // Click the arrow (or the summary line) to open or close the thread.
+                p.drawText(QRect(0, top, w - 4, textH), Qt::AlignRight | Qt::AlignVCenter,
+                           r.commentExpanded ? QStringLiteral("\u25BE") : QStringLiteral("\u25B8"));
             } else {
                 int x = kPad;
                 auto drawNumber = [&](int n) {
@@ -584,13 +614,18 @@ void CodeView::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton && row >= 0 && row < m_rows.size() && m_rows[row].comment) {
+        emit commentToggled(m_rows[row].threadId);
+        event->accept();
+        return;
+    }
     QPlainTextEdit::mousePressEvent(event);
 }
 
 void CodeView::mouseMoveEvent(QMouseEvent *event)
 {
     const int row = rowAt(event->position().toPoint());
-    const bool overFold = row >= 0 && row < m_rows.size() && m_rows[row].fold;
+    const bool overFold = row >= 0 && row < m_rows.size() && (m_rows[row].fold || m_rows[row].comment);
     viewport()->setCursor(overFold ? Qt::PointingHandCursor : Qt::IBeamCursor);
     QPlainTextEdit::mouseMoveEvent(event);
 }
@@ -610,4 +645,107 @@ void CodeView::contextMenuEvent(QContextMenuEvent *event)
 {
     // QAbstractScrollArea forwards the viewport's event, so pos() is viewport-relative.
     emit contextMenuRequested(rowAt(event->pos()), event->globalPos());
+}
+
+// ---- Review comment overlays ---------------------------------------------
+
+namespace {
+// Forwards wheel scrolling over a comment to the code view underneath.
+class WheelForwarder : public QObject
+{
+public:
+    WheelForwarder(QObject *parent, QWidget *target) : QObject(parent), m_target(target) {}
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        if (e->type() != QEvent::Wheel)
+            return false;
+        QApplication::sendEvent(m_target, e);
+        return true;
+    }
+
+private:
+    QWidget *m_target;
+};
+} // namespace
+
+void CodeView::clearCommentWidgets()
+{
+    qDeleteAll(m_commentWidgets);
+    m_commentWidgets.clear();
+}
+
+QTextBrowser *CodeView::makeCommentWidget(int row)
+{
+    const Row &r = m_rows[row];
+    auto *w = new QTextBrowser(viewport());
+    w->setFrameShape(QFrame::NoFrame);
+    w->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    w->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    w->setOpenLinks(false);
+    w->setContextMenuPolicy(Qt::CustomContextMenu);
+    QPalette pal = w->palette();
+    pal.setColor(QPalette::Base, m_pal.comment);
+    w->setPalette(pal);
+    w->setHtml(r.commentHtml);
+    const qint64 thread = r.threadId;
+    connect(w, &QTextBrowser::anchorClicked, this, [this, thread](const QUrl &url) {
+        if (url.scheme() == QLatin1String("yadiff"))
+            emit commentToggled(thread); // the thread's collapse link
+        else
+            QDesktopServices::openUrl(url);
+    });
+    connect(w, &QWidget::customContextMenuRequested, this, [this, w, row](const QPoint &pos) {
+        emit contextMenuRequested(row, w->mapToGlobal(pos));
+    });
+    w->viewport()->installEventFilter(new WheelForwarder(w, viewport()));
+    w->show();
+    return w;
+}
+
+int CodeView::commentLinesNeeded(int row)
+{
+    QTextBrowser *w = m_commentWidgets.value(row);
+    if (!w)
+        return 1;
+    const int width = std::max(200, viewport()->width() - 8);
+    w->document()->setTextWidth(width);
+    const qreal height = w->document()->size().height();
+    return std::max(1, int(std::ceil((height + 4) / std::max(1, fontMetrics().lineSpacing()))));
+}
+
+void CodeView::setRowLineCount(int row, int lines)
+{
+    const QTextBlock b = document()->findBlockByNumber(row);
+    if (!b.isValid())
+        return;
+    const QString want(std::max(0, lines - 1), QChar(0x2028));
+    if (b.text() == want)
+        return;
+    const bool modified = document()->isModified();
+    QTextCursor c(b);
+    c.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
+    c.insertText(want, QTextCharFormat());
+    if (row < m_padding.size())
+        m_padding[row] = 0;
+    document()->setModified(modified);
+    layoutCommentWidgets();
+}
+
+void CodeView::layoutCommentWidgets()
+{
+    const int width = std::max(200, viewport()->width() - 8);
+    for (auto it = m_commentWidgets.constBegin(); it != m_commentWidgets.constEnd(); ++it) {
+        const QTextBlock b = document()->findBlockByNumber(it.key());
+        if (!b.isValid())
+            continue;
+        const QRectF r = blockBoundingGeometry(b).translated(contentOffset());
+        QTextBrowser *w = it.value();
+        if (r.bottom() < 0 || r.top() > viewport()->height()) {
+            w->hide();
+            continue;
+        }
+        // Pinned to the left edge: scrolling the code sideways doesn't move comments.
+        w->setGeometry(QRect(4, int(r.top()), width, std::max(1, int(r.height()))));
+        w->show();
+    }
 }

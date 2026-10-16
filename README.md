@@ -91,6 +91,15 @@ path looks like a revision.
   self-contained page with a summary table, every file's diff with 3 lines of context, word
   highlights, moved lines, review ticks and embedded images. It follows the browser's light or
   dark mode.
+- **Review threads**, on GitHub and Azure DevOps PRs, start collapsed to one line under the line they
+  belong to. That line shows the author, the local date and time, the reply count, and the gist.
+  Click it, or the ▸ in the gutter, to read the thread. The ▾ link collapses it again. View →
+  Expand all review comments (Ctrl+Alt+O) and Collapse all (Ctrl+Alt+Shift+O) work on every
+  thread at once. An expanded thread is rendered as rich text, with Markdown, the HTML that review
+  bots use, links, and code blocks in monospace. The author's name links to the comment on the
+  website. HTML comments are hidden, and `<details>` sections fold to their summary. Comment rows
+  never affect syntax highlighting, so a `/*` inside a comment can't turn the rest of the file
+  into a comment.
 - **GitHub review comments.** With `-ghpr`, review threads show under the lines they belong to.
   Right-click a line, or a selection for several lines, to add a comment. Right-click a thread to
   reply. The Review menu approves, requests changes, or comments on the PR. Everything goes
