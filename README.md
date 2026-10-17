@@ -38,11 +38,15 @@ path looks like a revision.
 - **Staged and unstaged, or all changes.** The toolbar's left drop-down switches between separate
   staged and unstaged sections and one list of the working tree against HEAD. Untracked files are
   included in both. `yadiff PATH` starts in the single-list mode.
-- **Review checkboxes.** Tick a file once you've reviewed it, or tick a directory to tick all its
-  files. Ctrl+M toggles the current file, and Ctrl+Shift+M marks it and moves to the next one.
-  Marks are saved per repository in `~/.config/yadiff/reviewed.ini`. A mark is tied to both
-  versions of the file, so it clears itself when either side changes. Switching diff options
-  doesn't clear it. The status bar shows how many files are reviewed.
+- **Marking.** Mark a file once you've dealt with it: Ctrl+M, or right-click → Mark file. Marked files
+  get a highlight colour, which you can change under Marking → Mark highlight color. Marks are saved
+  per repository in `~/.config/yadiff/reviewed.ini`. A mark is tied to both versions of the file, so
+  it clears itself when either side changes, but survives option changes and swapping sides. The
+  Marking menu also has:
+  - Mark by pattern, with the same syntax as the filter box.
+  - Mark identical files, meaning no differences with the current options.
+  - Hide marked files and Select marked files.
+  - Ctrl+Shift+M marks a file and moves to the next one.
 - **Diff pane** on the right, inline or side by side. One toolbar button toggles between them, and
   Ctrl+T does the same. Both views show editor-style line numbers, and inline shows old and new.
 - **Diff algorithm and options.** The algorithm can be Patience (the default), Histogram, Myers or
@@ -57,9 +61,9 @@ path looks like a revision.
   expand it, or use View → Expand all.
 - **Overview strip** beside the scrollbar shows every change in the file, search hits, and the
   visible area. Click or drag it to scroll.
-- **Find** with Ctrl+F searches the current Selection, This file, or All changes, by substring or
-  regex, optionally case-sensitive. Enter and Shift+Enter, or Ctrl+G and Ctrl+Shift+G, step
-  through matches. With All changes, stepping past the last match moves to the next file that has
+- **Find** with F3 or Ctrl+F searches the current Selection, This file, or All changes, by substring
+  or regex, optionally case-sensitive. F8 and F7 step to the next and previous match, as do Enter
+  and Shift+Enter in the find bar. With All changes, stepping past the last match moves to the next file that has
   matches, and those files are shown in bold.
 - **Per-file line counts** such as "+12 −3" appear in the file list when there is room, and totals
   appear in the status bar.
@@ -131,9 +135,9 @@ path looks like a revision.
 - **Right-click to copy** a change as a `git diff` hunk. The copy includes the header and 3 lines
   of context, as plain text and as colour-coded rich text for mail, docs or chat. The same menu
   copies just the old or new text of a change, or the whole file as a diff.
-- **Navigation:** F3 goes to the next change and moves to the next file after the last change.
-  Shift+F3 goes back. The arrows at the top right do the same. Ctrl+F3 and Ctrl+Shift+F3 step
-  between files.
+- **Navigation:** Alt+Down goes to the next change, and on to the next file after the last one.
+  Alt+Up goes back. The arrows at the top right do the same. Alt+PgDown and Alt+PgUp step between
+  files, and Ctrl+G goes to a line number (prefix it with L for the left side).
 - **GitHub pull requests:** `yadiff -ghpr URL` shows what GitHub's "Files changed" tab shows, which
   is the PR head against the merge base with its base branch. Metadata comes from the `gh` CLI,
   so private repos work when `gh` is logged in. Without `gh`, yadiff falls back to GitHub's pull
@@ -148,6 +152,53 @@ path looks like a revision.
 
 Diffs come from `git diff` with full-file context. Moves, line pairing and word highlights are
 computed by yadiff.
+
+## Menus
+
+- **File:**
+  - New comparison, which opens in a new window: a repository, two revisions, two folders, two
+    files, or a PR link.
+  - Compare commits, Change window title, and Export HTML report.
+  - Globbing ignore patterns (`.gitignore` syntax), which can be turned off.
+  - Stage, unstage or revert the selected files. Revert asks first and moves deleted files to the
+    trash.
+  - Rescan files (Ctrl+F5), Refresh list (F5), and Download files again. For PRs, that fetches
+    the PR again and picks up new pushes.
+  - Swap right and left (Ctrl+Shift+X). For working-tree comparisons, this puts the working tree
+    on the left.
+- **Edit:**
+  - Copy, which keeps syntax colours and diff backgrounds. Copy without markup, Copy as Markdown,
+    and Copy for code review, which gives the path and line range, then the code.
+  - Select all, plus copying the left or right file's path.
+  - Find (F3), Find next (F8) and Find previous (F7). Highlight clicked word, and Go to line
+    (Ctrl+G).
+  - Set editor, and Edit left or right file in it. `{file}` and `{line}` are filled in; a commit's
+    side opens as a read-only copy.
+  - Editing the right side in place, applying a change to either side, and change and file
+    navigation.
+- **View:**
+  - Inline or side by side, and Show both, left only or right only.
+  - Language, syntax highlighting on or off, show whitespace, show line numbers, word wrap, tab
+    width, and zoom (Ctrl++, Ctrl+-, and Ctrl+0 for 100%).
+  - Collapse unchanged regions, expand or collapse review comments, and trim the common prefix
+    from folder names, which are fully qualified otherwise.
+  - Colors and font.
+- **Options:**
+  - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
+    no files. Identical files are listed only while that option is on.
+  - Ignore all whitespace, ignore extra whitespace, ignore blank lines, and ignore CR.
+  - Diff algorithm and move detection.
+  - All changes in one list, and comparing unstaged changes against HEAD.
+  - Automatic reload, and remembering scroll positions per file.
+- **Marking:** see above.
+- **Review:** for pull requests only.
+- **Help:**
+  - Register and Unregister as git difftool.
+  - Usage, which is the command-line summary, and About.
+
+Right-click files in the list for: Copy (paths), Select all, Copy commit hash, View differences
+(Enter), View filelog in gitk, Mark file, Stage file, Revert file, Download file again, and Refresh
+list. Several files can be selected.
 
 ## Signing in to Azure DevOps
 
@@ -234,7 +285,7 @@ ctest --test-dir build --output-on-failure
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
   line. The keyring is redirected to a temporary file there.
-- `test_navigation` drives the real window offscreen. It checks F3 and Shift+F3 across files, the
+- `test_navigation` drives the real window offscreen. It checks change navigation across files, the
   view toggle, review marks, right-click copy, and that unchanged lines never inherit a highlight.
   It also covers folds, find in all three scopes, editing and saving (with highlighting on), applying
   a change to disk, wrap alignment, auto-reload, the commit picker, and that no two actions share a
@@ -273,6 +324,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/CodeView.*` | Text view: gutter, move annotations, folds, search hits, wrap padding, editing |
 | `src/DiffPane.*` | Inline and side-by-side layout, change navigation |
 | `src/FileList.*` | Directory-grouped file pane |
-| `src/MainWindow.*` | Menus, toolbar, F3 logic |
+| `src/MainWindow.*` | Menus, toolbar, file operations, background loading |
+| `src/NewComparisonDialog.*` | File > New comparison |
 | `src/PreferencesDialog.*`, `src/Settings.*` | Colours, font, persisted options |
 | `resources/` | Icon (SVG source, PNG sizes, Windows `.ico`/`.rc`) and desktop entry |

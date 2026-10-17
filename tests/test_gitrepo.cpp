@@ -1,6 +1,7 @@
 #include "GitRepo.h"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QFile>
 #include <QProcess>
 #include <QTemporaryDir>
@@ -266,6 +267,146 @@ private slots:
         FileChange added = *unstaged;
         added.status = u'A';
         QVERIFY(!repo->fileContent(added, split, false)); // no old side
+    }
+
+    void swapIdenticalBlankAndGlobs()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/same.txt"), "s\n");
+        write(d + QStringLiteral("/blank.txt"), "a\nb\n");
+        write(d + QStringLiteral("/real.txt"), "a\nb\n");
+        write(d + QStringLiteral("/gone.txt"), "g\n");
+        write(d + QStringLiteral("/Cargo.lock"), "v1\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/blank.txt"), "a\n\n\nb\n");
+        write(d + QStringLiteral("/real.txt"), "a\nB\nc\n");
+        write(d + QStringLiteral("/Cargo.lock"), "v2\n");
+        QFile::remove(d + QStringLiteral("/gone.txt"));
+        write(d + QStringLiteral("/new.txt"), "n\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        auto changes = repo->listChanges(cmp, &error);
+        QCOMPARE(changes.size(), 5);
+        QVERIFY(find(changes, QStringLiteral("blank.txt"), ChangeGroup::Revisions)->blankOnly);
+        QVERIFY(!find(changes, QStringLiteral("real.txt"), ChangeGroup::Revisions)->blankOnly);
+        QCOMPARE(categoryOf(*find(changes, QStringLiteral("gone.txt"), ChangeGroup::Revisions)), FileCategory::LeftOnly);
+        QCOMPARE(categoryOf(*find(changes, QStringLiteral("new.txt"), ChangeGroup::Revisions)), FileCategory::RightOnly);
+        QCOMPARE(categoryOf(*find(changes, QStringLiteral("real.txt"), ChangeGroup::Revisions)), FileCategory::Different);
+
+        // Identical files on request.
+        cmp.includeIdentical = true;
+        changes = repo->listChanges(cmp, &error);
+        const FileChange *same = find(changes, QStringLiteral("same.txt"), ChangeGroup::Revisions);
+        QVERIFY(same);
+        QCOMPARE(same->status, QChar(u'='));
+        QCOMPARE(categoryOf(*same), FileCategory::Identical);
+        const FileDiff sd = repo->loadDiff(*same, cmp, &error);
+        QCOMPARE(sd.lines.size(), 1);
+        QVERIFY(sd.chunks.isEmpty());
+        cmp.includeIdentical = false;
+
+        // Ignore globs.
+        cmp.ignoreGlobs = {QStringLiteral("*.lock"), QStringLiteral("# a comment")};
+        cmp.useIgnoreGlobs = true;
+        changes = repo->listChanges(cmp, &error);
+        QVERIFY(!find(changes, QStringLiteral("Cargo.lock"), ChangeGroup::Revisions));
+        cmp.useIgnoreGlobs = false;
+        QVERIFY(find(repo->listChanges(cmp, &error), QStringLiteral("Cargo.lock"), ChangeGroup::Revisions));
+
+        // Swapped sides: statuses and counts flip, the working tree is on the left.
+        Comparison rev = cmp;
+        rev.reversed = true;
+        const auto swapped = repo->listChanges(rev, &error);
+        const FileChange *gone = find(swapped, QStringLiteral("gone.txt"), ChangeGroup::Revisions);
+        QVERIFY(gone);
+        QCOMPARE(gone->status, QChar(u'A')); // on the right (HEAD) only
+        const FileChange *realR = find(swapped, QStringLiteral("real.txt"), ChangeGroup::Revisions);
+        QCOMPARE(realR->added, 1);   // "b"
+        QCOMPARE(realR->removed, 2); // "B", "c"
+        QCOMPARE(categoryOf(*find(swapped, QStringLiteral("new.txt"), ChangeGroup::Revisions), true), FileCategory::LeftOnly);
+        QCOMPARE(repo->diskPath(*realR, rev, false), d + QStringLiteral("/real.txt"));
+        QVERIFY(repo->diskPath(*realR, rev, true).isEmpty());
+        const FileDiff rd = repo->loadDiff(*realR, rev, &error);
+        QCOMPARE(rd.lines[1].kind, LineKind::Removed); // the working tree's "B" is now the old side
+        QCOMPARE(rd.lines[1].text, QStringLiteral("B"));
+        QCOMPARE(repo->fileContent(*realR, rev, true)->left(3), QByteArray("a\nb")); // HEAD on the right
+        // Review marks follow the files, whichever way round.
+        QCOMPARE(repo->fingerprint(*realR, rev), repo->fingerprint(*find(repo->listChanges(cmp, &error), QStringLiteral("real.txt"), ChangeGroup::Revisions), cmp));
+        const FileDiff nd = repo->loadDiff(*find(swapped, QStringLiteral("new.txt"), ChangeGroup::Revisions), rev, &error);
+        QCOMPARE(nd.lines[0].kind, LineKind::Removed);
+
+        QVERIFY(!repo->lastCommit(QStringLiteral("real.txt")).isEmpty());
+        QVERIFY(repo->lastCommit(QStringLiteral("new.txt")).isEmpty());
+    }
+
+    void stageUnstageRevert()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/a.txt"), "a\n");
+        write(d + QStringLiteral("/b.txt"), "b\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/a.txt"), "A\n");
+        write(d + QStringLiteral("/b.txt"), "B\n");
+        write(d + QStringLiteral("/u.txt"), "untracked\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison split;
+        auto changes = repo->listChanges(split, &error);
+        const FileChange a = *find(changes, QStringLiteral("a.txt"), ChangeGroup::Unstaged);
+        QVERIFY2(repo->stage({a}, &error), qPrintable(error));
+        changes = repo->listChanges(split, &error);
+        QVERIFY(find(changes, QStringLiteral("a.txt"), ChangeGroup::Staged));
+        QVERIFY2(repo->unstage({*find(changes, QStringLiteral("a.txt"), ChangeGroup::Staged)}, &error), qPrintable(error));
+        QVERIFY(!find(repo->listChanges(split, &error), QStringLiteral("a.txt"), ChangeGroup::Staged));
+
+        // Revert: unstaged edit goes back to HEAD, untracked file is removed.
+        changes = repo->listChanges(split, &error);
+        QVERIFY2(repo->revert({*find(changes, QStringLiteral("b.txt"), ChangeGroup::Unstaged),
+                               *find(changes, QStringLiteral("u.txt"), ChangeGroup::Unstaged)},
+                              split, &error),
+                 qPrintable(error));
+        QFile b(d + QStringLiteral("/b.txt"));
+        QVERIFY(b.open(QIODevice::ReadOnly));
+        QCOMPARE(b.readAll(), QByteArray("b\n"));
+        QVERIFY(!QFileInfo::exists(d + QStringLiteral("/u.txt")));
+
+        // "All changes": a staged edit is reverted too.
+        git(d, {QStringLiteral("add"), QStringLiteral("a.txt")});
+        Comparison all;
+        all.allChanges = true;
+        changes = repo->listChanges(all, &error);
+        QVERIFY2(repo->revert({*find(changes, QStringLiteral("a.txt"), ChangeGroup::Revisions)}, all, &error), qPrintable(error));
+        QVERIFY(repo->listChanges(all, &error).isEmpty());
+
+        // Swapped sides refuse to write.
+        write(d + QStringLiteral("/a.txt"), "again\n");
+        all.reversed = true;
+        changes = repo->listChanges(all, &error);
+        QVERIFY(!repo->revert(changes, all, &error));
+        QVERIFY(error.contains(QStringLiteral("Swap")));
+
+        // Directory comparison: the right file becomes a copy of the left one.
+        QDir(d).mkpath(QStringLiteral("L"));
+        QDir(d).mkpath(QStringLiteral("R"));
+        write(d + QStringLiteral("/L/x.txt"), "left\n");
+        write(d + QStringLiteral("/R/x.txt"), "right\n");
+        Comparison pc;
+        pc.mode = Comparison::Mode::Paths;
+        pc.leftPath = d + QStringLiteral("/L");
+        pc.rightPath = d + QStringLiteral("/R");
+        GitRepo none = GitRepo::forPaths(d);
+        QVERIFY2(none.revert(none.listChanges(pc, &error), pc, &error), qPrintable(error));
+        QFile r(d + QStringLiteral("/R/x.txt"));
+        QVERIFY(r.open(QIODevice::ReadOnly));
+        QCOMPARE(r.readAll(), QByteArray("left\n"));
     }
 };
 

@@ -68,6 +68,31 @@ public:
     void setShowWhitespace(bool on);
     void setWordWrap(bool on);
 
+    // Which panes side-by-side shows: 0 both, 1 left only, 2 right only.
+    void setPaneVisibility(int which);
+    void setShowLineNumbers(bool on);
+    void setSyntaxEnabled(bool on);
+    void setHighlightClickedWord(bool on);
+    void setZoom(int percent);
+
+    // Moves to line `line` of the new (or old) side; false when there is no such line.
+    bool goToLine(int line, bool newSide);
+    // Line number at the cursor (or top of the view) on one side, 0 when unknown.
+    int currentLine(bool newSide) const;
+
+    enum class CopyKind { Rich, Plain, Markdown, CodeReview };
+    // Copies the selection of the focused view; false when nothing is selected.
+    bool copySelection(CopyKind kind);
+    void selectAll();
+
+    struct ScrollState {
+        int top = -1;     // first visible row
+        int change = -1;  // current change
+        bool valid() const { return top >= 0; }
+    };
+    ScrollState scrollState() const;
+    void restoreScroll(const ScrollState &state);
+
     // Review threads start collapsed to one summary line; these open or close them all.
     void setCommentsExpanded(bool expanded);
     bool isThreadExpanded(qint64 threadId) const { return m_expandedThreads.contains(threadId); }
@@ -134,6 +159,8 @@ private:
     void applySearchHighlights();
     void revealMatch(int index);
     CodeView *activeView() const;
+    CodeView *focusedView() const;
+    void highlightWord(const QString &word);
     void indexThreads();
     Row makeCommentRow(const GitHubReview::Thread &t) const;
     QString threadHtml(const GitHubReview::Thread &t) const;
@@ -167,6 +194,15 @@ private:
     QLabel *m_title = nullptr;
     QStackedWidget *m_stack = nullptr;
     QWidget *m_sidePage = nullptr;
+    QWidget *m_leftBox = nullptr;
+    QWidget *m_rightBox = nullptr;
+    int m_paneVisibility = 0;
+    bool m_lineNumbers = true;
+    bool m_syntaxEnabled = true;
+    bool m_clickWord = true;
+    int m_zoom = 100;
+    QString m_highlightedWord;
+    CodeView *m_lastFocused = nullptr;
     CodeView *m_inline = nullptr;
     CodeView *m_left = nullptr;
     CodeView *m_right = nullptr;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.3.0 LANGUAGES CXX)
+project(yadiff VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,7 @@ add_library(yadiffui STATIC
     src/HistoryDialog.cpp src/HistoryDialog.h
     src/ImageDiffView.cpp src/ImageDiffView.h
     src/MainWindow.cpp src/MainWindow.h
+    src/NewComparisonDialog.cpp src/NewComparisonDialog.h
     src/OverviewBar.cpp src/OverviewBar.h
     src/PreferencesDialog.cpp src/PreferencesDialog.h
     src/SearchBar.cpp src/SearchBar.h
@@ -104,6 +105,7 @@ if(BUILD_TESTING)
     qt_add_executable(test_gitrepo tests/test_gitrepo.cpp)
     target_link_libraries(test_gitrepo PRIVATE yadiffcore Qt6::Test)
     add_test(NAME test_gitrepo COMMAND test_gitrepo)
+    set_tests_properties(test_gitrepo PROPERTIES ENVIRONMENT "YADIFF_NO_TRASH=1")
 
     qt_add_executable(test_format tests/test_format.cpp)
     target_link_libraries(test_format PRIVATE yadiffcore Qt6::Test)
@@ -118,5 +120,5 @@ if(BUILD_TESTING)
     qt_add_executable(test_navigation tests/test_navigation.cpp)
     target_link_libraries(test_navigation PRIVATE yadiffui Qt6::Test)
     add_test(NAME test_navigation COMMAND test_navigation)
-    set_tests_properties(test_navigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;YADIFF_SYNCHRONOUS=1;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-config")
+    set_tests_properties(test_navigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;YADIFF_SYNCHRONOUS=1;YADIFF_NO_TRASH=1;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-config")
 endif()

@@ -73,6 +73,19 @@ public:
     void setWrapPadding(const QVector<int> &extraLines);
 
     void setSearchHits(const QVector<ViewHit> &hits, int current);
+    // Every whole-word occurrence of `word` gets a soft highlight (empty clears).
+    void setWordHighlight(const QString &word, const QColor &color);
+    void setShowLineNumbers(bool on);
+    void setHighlightClickedWord(bool on) { m_clickWord = on; }
+
+    // The selection without diff placeholders (fillers, folds, comments, padding).
+    QString selectedPlainText() const;
+    // The selection as HTML with the syntax colours and line backgrounds.
+    QString selectedHtml() const;
+    // First and last rows the selection touches (-1 when nothing is selected).
+    QPair<int, int> selectedRows() const;
+    // Row at the text cursor.
+    int cursorRow() const;
 
     // Expanded review threads are rich-text views laid over their row. The row reserves
     // the height: commentLinesNeeded() says how many lines a thread needs at the current
@@ -102,6 +115,7 @@ signals:
     void foldClicked(int row);
     void commentToggled(qint64 threadId);
     void contextMenuRequested(int row, const QPoint &globalPos);
+    void wordClicked(const QString &word); // empty when the click was not on a word
     void modifiedChanged(bool modified);
 
 protected:
@@ -111,6 +125,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
@@ -129,6 +144,10 @@ private:
     QVector<Row> m_rows;
     QVector<int> m_padding;
     QHash<int, QTextBrowser *> m_commentWidgets; // row -> overlay
+    QList<QTextEdit::ExtraSelection> m_searchSelections, m_wordSelections;
+    bool m_lineNumbers = true;
+    bool m_clickWord = true;
+    void updateExtraSelections();
     ViewPalette m_pal;
     QObject *m_highlighter = nullptr;
     QString m_language;

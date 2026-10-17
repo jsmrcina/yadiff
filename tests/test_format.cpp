@@ -292,6 +292,41 @@ private slots:
         QCOMPARE(review.value(QStringLiteral("event")).toString(), QStringLiteral("REQUEST_CHANGES"));
         QCOMPARE(GitHubReview::reviewPayload(GitHubReview::Verdict::Approve, {}), QByteArray("{\"event\":\"APPROVE\"}"));
     }
+
+    void globsFollowGitignoreRules()
+    {
+        QVERIFY(globMatches(QStringLiteral("*.lock"), QStringLiteral("Cargo.lock")));
+        QVERIFY(globMatches(QStringLiteral("*.lock"), QStringLiteral("a/b/yarn.lock")));     // no slash: any folder
+        QVERIFY(!globMatches(QStringLiteral("*.lock"), QStringLiteral("a/lock.txt")));
+        QVERIFY(globMatches(QStringLiteral("build/"), QStringLiteral("build/x/y.o")));       // folder, anywhere
+        QVERIFY(globMatches(QStringLiteral("build/"), QStringLiteral("src/build/y.o")));
+        QVERIFY(!globMatches(QStringLiteral("build/"), QStringLiteral("src/build")));          // a file named build
+        QVERIFY(globMatches(QStringLiteral("src/*.cpp"), QStringLiteral("src/a.cpp")));       // slash: from the top
+        QVERIFY(!globMatches(QStringLiteral("src/*.cpp"), QStringLiteral("src/x/a.cpp")));    // * stays in a folder
+        QVERIFY(!globMatches(QStringLiteral("src/*.cpp"), QStringLiteral("lib/src/a.cpp")));
+        QVERIFY(globMatches(QStringLiteral("src/**/*.cpp"), QStringLiteral("src/x/y/a.cpp")));
+        QVERIFY(globMatches(QStringLiteral("src/**/*.cpp"), QStringLiteral("src/a.cpp")));
+        QVERIFY(globMatches(QStringLiteral("**/gen/*"), QStringLiteral("a/gen/b.h")));
+        QVERIFY(globMatches(QStringLiteral("/docs/"), QStringLiteral("docs/a.md")));
+        QVERIFY(globMatches(QStringLiteral("v?.txt"), QStringLiteral("v1.txt")));
+        QVERIFY(globMatches(QStringLiteral("[ab].txt"), QStringLiteral("b.txt")));
+        QVERIFY(!globMatches(QStringLiteral("# comment"), QStringLiteral("# comment")));
+        QVERIFY(!globMatches(QString(), QStringLiteral("x")));
+    }
+
+    void diffHelpers()
+    {
+        const FileDiff eq = DiffModel::allEqual(QStringLiteral("a\nb\n"));
+        QCOMPARE(eq.lines.size(), 2);
+        QVERIFY(eq.chunks.isEmpty());
+        QCOMPARE(eq.lines[1].oldNo, 2);
+        const FileDiff d = DiffModel::parseUnified(QStringLiteral("@@ -1,2 +1,2 @@\n a\n-b\n+c\n"));
+        const FileDiff r = DiffModel::reversed(d);
+        QCOMPARE(r.lines[1].kind, LineKind::Added);
+        QCOMPARE(r.lines[1].text, QStringLiteral("b"));
+        QCOMPARE(r.lines[2].kind, LineKind::Removed);
+        QCOMPARE(r.chunks.size(), 1);
+    }
 };
 
 QTEST_APPLESS_MAIN(TestFormat)

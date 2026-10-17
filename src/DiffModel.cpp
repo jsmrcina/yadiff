@@ -209,6 +209,41 @@ FileDiff allAdded(const QString &content)
     return d;
 }
 
+FileDiff allEqual(const QString &content)
+{
+    FileDiff d;
+    QStringList lines = content.split(u'\n');
+    if (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    int no = 1;
+    for (const QString &l : std::as_const(lines)) {
+        DiffLine dl;
+        dl.kind = LineKind::Equal;
+        dl.oldNo = dl.newNo = no++;
+        dl.text = stripCR(l);
+        d.lines.push_back(std::move(dl));
+    }
+    finalize(d, false);
+    return d;
+}
+
+FileDiff reversed(const FileDiff &in)
+{
+    FileDiff d;
+    d.binary = in.binary;
+    d.message = in.message;
+    for (const DiffLine &l : in.lines) {
+        DiffLine r;
+        r.kind = l.kind == LineKind::Added ? LineKind::Removed : l.kind == LineKind::Removed ? LineKind::Added : LineKind::Equal;
+        r.oldNo = l.newNo;
+        r.newNo = l.oldNo;
+        r.text = l.text;
+        d.lines.push_back(r);
+    }
+    finalize(d);
+    return d;
+}
+
 void computeChunks(FileDiff &d)
 {
     d.chunks.clear();

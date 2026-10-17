@@ -37,7 +37,7 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300
 
   windows:
     name: Windows (MSVC)
@@ -95,7 +95,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           $env:PATH = "$env:KF_PREFIX\bin;$env:PATH"
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure --timeout 300
 
       - name: Show GUI test output
         if: failure()

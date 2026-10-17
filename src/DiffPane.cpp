@@ -100,8 +100,10 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
     m_left->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     auto *splitter = new QSplitter(Qt::Horizontal);
-    splitter->addWidget(labelled(m_leftLabel, m_left));
-    splitter->addWidget(labelled(m_rightLabel, m_right));
+    m_leftBox = labelled(m_leftLabel, m_left);
+    m_rightBox = labelled(m_rightLabel, m_right);
+    splitter->addWidget(m_leftBox);
+    splitter->addWidget(m_rightBox);
     splitter->setChildrenCollapsible(false);
     m_sidePage = splitter;
 
@@ -150,6 +152,8 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
         connect(v, &CodeView::contextMenuRequested, this,
                 [this, v](int row, const QPoint &pos) { showContextMenu(v, row, pos); });
         connect(v, &CodeView::commentToggled, this, &DiffPane::toggleThread);
+        connect(v, &CodeView::wordClicked, this, &DiffPane::highlightWord);
+        connect(v, &CodeView::cursorPositionChanged, this, [this, v] { m_lastFocused = v; });
         connect(v, &CodeView::foldClicked, this, [v, this](int row) {
             if (row >= 0 && row < v->rows().size())
                 expandFold(v->rows()[row].foldFirstLine);
@@ -681,7 +685,7 @@ void DiffPane::applySyntax()
 {
     // Highlighting very large documents makes the UI sluggish; skip it there.
     const bool tooBig = m_file.diff.lines.size() > 30000;
-    const QString lang = m_hasDiff && !tooBig ? effectiveLanguage() : QString();
+    const QString lang = m_hasDiff && !tooBig && m_syntaxEnabled ? effectiveLanguage() : QString();
     const bool dark = Settings::isDarkTheme();
     for (CodeView *v : {m_inline, m_left, m_right})
         v->setSyntax(lang, dark);
@@ -690,7 +694,9 @@ void DiffPane::applySyntax()
 void DiffPane::rebuild()
 {
     const ViewPalette pal = makePalette();
-    const QFont font = Settings::font();
+    QFont font = Settings::font();
+    if (m_zoom != 100)
+        font.setPointSizeF(std::max(4.0, font.pointSizeF() * m_zoom / 100.0));
     const int tab = Settings::tabWidth();
     const FileDiff &d = m_file.diff;
     const int n = int(d.lines.size());
@@ -853,6 +859,8 @@ void DiffPane::rebuild()
     applySyntax();
     for (CodeView *v : {m_inline, m_left, m_right}) {
         v->setShowWhitespace(m_showWhitespace);
+        v->setShowLineNumbers(m_lineNumbers);
+        v->setHighlightClickedWord(m_clickWord);
         v->setWordWrap(m_wrap);
     }
     m_overview->setColors(Settings::emphasis(pal.added), Settings::emphasis(pal.removed), pal.movedEmph,
@@ -860,6 +868,8 @@ void DiffPane::rebuild()
     applyCommentHeights();
     updateOverview();
     applySearchHighlights();
+    if (!m_highlightedWord.isEmpty())
+        highlightWord(m_highlightedWord);
     scheduleWrapPadding();
 }
 
@@ -1339,4 +1349,183 @@ void DiffPane::jumpToMovePartner(CodeView *source, int row)
     m_left->verticalScrollBar()->setValue(m_right->verticalScrollBar()->value());
     target->selectRow(targetRow);
     target->setFocus();
+}
+
+// ---- View options, copying, positions --------------------------------------
+
+void DiffPane::setPaneVisibility(int which)
+{
+    m_paneVisibility = std::clamp(which, 0, 2);
+    m_leftBox->setVisible(m_paneVisibility != 2);
+    m_rightBox->setVisible(m_paneVisibility != 1);
+    // The left pane's scrollbar is normally hidden (it follows the right one).
+    m_left->setVerticalScrollBarPolicy(m_paneVisibility == 1 ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
+}
+
+void DiffPane::setShowLineNumbers(bool on)
+{
+    m_lineNumbers = on;
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setShowLineNumbers(on);
+}
+
+void DiffPane::setSyntaxEnabled(bool on)
+{
+    m_syntaxEnabled = on;
+    applySyntax();
+}
+
+void DiffPane::setHighlightClickedWord(bool on)
+{
+    m_clickWord = on;
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setHighlightClickedWord(on);
+    if (!on)
+        highlightWord({});
+}
+
+void DiffPane::setZoom(int percent)
+{
+    m_zoom = std::clamp(percent, 30, 400);
+    applySettings();
+}
+
+void DiffPane::highlightWord(const QString &word)
+{
+    m_highlightedWord = word;
+    QColor c = palette().color(QPalette::Highlight);
+    c.setAlpha(70);
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setWordHighlight(word, c);
+}
+
+CodeView *DiffPane::focusedView() const
+{
+    for (CodeView *v : {m_inline, m_left, m_right})
+        if (v->hasFocus() && v->isVisible())
+            return v;
+    if (m_lastFocused && m_lastFocused->isVisible())
+        return m_lastFocused;
+    return activeView();
+}
+
+bool DiffPane::goToLine(int line, bool newSide)
+{
+    const FileDiff &d = m_file.diff;
+    for (int i = 0; i < d.lines.size(); ++i) {
+        const DiffLine &l = d.lines[i];
+        if ((newSide ? l.newNo : l.oldNo) != line)
+            continue;
+        if (const int fold = m_foldOfLine.value(i, -1); fold >= 0) {
+            m_expanded.insert(fold);
+            rebuild();
+        }
+        CodeView *v = m_inline;
+        int row = m_inlineRowOfLine.value(i, -1);
+        if (m_mode == Mode::SideBySide) {
+            v = newSide ? m_right : m_left;
+            row = (newSide ? m_rightRowOfLine : m_leftRowOfLine).value(i, -1);
+        }
+        if (row < 0)
+            return false;
+        if (m_mode == Mode::SideBySide) {
+            m_right->scrollToRow(row);
+            m_left->verticalScrollBar()->setValue(m_right->verticalScrollBar()->value());
+        } else {
+            v->scrollToRow(row);
+        }
+        v->selectRow(row);
+        v->setFocus();
+        return true;
+    }
+    return false;
+}
+
+int DiffPane::currentLine(bool newSide) const
+{
+    CodeView *v = m_mode == Mode::Inline ? m_inline : (newSide ? m_right : m_left);
+    const int start = v->hasFocus() || v == m_lastFocused ? v->cursorRow() : v->topRow();
+    const QVector<Row> &rows = v->rows();
+    for (int r = std::max(0, start); r < rows.size(); ++r) {
+        const int n = newSide ? rows[r].newNo : rows[r].oldNo;
+        if (n > 0 && !rows[r].filler)
+            return n;
+    }
+    return 0;
+}
+
+bool DiffPane::copySelection(CopyKind kind)
+{
+    CodeView *v = focusedView();
+    const QString text = v->selectedPlainText();
+    if (text.isEmpty())
+        return false;
+    auto *mime = new QMimeData;
+    const QString lang = effectiveLanguage().toLower().replace(QStringLiteral("++"), QStringLiteral("pp"));
+    if (kind == CopyKind::Rich) {
+        mime->setText(text);
+        mime->setHtml(v->selectedHtml());
+    } else if (kind == CopyKind::Plain) {
+        mime->setText(text);
+    } else if (kind == CopyKind::Markdown) {
+        mime->setText(QStringLiteral("```%1\n%2\n```\n").arg(lang, text));
+    } else {
+        // For pasting into a review: where it is, then the code.
+        const auto [first, last] = v->selectedRows();
+        const bool newSide = v != m_left;
+        int from = 0, to = 0;
+        for (int r = first; r <= last && r < v->rows().size(); ++r) {
+            const Row &row = v->rows()[r];
+            const int n = newSide ? (row.newNo ? row.newNo : row.oldNo) : row.oldNo;
+            if (n <= 0)
+                continue;
+            if (!from)
+                from = n;
+            to = n;
+        }
+        const QString path = newSide ? m_file.paths.newPath : m_file.paths.oldPath;
+        const QString where = from == to ? QStringLiteral("%1:%2").arg(path).arg(from)
+                                         : QStringLiteral("%1:%2-%3").arg(path).arg(from).arg(to);
+        mime->setText(QStringLiteral("`%1`\n```%2\n%3\n```\n").arg(where, lang, text));
+    }
+    QApplication::clipboard()->setMimeData(mime);
+    return true;
+}
+
+void DiffPane::selectAll()
+{
+    focusedView()->selectAll();
+}
+
+DiffPane::ScrollState DiffPane::scrollState() const
+{
+    ScrollState s;
+    if (!m_hasDiff)
+        return s;
+    s.top = activeView()->topRow();
+    s.change = m_current;
+    return s;
+}
+
+void DiffPane::restoreScroll(const ScrollState &state)
+{
+    if (!state.valid() || !m_hasDiff)
+        return;
+    if (state.change >= 0 && state.change < changeCount()) {
+        const auto &ranges = m_mode == Mode::Inline ? m_inlineChunkRows : m_sideChunkRows;
+        m_current = state.change;
+        if (m_current < ranges.size()) {
+            for (CodeView *cv : {m_inline, m_left, m_right})
+                cv->setCurrentRange(ranges[m_current].first, ranges[m_current].second);
+            m_overview->setCurrentRange(ranges[m_current].first, ranges[m_current].second);
+        }
+        emit currentChangeChanged(m_current, changeCount());
+    }
+    CodeView *v = activeView();
+    const QTextBlock b = v->document()->findBlockByNumber(state.top);
+    if (b.isValid()) {
+        v->verticalScrollBar()->setValue(b.firstLineNumber());
+        if (m_mode == Mode::SideBySide)
+            m_left->verticalScrollBar()->setValue(m_right->verticalScrollBar()->value());
+    }
 }

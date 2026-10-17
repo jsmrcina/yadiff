@@ -1,5 +1,6 @@
 #include "Syntax.h"
 
+#include <QMap>
 #include <QTextDocument>
 
 #ifdef YADIFF_HAVE_KSYNTAX
@@ -53,6 +54,21 @@ QStringList languages()
     return names;
 }
 
+QList<QPair<QString, QStringList>> languagesBySection()
+{
+    QMap<QString, QStringList> bySection;
+    for (const auto &def : repository().definitions())
+        if (!def.isHidden())
+            bySection[def.translatedSection().isEmpty() ? QStringLiteral("Other") : def.translatedSection()] << def.name();
+    QList<QPair<QString, QStringList>> out;
+    for (auto it = bySection.begin(); it != bySection.end(); ++it) {
+        QStringList names = it.value();
+        names.sort(Qt::CaseInsensitive);
+        out.push_back({it.key(), names});
+    }
+    return out;
+}
+
 QString detect(const QString &fileName)
 {
     const auto def = repository().definitionForFileName(fileName);
@@ -97,6 +113,7 @@ void resume(QObject *highlighter, QTextDocument *doc)
 namespace Syntax {
 bool available() { return false; }
 QStringList languages() { return {}; }
+QList<QPair<QString, QStringList>> languagesBySection() { return {}; }
 QString detect(const QString &) { return {}; }
 QObject *apply(QObject *existing, QTextDocument *, const QString &, bool) { delete existing; return nullptr; }
 void suspend(QObject *) {}

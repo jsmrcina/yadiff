@@ -9,7 +9,7 @@
 
 #include <optional>
 
-enum class ChangeGroup { Staged, Unstaged, Revisions };
+enum class ChangeGroup { Staged, Unstaged, Revisions, Unchanged };
 
 struct FileChange {
     QString path;       // repository-relative, '/'-separated (new side)
@@ -18,7 +18,12 @@ struct FileChange {
     ChangeGroup group = ChangeGroup::Revisions;
     int added = -1;     // line counts from git --numstat; -1 when unknown (binary)
     int removed = -1;
+    bool blankOnly = false; // the only differences are blank lines
 };
+
+// Which side(s) of a comparison a file exists on, for the file filters.
+enum class FileCategory { LeftOnly, RightOnly, Different, Identical };
+FileCategory categoryOf(const FileChange &fc, bool reversed = false);
 
 struct CommitInfo {
     QString oid, shortOid, author, date, refs, subject;
@@ -75,6 +80,15 @@ struct Comparison {
     QString prCollectionUrl, prProject, prWebUrl;
     int prNumber = 0;
 
+    // Swapped sides for comparisons that involve the working tree (git diff -R): the
+    // working tree is on the left. (Other comparisons swap rev1/rev2 or the paths.)
+    bool reversed = false;
+    // Also list files that are the same on both sides (status '=').
+    bool includeIdentical = false;
+    // Files whose path matches one of these globs are left out (when useIgnoreGlobs).
+    QStringList ignoreGlobs;
+    bool useIgnoreGlobs = false;
+
     // Shown in the window title instead of the default description (e.g. a PR title).
     QString title;
 
@@ -127,13 +141,28 @@ public:
     std::optional<QByteArray> fileContent(const FileChange &change, const Comparison &cmp, bool newSide,
                                           qint64 maxBytes = 64 * 1024 * 1024) const;
 
+    // Working-tree operations (on the actual files; `changes` as listed for `cmp`).
+    bool stage(const QVector<FileChange> &changes, QString *error) const;
+    bool unstage(const QVector<FileChange> &changes, QString *error) const;
+    // Makes the right side of each change match its left side: restores files from the
+    // left revision (or the index), deletes files the left side doesn't have (to the
+    // trash when possible), and in directory comparisons copies the left file over.
+    bool revert(const QVector<FileChange> &changes, const Comparison &cmp, QString *error) const;
+    // The last commit that touched `path` (repository-relative), empty when unknown.
+    QString lastCommit(const QString &path) const;
+
     // Recent commits, newest first. `allRefs` includes every branch and tag.
     QVector<CommitInfo> log(int max, int skip, bool allRefs, QString *error) const;
 
 private:
     GitRepo(QString root, bool bare, bool noRepo = false) : m_root(std::move(root)), m_bare(bare), m_noRepo(noRepo) {}
     QStringList pathspecs(const Comparison &cmp) const;
+    QVector<FileChange> listChangesCore(const Comparison &cmp, QString *error) const;
     QVector<FileChange> listPathChanges(const Comparison &cmp, QString *error) const;
+    void appendIdentical(QVector<FileChange> &changes, const Comparison &cmp) const;
+    QString diskPathPhysical(const FileChange &change, const Comparison &cmp, bool newSide) const;
+    std::optional<QByteArray> fileContentPhysical(const FileChange &change, const Comparison &cmp, bool newSide,
+                                                  qint64 maxBytes) const;
     FileDiff loadPathDiff(const FileChange &change, const Comparison &cmp, QString *error) const;
     QString m_root;
     bool m_bare = false;

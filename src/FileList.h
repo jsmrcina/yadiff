@@ -5,47 +5,67 @@
 
 #include <QTreeWidget>
 
-// Left-hand file pane: changed files grouped by directory (paths relative to
-// the repository root), showing bare file names.
+// Left-hand file pane: changed files grouped by folder, showing bare file names.
+// Files can be marked (shown with a highlight colour) and several can be selected.
 class FileList : public QTreeWidget
 {
     Q_OBJECT
 public:
     explicit FileList(QWidget *parent = nullptr);
 
-    // showGroups adds "Staged" / "Unstaged" top-level sections. `reviewed` holds the
-    // initial check state per change (may be empty).
-    void setChanges(const QVector<FileChange> &changes, bool showGroups, const QVector<bool> &reviewed = {});
+    // showGroups adds "Staged" / "Unstaged" (and "Unchanged") sections. `marked` holds
+    // the initial mark per change (may be empty).
+    void setChanges(const QVector<FileChange> &changes, bool showGroups, const QVector<bool> &marked = {});
 
-    bool isReviewed(int index) const;
-    void setReviewed(int index, bool reviewed);
-    int reviewedCount() const;
+    // Folder names: `root` is prefixed to make them fully qualified (empty: as listed);
+    // with `trimCommonPrefix` the part all folders share is left off.
+    void setFolderDisplay(const QString &root, bool trimCommonPrefix);
+
+    bool isMarked(int index) const;
+    void setMarked(int index, bool marked);
+    int markedCount() const;
+    QVector<int> markedIndices() const;
+    void setMarkColor(const QColor &color);
+
+    // Change indices of the selected files (the current one when nothing is selected).
+    QVector<int> selectedIndices() const;
+    void selectIndices(const QVector<int> &indices);
 
     // Search across all files: bold the files that contain matches (empty map clears).
     void setMatchCounts(const QHash<int, int> &counts);
     QVector<int> displayOrder(bool includeHidden = false) const; // change indices in list order
 
-    // Hides files the filter rejects (and directories left empty). Navigation skips them.
+    // Hides files the filter rejects (and folders left empty). Navigation skips them.
     void setFilter(const FileFilter &filter);
     int visibleCount() const;
 
-    int currentIndex() const;          // index into the changes vector, or -1
+    int currentIndex() const; // index into the changes vector, or -1
     bool selectIndex(int index);
     bool selectFirst();
     bool selectNext();
     bool selectPrev();
 
 signals:
-    void fileActivated(int index);
-    // The user ticked or unticked a file (directly, or via its directory/section).
-    void reviewToggled(int index, bool reviewed);
+    void fileActivated(int index);           // the current file changed
+    void viewRequested(int index);           // Enter or double-click: look at its diff
+    void markToggled(int index, bool marked);
+    void contextMenuRequested(const QPoint &globalPos);
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
     QTreeWidgetItem *leafFor(int index) const;
     void styleLeaf(QTreeWidgetItem *item);
-    bool m_populating = false;
     void applyFilter();
+    void updateFolderNames();
+
     QVector<QTreeWidgetItem *> m_leaves; // in display order
-    QVector<QChar> m_status;             // status per change index
+    QVector<QTreeWidgetItem *> m_folders;
+    QVector<FileChange> m_changes;
     FileFilter m_filter;
+    QColor m_markColor;
+    QString m_root;
+    bool m_trimPrefix = false;
 };

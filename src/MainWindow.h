@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DiffPane.h"
 #include "FileFilter.h"
 #include "GitHubReview.h"
 #include "GitRepo.h"
@@ -89,6 +90,31 @@ private:
     void updateEditActions();
     void updateSyntaxCombo();
     void applyFilter();
+
+    // File list actions (on the selected files) and the File / Marking menus.
+    QVector<FileChange> selectedChanges() const;
+    void showFileContextMenu(const QPoint &globalPos);
+    void stageSelected(bool stage);
+    void revertSelected();
+    void swapSides();
+    void downloadAgain(bool onlySelected);
+    void markSelected(bool marked);
+    void markByPattern();
+    void markIdentical();
+    void copyCommitHash();
+    void openInGitk();
+    void newComparison();
+    void changeWindowTitle();
+    void editIgnorePatterns();
+    void showUsage();
+    void unregisterDifftool();
+    // Edit menu.
+    void copyFilePath(bool newSide);
+    void editExternally(bool newSide);
+    void setEditorCommand();
+    void goToLineDialog();
+    void rebuildLanguageMenu();
+    QString scrollKey(const FileChange &fc) const;
     QString describeComparison() const;
     QString reviewRoot() const;
 
@@ -144,8 +170,6 @@ private:
     // File list filter.
     QLineEdit *m_filterEdit = nullptr;
     QLabel *m_filterCount = nullptr;
-    QAction *m_hideReviewedAct = nullptr;
-    QHash<QChar, QAction *> m_statusActs;
 
     // PR review.
     QVector<GitHubReview::Comment> m_comments;
@@ -153,6 +177,24 @@ private:
     QAction *m_reviewMenuAction = nullptr;
     QAction *m_reviewToolAction = nullptr;
     QAction *m_expandCommentsAct = nullptr;
+    QAction *m_hideMarkedAct = nullptr;
+    QHash<QString, QAction *> m_categoryActs; // Options > Show ... files
+    QAction *m_useGlobsAct = nullptr;
+    QAction *m_rememberScrollAct = nullptr;
+    QAction *m_syntaxAct = nullptr;
+    QAction *m_lineNumbersAct = nullptr;
+    QAction *m_trimPrefixAct = nullptr;
+    QAction *m_clickWordAct = nullptr;
+    QAction *m_stageAct = nullptr;
+    QAction *m_unstageAct = nullptr;
+    QAction *m_revertAct = nullptr;
+    QAction *m_swapAct = nullptr;
+    QAction *m_editLeftAct = nullptr;
+    QAction *m_editRightAct = nullptr;
+    QActionGroup *m_paneGroup = nullptr;
+    QMenu *m_languageMenu = nullptr;
+    QString m_customTitle;
+    QHash<QString, DiffPane::ScrollState> m_scrollMemory;
     QAction *m_collapseCommentsAct = nullptr;
 
     QToolButton *m_viewToggle = nullptr;

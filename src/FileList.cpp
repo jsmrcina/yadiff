@@ -1,6 +1,8 @@
 #include "FileList.h"
 
+#include <QContextMenuEvent>
 #include <QHeaderView>
+#include <QKeyEvent>
 #include <QStyledItemDelegate>
 #include <QMap>
 #include <QPainter>
@@ -13,7 +15,8 @@
 namespace {
 
 constexpr int kIndexRole = Qt::UserRole + 1;
-constexpr int kReviewedRole = Qt::UserRole + 2;
+constexpr int kMarkedRole = Qt::UserRole + 2;
+constexpr int kFolderRole = Qt::UserRole + 5; // folder items: repository-relative folder
 constexpr int kStatsRole = Qt::UserRole + 3;
 constexpr int kPathRole = Qt::UserRole + 4; // QPoint(added, removed); absent when unknown
 
@@ -37,7 +40,7 @@ public:
         const int gap = fm.horizontalAdvance(u' ');
         const int statsW = fm.horizontalAdvance(plus) + gap + fm.horizontalAdvance(minus) + 8;
         const int nameW = fm.horizontalAdvance(index.data(Qt::DisplayRole).toString());
-        const bool room = option.rect.width() >= statsW + nameW + 60; // 60: checkbox and icon
+        const bool room = option.rect.width() >= statsW + nameW + 40; // 40: icon and padding
 
         QStyleOptionViewItem opt = option;
         if (room)
@@ -112,33 +115,52 @@ FileList::FileList(QWidget *parent) : QTreeWidget(parent)
     header()->setStretchLastSection(true);
     setRootIsDecorated(true);
     setUniformRowHeights(true);
-    setSelectionMode(QAbstractItemView::SingleSelection);
+    setSelectionMode(QAbstractItemView::ExtendedSelection);
     setIconSize(QSize(16, 16));
-    setToolTip(tr("Tick a file once you have reviewed it"));
+    // Long, fully qualified folder names keep their distinctive end visible.
+    setTextElideMode(Qt::ElideMiddle);
+    m_markColor = QColor(0xff, 0xd8, 0x4d, 110);
     connect(this, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *cur) {
         if (cur && cur->data(0, kIndexRole).isValid())
             emit fileActivated(cur->data(0, kIndexRole).toInt());
     });
-    connect(this, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item) {
-        if (m_populating || !item->data(0, kIndexRole).isValid())
-            return;
-        const bool checked = item->checkState(0) == Qt::Checked;
-        if (checked == item->data(0, kReviewedRole).toBool())
-            return; // some other data changed
-        m_populating = true;
-        item->setData(0, kReviewedRole, checked);
-        styleLeaf(item);
-        m_populating = false;
-        emit reviewToggled(item->data(0, kIndexRole).toInt(), checked);
-        if (m_filter.hideReviewed)
-            applyFilter();
+    connect(this, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) {
+        if (item && item->data(0, kIndexRole).isValid())
+            emit viewRequested(item->data(0, kIndexRole).toInt());
     });
+}
+
+void FileList::keyPressEvent(QKeyEvent *event)
+{
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && currentIndex() >= 0) {
+        emit viewRequested(currentIndex());
+        return;
+    }
+    QTreeWidget::keyPressEvent(event);
+}
+
+void FileList::contextMenuEvent(QContextMenuEvent *event)
+{
+    // Right-clicking a file that isn't selected selects just it, as file managers do.
+    if (QTreeWidgetItem *item = itemAt(event->pos()); item && item->data(0, kIndexRole).isValid() && !item->isSelected()) {
+        clearSelection();
+        setCurrentItem(item);
+        item->setSelected(true);
+    }
+    emit contextMenuRequested(event->globalPos());
 }
 
 void FileList::styleLeaf(QTreeWidgetItem *item)
 {
-    const bool reviewed = item->data(0, kReviewedRole).toBool();
-    item->setForeground(0, reviewed ? palette().brush(QPalette::Disabled, QPalette::Text) : palette().brush(QPalette::Text));
+    const bool marked = item->data(0, kMarkedRole).toBool();
+    item->setBackground(0, marked ? QBrush(m_markColor) : QBrush());
+}
+
+void FileList::setMarkColor(const QColor &color)
+{
+    m_markColor = color;
+    for (QTreeWidgetItem *item : std::as_const(m_leaves))
+        styleLeaf(item);
 }
 
 QTreeWidgetItem *FileList::leafFor(int index) const
@@ -149,35 +171,80 @@ QTreeWidgetItem *FileList::leafFor(int index) const
     return nullptr;
 }
 
-bool FileList::isReviewed(int index) const
+bool FileList::isMarked(int index) const
 {
     const QTreeWidgetItem *item = leafFor(index);
-    return item && item->data(0, kReviewedRole).toBool();
+    return item && item->data(0, kMarkedRole).toBool();
 }
 
-void FileList::setReviewed(int index, bool reviewed)
+void FileList::setMarked(int index, bool marked)
 {
-    if (QTreeWidgetItem *item = leafFor(index))
-        item->setCheckState(0, reviewed ? Qt::Checked : Qt::Unchecked); // itemChanged does the rest
+    QTreeWidgetItem *item = leafFor(index);
+    if (!item || item->data(0, kMarkedRole).toBool() == marked)
+        return;
+    item->setData(0, kMarkedRole, marked);
+    styleLeaf(item);
+    emit markToggled(index, marked);
+    if (m_filter.hideReviewed)
+        applyFilter();
 }
 
-int FileList::reviewedCount() const
+int FileList::markedCount() const
 {
     int n = 0;
     for (const QTreeWidgetItem *item : m_leaves)
-        n += item->data(0, kReviewedRole).toBool();
+        n += item->data(0, kMarkedRole).toBool();
     return n;
 }
 
-void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, const QVector<bool> &reviewed)
+QVector<int> FileList::markedIndices() const
+{
+    QVector<int> out;
+    for (const QTreeWidgetItem *item : m_leaves)
+        if (item->data(0, kMarkedRole).toBool())
+            out << item->data(0, kIndexRole).toInt();
+    return out;
+}
+
+QVector<int> FileList::selectedIndices() const
+{
+    QVector<int> out;
+    for (const QTreeWidgetItem *item : m_leaves)
+        if (item->isSelected() && !item->isHidden())
+            out << item->data(0, kIndexRole).toInt();
+    if (out.isEmpty() && currentIndex() >= 0)
+        out << currentIndex();
+    return out;
+}
+
+void FileList::selectIndices(const QVector<int> &indices)
+{
+    const QSet<int> want(indices.begin(), indices.end());
+    QTreeWidgetItem *first = nullptr;
+    {
+        const QSignalBlocker blocker(this);
+        clearSelection();
+        for (QTreeWidgetItem *item : std::as_const(m_leaves)) {
+            const bool on = want.contains(item->data(0, kIndexRole).toInt()) && !item->isHidden();
+            item->setSelected(on);
+            if (on && !first)
+                first = item;
+        }
+    }
+    if (first && !first->isSelected())
+        first->setSelected(true);
+}
+
+void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, const QVector<bool> &marked)
 {
     const QSignalBlocker blocker(this);
-    m_populating = true;
     clear();
     m_leaves.clear();
+    m_folders.clear();
+    m_changes = changes;
 
     auto addFiles = [&](QTreeWidgetItem *parent, const QVector<int> &indices) {
-        // Group by directory. QMap keeps directories sorted; the root ("") comes first.
+        // Group by folder. QMap keeps folders sorted; the root ("") comes first.
         QMap<QString, QVector<int>> byDir;
         for (int idx : indices) {
             const QString &path = changes[idx].path;
@@ -186,11 +253,10 @@ void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, c
         }
         for (auto it = byDir.begin(); it != byDir.end(); ++it) {
             auto *dirItem = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(this);
-            dirItem->setText(0, it.key().isEmpty() ? QStringLiteral(".") : it.key());
-            dirItem->setToolTip(0, it.key().isEmpty() ? tr("Repository root") : it.key());
+            dirItem->setData(0, kFolderRole, it.key());
             dirItem->setIcon(0, style()->standardIcon(QStyle::SP_DirIcon));
-            // Ticking a directory ticks all its files; its state reflects theirs.
-            dirItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate);
+            dirItem->setFlags(Qt::ItemIsEnabled);
+            m_folders.push_back(dirItem);
 
             QVector<int> files = it.value();
             std::sort(files.begin(), files.end(), [&](int a, int b) {
@@ -203,18 +269,19 @@ void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, c
                 item->setIcon(0, statusIcon(fc.status));
                 item->setData(0, kIndexRole, idx);
                 item->setData(0, kPathRole, fc.path);
-                const bool done = reviewed.value(idx, false);
-                item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-                item->setData(0, kReviewedRole, done);
-                item->setCheckState(0, done ? Qt::Checked : Qt::Unchecked);
+                item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                item->setData(0, kMarkedRole, marked.value(idx, false));
                 styleLeaf(item);
                 QString tip = QStringLiteral("%1\n%2").arg(fc.path, statusDescription(fc.status));
                 if (fc.oldPath != fc.path)
                     tip += tr(" from %1").arg(fc.oldPath);
                 if (fc.added >= 0 && fc.removed >= 0) {
-                    item->setData(0, kStatsRole, QPoint(fc.added, fc.removed));
+                    if (fc.status != u'=')
+                        item->setData(0, kStatsRole, QPoint(fc.added, fc.removed));
                     tip += tr("\n%1 added, %2 removed lines").arg(fc.added).arg(fc.removed);
                 }
+                if (fc.blankOnly)
+                    tip += tr("\nOnly blank lines differ");
                 item->setToolTip(0, tip);
                 m_leaves.push_back(item);
             }
@@ -225,18 +292,22 @@ void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, c
         const struct {
             ChangeGroup group;
             QString title;
-        } groups[] = {{ChangeGroup::Staged, tr("Staged changes")}, {ChangeGroup::Unstaged, tr("Unstaged changes")}};
+        } groups[] = {{ChangeGroup::Staged, tr("Staged changes")},
+                      {ChangeGroup::Unstaged, tr("Unstaged changes")},
+                      {ChangeGroup::Unchanged, tr("Unchanged files")}};
         for (const auto &g : groups) {
             QVector<int> indices;
             for (int i = 0; i < changes.size(); ++i)
                 if (changes[i].group == g.group)
                     indices.push_back(i);
+            if (g.group == ChangeGroup::Unchanged && indices.isEmpty())
+                continue;
             auto *groupItem = new QTreeWidgetItem(this);
             groupItem->setText(0, QStringLiteral("%1 (%2)").arg(g.title).arg(indices.size()));
             QFont f = groupItem->font(0);
             f.setBold(true);
             groupItem->setFont(0, f);
-            groupItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate);
+            groupItem->setFlags(Qt::ItemIsEnabled);
             addFiles(groupItem, indices);
         }
     } else {
@@ -244,12 +315,51 @@ void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, c
         std::iota(all.begin(), all.end(), 0);
         addFiles(nullptr, all);
     }
-    m_status.clear();
-    for (const FileChange &fc : changes)
-        m_status << fc.status;
+    updateFolderNames();
     expandAll();
-    m_populating = false;
     applyFilter();
+}
+
+void FileList::setFolderDisplay(const QString &root, bool trimCommonPrefix)
+{
+    m_root = root;
+    m_trimPrefix = trimCommonPrefix;
+    updateFolderNames();
+}
+
+void FileList::updateFolderNames()
+{
+    auto full = [&](const QString &rel) {
+        if (m_root.isEmpty())
+            return rel.isEmpty() ? QStringLiteral(".") : rel;
+        return rel.isEmpty() ? m_root : m_root + u'/' + rel;
+    };
+    // The folders' shared leading components, cut at a folder boundary.
+    QString common;
+    if (m_trimPrefix && !m_folders.isEmpty()) {
+        QStringList shared = full(m_folders.first()->data(0, kFolderRole).toString()).split(u'/');
+        for (const QTreeWidgetItem *f : std::as_const(m_folders)) {
+            const QStringList parts = full(f->data(0, kFolderRole).toString()).split(u'/');
+            qsizetype n = 0;
+            while (n < shared.size() && n < parts.size() && shared[n] == parts[n])
+                ++n;
+            shared = shared.mid(0, n);
+        }
+        common = shared.join(u'/');
+    }
+    for (QTreeWidgetItem *f : std::as_const(m_folders)) {
+        const QString name = full(f->data(0, kFolderRole).toString());
+        QString shown = name;
+        if (!common.isEmpty() && name.startsWith(common)) {
+            shown = name.mid(common.size());
+            if (shown.startsWith(u'/'))
+                shown = shown.mid(1);
+            if (shown.isEmpty())
+                shown = QStringLiteral(".");
+        }
+        f->setText(0, shown);
+        f->setToolTip(0, name);
+    }
 }
 
 void FileList::setFilter(const FileFilter &filter)
@@ -262,11 +372,11 @@ void FileList::applyFilter()
 {
     for (QTreeWidgetItem *item : std::as_const(m_leaves)) {
         const int idx = item->data(0, kIndexRole).toInt();
-        const QString path = item->data(0, kPathRole).toString();
-        const bool show = m_filter.matches(path, m_status.value(idx), item->data(0, kReviewedRole).toBool());
-        item->setHidden(!show);
+        if (idx < 0 || idx >= m_changes.size())
+            continue;
+        item->setHidden(!m_filter.matches(m_changes[idx], item->data(0, kMarkedRole).toBool()));
     }
-    // Directories (and sections) with nothing visible inside disappear too.
+    // Folders (and sections) with nothing visible inside disappear too.
     std::function<bool(QTreeWidgetItem *)> update = [&](QTreeWidgetItem *item) {
         if (item->data(0, kIndexRole).isValid())
             return !item->isHidden();
@@ -296,14 +406,12 @@ int FileList::currentIndex() const
 
 bool FileList::selectIndex(int index)
 {
-    for (QTreeWidgetItem *item : std::as_const(m_leaves)) {
-        if (item->data(0, kIndexRole).toInt() == index) {
-            setCurrentItem(item);
-            scrollToItem(item);
-            return true;
-        }
-    }
-    return false;
+    QTreeWidgetItem *item = leafFor(index);
+    if (!item)
+        return false;
+    setCurrentItem(item);
+    scrollToItem(item);
+    return true;
 }
 
 bool FileList::selectFirst()
@@ -346,7 +454,6 @@ bool FileList::selectPrev()
 
 void FileList::setMatchCounts(const QHash<int, int> &counts)
 {
-    m_populating = true;
     for (QTreeWidgetItem *item : std::as_const(m_leaves)) {
         const int idx = item->data(0, kIndexRole).toInt();
         const int n = counts.value(idx, 0);
@@ -358,7 +465,6 @@ void FileList::setMatchCounts(const QHash<int, int> &counts)
             tip += n == 1 ? tr("\n[1 search match]") : tr("\n[%1 search matches]").arg(n);
         item->setToolTip(0, tip);
     }
-    m_populating = false;
 }
 
 QVector<int> FileList::displayOrder(bool includeHidden) const

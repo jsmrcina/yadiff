@@ -1,9 +1,14 @@
 #include "GitRepo.h"
 
+#include "FileFilter.h"
+
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QDirIterator>
 #include <QFileInfo>
+#include <QRegularExpression>
+#include <QSet>
 #include <QHash>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -353,7 +358,45 @@ QString GitRepo::headOrEmptyTree() const
     return QStringLiteral("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
 }
 
+FileCategory categoryOf(const FileChange &fc, bool reversed)
+{
+    switch (fc.status.unicode()) {
+    case 'D': return FileCategory::LeftOnly;
+    case 'A': return FileCategory::RightOnly;
+    case '?': return reversed ? FileCategory::LeftOnly : FileCategory::RightOnly; // untracked: working tree only
+    case '=': return FileCategory::Identical;
+    default: return FileCategory::Different;
+    }
+}
+
+namespace {
+bool matchesAnyGlob(const QString &path, const QStringList &globs)
+{
+    for (const QString &g : globs)
+        if (globMatches(g, path))
+            return true;
+    return false;
+}
+} // namespace
+
 QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) const
+{
+    QVector<FileChange> result = listChangesCore(cmp, error);
+    if (error && !error->isEmpty())
+        return result;
+    if (cmp.includeIdentical)
+        appendIdentical(result, cmp);
+    if (cmp.useIgnoreGlobs && !cmp.ignoreGlobs.isEmpty()) {
+        result.erase(std::remove_if(result.begin(), result.end(),
+                                    [&](const FileChange &fc) {
+                                        return matchesAnyGlob(fc.path, cmp.ignoreGlobs) && matchesAnyGlob(fc.oldPath, cmp.ignoreGlobs);
+                                    }),
+                     result.end());
+    }
+    return result;
+}
+
+QVector<FileChange> GitRepo::listChangesCore(const Comparison &cmp, QString *error) const
 {
     if (cmp.mode == Comparison::Mode::Paths)
         return listPathChanges(cmp, error);
@@ -361,8 +404,10 @@ QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) 
     QByteArray out;
     // With whitespace ignored, git leaves whitespace-only files out of --name-status.
     const QStringList ws = cmp.options.whitespaceArgs();
-    const QStringList nameStatus = QStringList{QStringLiteral("diff"), QStringLiteral("--name-status"), QStringLiteral("-z")} + ws;
-    const QStringList numstat = QStringList{QStringLiteral("diff"), QStringLiteral("--numstat"), QStringLiteral("-z")} + ws;
+    const QStringList reverse = cmp.reversed ? QStringList{QStringLiteral("-R")} : QStringList();
+    const QStringList nameStatus =
+        QStringList{QStringLiteral("diff"), QStringLiteral("--name-status"), QStringLiteral("-z")} + ws + reverse;
+    const QStringList numstat = QStringList{QStringLiteral("diff"), QStringLiteral("--numstat"), QStringLiteral("-z")} + ws + reverse;
     const QStringList specs = pathspecs(cmp);
 
     // Runs `numstat + extra` and copies the counts onto the matching changes.
@@ -370,6 +415,13 @@ QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) 
         QByteArray statOut;
         if (run(numstat + extra + specs, &statOut, nullptr))
             applyStats(list, parseNumstat(statOut), group, anyGroup);
+        // Files that drop out once blank lines are ignored only changed blank lines.
+        if (run(numstat + QStringList{QStringLiteral("--ignore-blank-lines")} + extra + specs, &statOut, nullptr)) {
+            const auto nonBlank = parseNumstat(statOut);
+            for (FileChange &fc : list)
+                if ((anyGroup || fc.group == group) && fc.status == u'M' && !nonBlank.contains(fc.path) && fc.added >= 0)
+                    fc.blankOnly = true;
+        }
     };
 
     auto appendUntracked = [&](QVector<FileChange> &result, ChangeGroup group) {
@@ -504,11 +556,36 @@ QVector<FileChange> GitRepo::listPathChanges(const Comparison &cmp, QString *err
                     + ws + tail,
                 &statOut, nullptr))
         applyStats(result, parseNumstat(statOut, strip), ChangeGroup::Revisions, true);
+    if (runDiff(QStringList{QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--numstat"),
+                            QStringLiteral("-z"), QStringLiteral("-M"), QStringLiteral("--ignore-blank-lines")}
+                    + ws + tail,
+                &statOut, nullptr)) {
+        const auto nonBlank = parseNumstat(statOut, strip);
+        for (FileChange &fc : result)
+            if (fc.status == u'M' && !nonBlank.contains(fc.path) && fc.added >= 0)
+                fc.blankOnly = true;
+    }
     return result;
 }
 
 FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString *error) const
 {
+    if (fc.status == u'=') {
+        // Identical: show the file itself (every line unchanged).
+        FileDiff d;
+        const auto content = fileContent(fc, cmp, true, 32 * 1024 * 1024);
+        if (!content) {
+            d.message = QStringLiteral("The files are identical");
+        } else if (content->left(8000).contains('\0')) {
+            d.binary = true;
+            d.message = QStringLiteral("Identical binary file");
+        } else {
+            d = DiffModel::allEqual(QString::fromUtf8(*content));
+            if (d.lines.isEmpty())
+                d.message = QStringLiteral("The files are identical (both empty)");
+        }
+        return d;
+    }
     if (cmp.mode == Comparison::Mode::Paths)
         return loadPathDiff(fc, cmp, error);
     if (fc.status == u'?') {
@@ -526,12 +603,16 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
             return d;
         }
         FileDiff d = DiffModel::allAdded(QString::fromUtf8(data));
+        if (cmp.reversed)
+            d = DiffModel::reversed(d); // swapped sides: the untracked file is on the left
         if (d.lines.isEmpty())
             d.message = QStringLiteral("Empty file (untracked)");
         return d;
     }
 
     QStringList args = diffBaseArgs(cmp.options);
+    if (cmp.reversed)
+        args << QStringLiteral("-R");
     if (cmp.mode == Comparison::Mode::Revisions) {
         args << cmp.rev1;
         if (!cmp.rev2.isEmpty())
@@ -564,8 +645,33 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
     return d;
 }
 
-QByteArray GitRepo::fingerprint(const FileChange &fc, const Comparison &cmp) const
+namespace {
+// The change as it is on disk when sides are swapped (git diff -R shows new paths as old).
+FileChange physicalChange(const FileChange &fc, const Comparison &cmp)
 {
+    if (!cmp.reversed)
+        return fc;
+    FileChange p = fc;
+    std::swap(p.path, p.oldPath);
+    if (fc.status == u'A')
+        p.status = u'D';
+    else if (fc.status == u'D')
+        p.status = u'A';
+    return p;
+}
+Comparison physicalComparison(const Comparison &cmp)
+{
+    Comparison c = cmp;
+    c.reversed = false;
+    return c;
+}
+} // namespace
+
+QByteArray GitRepo::fingerprint(const FileChange &displayed, const Comparison &displayedCmp) const
+{
+    // Marks follow the files, not the direction they're compared in.
+    const FileChange fc = physicalChange(displayed, displayedCmp);
+    const Comparison cmp = physicalComparison(displayedCmp);
     // Blob id of `spec` (e.g. "HEAD:path" or ":0:path"), "-" when absent.
     auto blob = [&](const QString &spec) -> QByteArray {
         QByteArray out;
@@ -642,6 +748,13 @@ FileDiff GitRepo::loadPathDiff(const FileChange &fc, const Comparison &cmp, QStr
 
 QString GitRepo::diskPath(const FileChange &fc, const Comparison &cmp, bool newSide) const
 {
+    if (!cmp.reversed)
+        return diskPathPhysical(fc, cmp, newSide);
+    return diskPathPhysical(physicalChange(fc, cmp), physicalComparison(cmp), !newSide);
+}
+
+QString GitRepo::diskPathPhysical(const FileChange &fc, const Comparison &cmp, bool newSide) const
+{
     QString p;
     if (cmp.mode == Comparison::Mode::Paths) {
         if (cmp.pathsAreFiles)
@@ -687,6 +800,14 @@ QVector<CommitInfo> GitRepo::log(int max, int skip, bool allRefs, QString *error
 std::optional<QByteArray> GitRepo::fileContent(const FileChange &fc, const Comparison &cmp, bool newSide,
                                                qint64 maxBytes) const
 {
+    if (!cmp.reversed)
+        return fileContentPhysical(fc, cmp, newSide, maxBytes);
+    return fileContentPhysical(physicalChange(fc, cmp), physicalComparison(cmp), !newSide, maxBytes);
+}
+
+std::optional<QByteArray> GitRepo::fileContentPhysical(const FileChange &fc, const Comparison &cmp, bool newSide,
+                                                       qint64 maxBytes) const
+{
     if ((newSide && fc.status == u'D') || (!newSide && (fc.status == u'A' || fc.status == u'?')))
         return std::nullopt;
 
@@ -702,7 +823,7 @@ std::optional<QByteArray> GitRepo::fileContent(const FileChange &fc, const Compa
         return readFile((newSide ? cmp.rightPath : cmp.leftPath) + u'/' + (newSide ? fc.path : fc.oldPath));
     }
     if (newSide) {
-        if (const QString disk = diskPath(fc, cmp, true); !disk.isEmpty())
+        if (const QString disk = diskPathPhysical(fc, cmp, true); !disk.isEmpty())
             return readFile(disk);
     }
 
@@ -724,4 +845,182 @@ std::optional<QByteArray> GitRepo::fileContent(const FileChange &fc, const Compa
     if (!run({QStringLiteral("cat-file"), QStringLiteral("blob"), spec}, &out, nullptr))
         return std::nullopt;
     return out;
+}
+
+void GitRepo::appendIdentical(QVector<FileChange> &changes, const Comparison &cmp) const
+{
+    QSet<QString> listed;
+    for (const FileChange &fc : changes) {
+        listed.insert(fc.path);
+        listed.insert(fc.oldPath);
+    }
+    auto add = [&](const QString &path, ChangeGroup group) {
+        if (path.isEmpty() || listed.contains(path))
+            return;
+        FileChange fc;
+        fc.path = fc.oldPath = path;
+        fc.status = u'=';
+        fc.group = group;
+        fc.added = fc.removed = 0;
+        changes.push_back(fc);
+        listed.insert(path);
+    };
+    if (cmp.mode == Comparison::Mode::Paths) {
+        if (cmp.pathsAreFiles)
+            return; // a two-file comparison already reports '=' itself
+        const QString right = cmp.rightPath + u'/';
+        QDirIterator it(cmp.rightPath, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        int n = 0;
+        while (it.hasNext() && n++ < 200000) {
+            const QString abs = it.next();
+            const QString rel = abs.mid(right.size());
+            if (rel.startsWith(QLatin1String(".git/")))
+                continue;
+            if (QFileInfo::exists(cmp.leftPath + u'/' + rel))
+                add(rel, ChangeGroup::Revisions);
+        }
+        return;
+    }
+    QByteArray out;
+    QStringList args;
+    if (cmp.mode == Comparison::Mode::Revisions && !cmp.rev2.isEmpty())
+        args = {QStringLiteral("ls-tree"), QStringLiteral("-r"), QStringLiteral("--name-only"), QStringLiteral("-z"), cmp.rev2};
+    else if (!m_bare)
+        args = {QStringLiteral("ls-files"), QStringLiteral("-z")};
+    else
+        return;
+    if (!run(args + pathspecs(cmp), &out, nullptr))
+        return;
+    const ChangeGroup group = cmp.mode == Comparison::Mode::WorkingTree && !cmp.allChanges ? ChangeGroup::Unchanged
+                                                                                           : ChangeGroup::Revisions;
+    for (const QByteArray &p : out.split('\0'))
+        add(QString::fromUtf8(p), group);
+}
+
+bool GitRepo::stage(const QVector<FileChange> &changes, QString *error) const
+{
+    QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
+    for (const FileChange &fc : changes) {
+        args << QStringLiteral(":(top,literal)") + fc.path;
+        if (fc.oldPath != fc.path)
+            args << QStringLiteral(":(top,literal)") + fc.oldPath;
+    }
+    return run(args, nullptr, error);
+}
+
+bool GitRepo::unstage(const QVector<FileChange> &changes, QString *error) const
+{
+    QStringList paths;
+    for (const FileChange &fc : changes) {
+        paths << QStringLiteral(":(top,literal)") + fc.path;
+        if (fc.oldPath != fc.path)
+            paths << QStringLiteral(":(top,literal)") + fc.oldPath;
+    }
+    if (hasHead())
+        return run(QStringList{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")} + paths, nullptr, error);
+    return run(QStringList{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--")} + paths,
+               nullptr, error);
+}
+
+namespace {
+bool removeToTrash(const QString &path, QString *error)
+{
+    if (!QFileInfo::exists(path))
+        return true;
+    // Tests set YADIFF_NO_TRASH so they don't fill the desktop's trash.
+    if (qEnvironmentVariableIsEmpty("YADIFF_NO_TRASH") && QFile::moveToTrash(path))
+        return true;
+    if (QFile::remove(path))
+        return true;
+    if (error)
+        *error = QStringLiteral("Could not delete %1").arg(path);
+    return false;
+}
+} // namespace
+
+bool GitRepo::revert(const QVector<FileChange> &changes, const Comparison &displayedCmp, QString *error) const
+{
+    for (const FileChange &displayed : changes) {
+        if (displayed.status == u'=')
+            continue;
+        if (displayedCmp.mode == Comparison::Mode::Paths) {
+            // Directory or file comparison: make the right file a copy of the left one.
+            const QString left = displayedCmp.pathsAreFiles ? displayedCmp.leftPath
+                                                            : displayedCmp.leftPath + u'/' + displayed.oldPath;
+            const QString right = displayedCmp.pathsAreFiles ? displayedCmp.rightPath
+                                                             : displayedCmp.rightPath + u'/' + displayed.path;
+            if (!removeToTrash(right, error))
+                return false;
+            if (QFileInfo(left).isFile()) {
+                QDir().mkpath(QFileInfo(right).absolutePath());
+                if (!QFile::copy(left, right)) {
+                    if (error)
+                        *error = QStringLiteral("Could not copy %1 to %2").arg(left, right);
+                    return false;
+                }
+            }
+            continue;
+        }
+        if (displayedCmp.reversed) {
+            if (error)
+                *error = QStringLiteral("Swap the sides back first: reverting writes the working tree, which is on the left.");
+            return false;
+        }
+        const FileChange &fc = displayed;
+        const Comparison &cmp = displayedCmp;
+        const QString lit = QStringLiteral(":(top,literal)");
+        if (cmp.mode == Comparison::Mode::WorkingTree && !cmp.allChanges && fc.group == ChangeGroup::Staged) {
+            // Staged: the right side is the index, so put the index back to HEAD.
+            if (!unstage({fc}, error))
+                return false;
+            continue;
+        }
+        if (cmp.mode == Comparison::Mode::Revisions && !cmp.rev2.isEmpty()) {
+            if (error)
+                *error = QStringLiteral("Both sides are commits; there is no file on disk to revert.");
+            return false;
+        }
+        // The left side's source: HEAD (or the chosen revision), or the index.
+        QString source;
+        if (cmp.mode == Comparison::Mode::Revisions)
+            source = cmp.rev1;
+        else if (cmp.allChanges || cmp.unstagedAgainstHead || fc.status == u'U')
+            source = hasHead() ? QStringLiteral("HEAD") : QString();
+        const bool toHead = !source.isEmpty() && (cmp.mode == Comparison::Mode::Revisions || cmp.allChanges);
+        if (fc.status == u'?' || fc.status == u'A') {
+            // Not on the left: remove it (and its staged copy).
+            if (fc.status == u'A')
+                run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--"), lit + fc.path}, nullptr, nullptr);
+            if (!removeToTrash(m_root + u'/' + fc.path, error))
+                return false;
+            continue;
+        }
+        if (fc.oldPath != fc.path) {
+            // Renamed: bring back the old name and drop the new one.
+            if (!removeToTrash(m_root + u'/' + fc.path, error))
+                return false;
+            run({QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--ignore-unmatch"),
+                 QStringLiteral("--"), lit + fc.path},
+                nullptr, nullptr);
+        }
+        QStringList args{QStringLiteral("restore")};
+        if (!source.isEmpty())
+            args << QStringLiteral("--source=") + source;
+        if (toHead)
+            args << QStringLiteral("--staged"); // "all changes": the staged part goes too
+        args << QStringLiteral("--worktree") << QStringLiteral("--") << lit + fc.oldPath;
+        if (!run(args, nullptr, error))
+            return false;
+    }
+    return true;
+}
+
+QString GitRepo::lastCommit(const QString &path) const
+{
+    QByteArray out;
+    if (!run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%H"), QStringLiteral("--"),
+              QStringLiteral(":(top,literal)") + path},
+             &out, nullptr))
+        return {};
+    return QString::fromUtf8(out).trimmed();
 }

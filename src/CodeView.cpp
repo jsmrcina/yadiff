@@ -111,7 +111,7 @@ int CodeView::gutterWidth() const
 {
     const int digits = std::max(3, int(QString::number(maxLineNumber()).size()));
     const int numberWidth = fontMetrics().horizontalAdvance(u'9') * digits;
-    const int columns = m_numbers == Numbers::Both ? 2 : 1;
+    const int columns = !m_lineNumbers ? 0 : m_numbers == Numbers::Both ? 2 : 1;
     return kPad + columns * (numberWidth + kPad) + kMarkerWidth + 2;
 }
 
@@ -236,6 +236,8 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
 
     m_gutter->setPalette(this->palette());
     updateGutterWidth();
+    m_searchSelections.clear();
+    m_wordSelections.clear();
     setExtraSelections({});
     for (int i = 0; i < m_rows.size(); ++i)
         if (m_rows[i].comment && m_rows[i].commentExpanded)
@@ -334,7 +336,8 @@ void CodeView::setSearchHits(const QVector<ViewHit> &hits, int current)
         s.format.setForeground(Qt::black);
         sels << s;
     }
-    setExtraSelections(sels);
+    m_searchSelections = sels;
+    updateExtraSelections();
 }
 
 void CodeView::setEditing(bool on)
@@ -505,9 +508,9 @@ void CodeView::paintGutter(QPaintEvent *event)
                         p.drawText(QRect(x, top, numberWidth, textH), Qt::AlignRight | Qt::AlignVCenter, QString::number(n));
                     x += numberWidth + kPad;
                 };
-                if (m_numbers != Numbers::New)
+                if (m_lineNumbers && m_numbers != Numbers::New)
                     drawNumber(r.oldNo);
-                if (m_numbers != Numbers::Old)
+                if (m_lineNumbers && m_numbers != Numbers::Old)
                     drawNumber(r.newNo);
 
                 QString marker;
@@ -748,4 +751,151 @@ void CodeView::layoutCommentWidgets()
         w->setGeometry(QRect(4, int(r.top()), width, std::max(1, int(r.height()))));
         w->show();
     }
+}
+
+// ---- Word highlight, line numbers, copying ---------------------------------
+
+void CodeView::updateExtraSelections()
+{
+    // Search hits drawn last so they stay visible on top of a highlighted word.
+    setExtraSelections(m_wordSelections + m_searchSelections);
+}
+
+void CodeView::setWordHighlight(const QString &word, const QColor &color)
+{
+    m_wordSelections.clear();
+    if (!word.isEmpty()) {
+        QTextCursor c(document());
+        const QTextDocument::FindFlags flags = QTextDocument::FindCaseSensitively | QTextDocument::FindWholeWords;
+        int guard = 0;
+        while (guard++ < 5000) {
+            c = document()->find(word, c, flags);
+            if (c.isNull())
+                break;
+            QTextEdit::ExtraSelection sel;
+            sel.cursor = c;
+            sel.format.setBackground(color);
+            m_wordSelections << sel;
+        }
+    }
+    updateExtraSelections();
+}
+
+void CodeView::setShowLineNumbers(bool on)
+{
+    m_lineNumbers = on;
+    updateGutterWidth();
+}
+
+void CodeView::mouseReleaseEvent(QMouseEvent *event)
+{
+    QPlainTextEdit::mouseReleaseEvent(event);
+    if (!m_clickWord || event->button() != Qt::LeftButton || textCursor().hasSelection())
+        return;
+    QTextCursor c = cursorForPosition(event->position().toPoint());
+    c.select(QTextCursor::WordUnderCursor);
+    QString word = c.selectedText();
+    if (word.isEmpty() || !word.at(0).isLetterOrNumber() && word.at(0) != u'_')
+        word.clear();
+    emit wordClicked(word);
+}
+
+QPair<int, int> CodeView::selectedRows() const
+{
+    const QTextCursor c = textCursor();
+    if (!c.hasSelection())
+        return {-1, -1};
+    const int a = document()->findBlock(c.selectionStart()).blockNumber();
+    int b = document()->findBlock(c.selectionEnd()).blockNumber();
+    // A selection ending at the start of a line doesn't include that line.
+    if (b > a && document()->findBlock(c.selectionEnd()).position() == c.selectionEnd())
+        --b;
+    return {a, b};
+}
+
+int CodeView::cursorRow() const
+{
+    return textCursor().blockNumber();
+}
+
+QString CodeView::selectedPlainText() const
+{
+    const QTextCursor c = textCursor();
+    if (!c.hasSelection())
+        return {};
+    const int start = c.selectionStart(), end = c.selectionEnd();
+    QStringList out;
+    for (QTextBlock b = document()->findBlock(start); b.isValid() && b.position() <= end; b = b.next()) {
+        const int row = b.blockNumber();
+        if (row < m_rows.size() && (m_rows[row].filler || m_rows[row].fold || m_rows[row].comment))
+            continue;
+        const int from = std::max(0, start - b.position());
+        const int to = std::min(int(b.length()) - 1, end - b.position());
+        if (to < from)
+            continue;
+        out << stripPadding(b.text().mid(from, to - from));
+    }
+    return out.join(u'\n');
+}
+
+QString CodeView::selectedHtml() const
+{
+    const QTextCursor c = textCursor();
+    if (!c.hasSelection())
+        return {};
+    const int start = c.selectionStart(), end = c.selectionEnd();
+    const QFont f = font();
+    QString html = QStringLiteral("<div style=\"font-family:'%1',monospace;font-size:%2pt;\">")
+                       .arg(f.family().toHtmlEscaped())
+                       .arg(f.pointSizeF());
+    for (QTextBlock b = document()->findBlock(start); b.isValid() && b.position() <= end; b = b.next()) {
+        const int row = b.blockNumber();
+        if (row < m_rows.size() && (m_rows[row].filler || m_rows[row].fold || m_rows[row].comment))
+            continue;
+        const QString text = stripPadding(b.text());
+        const int from = std::max(0, start - b.position());
+        const int to = std::min(int(text.size()), end - b.position());
+        if (to < from)
+            continue;
+        // Per-character colour: the highlighter's (layout) formats over the document's own.
+        const QList<QTextLayout::FormatRange> ranges = b.layout() ? b.layout()->formats() : QList<QTextLayout::FormatRange>();
+        auto colorAt = [&](int pos) -> QString {
+            for (auto it = ranges.crbegin(); it != ranges.crend(); ++it)
+                if (pos >= it->start && pos < it->start + it->length && it->format.hasProperty(QTextFormat::ForegroundBrush))
+                    return it->format.foreground().color().name();
+            return QString();
+        };
+        auto bgAt = [&](int pos) -> QString {
+            for (auto it = b.begin(); !it.atEnd(); ++it) {
+                const QTextFragment fr = it.fragment();
+                const int p0 = fr.position() - b.position();
+                if (pos >= p0 && pos < p0 + fr.length() && fr.charFormat().hasProperty(QTextFormat::BackgroundBrush))
+                    return fr.charFormat().background().color().name();
+            }
+            return QString();
+        };
+        const QBrush blockBg = b.blockFormat().background();
+        html += QStringLiteral("<div style=\"white-space:pre;margin:0;%1\">")
+                    .arg(blockBg.style() == Qt::SolidPattern ? QStringLiteral("background:%1;").arg(blockBg.color().name())
+                                                             : QString());
+        int i = from;
+        while (i < to) {
+            const QString fg = colorAt(i), bg = bgAt(i);
+            int j = i + 1;
+            while (j < to && colorAt(j) == fg && bgAt(j) == bg)
+                ++j;
+            QString style;
+            if (!fg.isEmpty())
+                style += QStringLiteral("color:%1;").arg(fg);
+            if (!bg.isEmpty())
+                style += QStringLiteral("background:%1;").arg(bg);
+            const QString part = text.mid(i, j - i).toHtmlEscaped();
+            html += style.isEmpty() ? part : QStringLiteral("<span style=\"%1\">%2</span>").arg(style, part);
+            i = j;
+        }
+        if (from == to)
+            html += QStringLiteral("&nbsp;");
+        html += QStringLiteral("</div>");
+    }
+    return html + QStringLiteral("</div>");
 }

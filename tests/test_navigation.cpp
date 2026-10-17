@@ -5,6 +5,7 @@
 #include "HistoryDialog.h"
 #include "ImageDiffView.h"
 #include "MainWindow.h"
+#include "NewComparisonDialog.h"
 #include "SearchBar.h"
 #include "Settings.h"
 
@@ -15,6 +16,11 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QTimer>
+#include <QRadioButton>
+#include <QDialogButtonBox>
+#include <QFileInfo>
+#include <QAbstractButton>
+#include <QMessageBox>
 #include <QTextBrowser>
 #include <QLabel>
 #include <QImage>
@@ -76,6 +82,16 @@ void showDiff(DiffPane &pane, const FileDiff &d, const QString &title, const QSt
     pane.setFile(v);
 }
 
+
+// A window action by its menu text (without the & accelerator).
+QAction *action(QWidget &w, const QString &text)
+{
+    for (QAction *a : w.findChildren<QAction *>())
+        if (a->text().remove(u'&') == text)
+            return a;
+    return nullptr;
+}
+
 } // namespace
 
 class TestNavigation : public QObject
@@ -117,19 +133,19 @@ private slots:
         QCOMPARE(pane->changeCount(), 3);
         QCOMPARE(pane->currentChange(), 0);
 
-        QTest::keyClick(&w, Qt::Key_F3);
+        QTest::keyClick(&w, Qt::Key_Down, Qt::AltModifier);
         QCOMPARE(pane->currentChange(), 1);
-        QTest::keyClick(&w, Qt::Key_F3);
+        QTest::keyClick(&w, Qt::Key_Down, Qt::AltModifier);
         QCOMPARE(pane->currentChange(), 2);
 
         // No more changes in a.txt: F3 moves to b.txt's first change.
-        QTest::keyClick(&w, Qt::Key_F3);
+        QTest::keyClick(&w, Qt::Key_Down, Qt::AltModifier);
         QCOMPARE(files->currentIndex(), 1);
         QCOMPARE(pane->changeCount(), 2);
         QCOMPARE(pane->currentChange(), 0);
 
         // Shift+F3 at the first change goes back to a.txt's last change.
-        QTest::keyClick(&w, Qt::Key_F3, Qt::ShiftModifier);
+        QTest::keyClick(&w, Qt::Key_Up, Qt::AltModifier);
         QCOMPARE(files->currentIndex(), 0);
         QCOMPARE(pane->currentChange(), 2);
 
@@ -194,17 +210,17 @@ private slots:
         QVERIFY(repo);
         MainWindow w(std::move(*repo), Comparison{});
         auto *files = w.findChild<FileList *>();
-        QCOMPARE(files->reviewedCount(), 0);
+        QCOMPARE(files->markedCount(), 0);
 
-        files->setReviewed(0, true);
-        QVERIFY(files->isReviewed(0));
+        files->setMarked(0, true);
+        QVERIFY(files->isMarked(0));
         w.reload();
-        QVERIFY(files->isReviewed(0));   // survives a reload
-        QVERIFY(!files->isReviewed(1));
+        QVERIFY(files->isMarked(0));   // survives a reload
+        QVERIFY(!files->isMarked(1));
 
         write(d + QStringLiteral("/a.txt"), lines(5, 4)); // a.txt changes again
         w.reload();
-        QVERIFY(!files->isReviewed(0));  // so its mark is dropped
+        QVERIFY(!files->isMarked(0));  // so its mark is dropped
     }
 
     void viewToggleButtonSwitchesModes()
@@ -332,6 +348,8 @@ private slots:
             }
         }
         QVERIFY(seen.contains(QStringLiteral("F3")));
+        QVERIFY(seen.value(QStringLiteral("F3")).contains(QStringLiteral("Find")));
+        QVERIFY(seen.contains(QStringLiteral("Alt+Down")));
     }
 
     void collapseAndExpandUnchanged()
@@ -679,7 +697,7 @@ private slots:
         // Shift+F3 into the previous file lands on its last change after it loads.
         w.activateWindow();
         pane->goToFirstChange();
-        QTest::keyClick(&w, Qt::Key_F3, Qt::ShiftModifier);
+        QTest::keyClick(&w, Qt::Key_Up, Qt::AltModifier);
         QTRY_VERIFY_WITH_TIMEOUT(!w.isBusy() && files->currentIndex() == 4, 10000);
         QCOMPARE(pane->currentChange(), pane->changeCount() - 1);
     }
@@ -717,7 +735,7 @@ private slots:
         filter->clear();
         QCOMPARE(files->visibleCount(), 3);
         // Hide reviewed files.
-        files->setReviewed(0, true);
+        files->setMarked(0, true);
         FileFilter hide;
         hide.hideReviewed = true;
         files->setFilter(hide);
@@ -999,6 +1017,244 @@ private slots:
             QApplication::processEvents();
             pane.grab().save(out + QStringLiteral("/bot-comment.png"));
         }
+    }
+
+    void markingOptionsAndFileOperations()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        QDir(d).mkpath(QStringLiteral("sub"));
+        write(d + QStringLiteral("/sub/a.cpp"), "int a;\nint b;\nint c;\nint d;\nint e;\nint f;\n");
+        write(d + QStringLiteral("/blank.txt"), "x\ny\n");
+        write(d + QStringLiteral("/gone.txt"), "g\n");
+        write(d + QStringLiteral("/same.txt"), "s\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/sub/a.cpp"), "int a;\nint B;\nint c;\nint d;\nint E;\nint f;\n");
+        write(d + QStringLiteral("/blank.txt"), "x\n\n\ny\n");
+        QFile::remove(d + QStringLiteral("/gone.txt"));
+        write(d + QStringLiteral("/new.txt"), "n\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        MainWindow w(std::move(*repo), cmp);
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        w.activateWindow();
+        auto *files = w.findChild<FileList *>();
+        auto *pane = w.findChild<DiffPane *>();
+        QCOMPARE(files->visibleCount(), 4); // a.cpp, blank.txt, gone.txt, new.txt
+        auto indexOf = [&](const QString &name) {
+            for (int i : files->displayOrder(true))
+                if (files->topLevelItemCount() && files->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).value(0)
+                    && files->findItems(name, Qt::MatchExactly | Qt::MatchRecursive).first()->data(0, Qt::UserRole + 1).toInt() == i)
+                    return i;
+            return -1;
+        };
+
+        // Fully qualified folder names, or trimmed to what they don't share.
+        auto folderText = [&] {
+            QStringList out;
+            for (int i = 0; i < files->topLevelItemCount(); ++i)
+                out << files->topLevelItem(i)->text(0);
+            return out;
+        };
+        const QString root = QFileInfo(d).canonicalFilePath();
+        QVERIFY2(folderText().contains(root + QStringLiteral("/sub")), qPrintable(folderText().join(u',')));
+        action(w, QStringLiteral("Trim common prefix from long folder names"))->setChecked(true);
+        QVERIFY(folderText().contains(QStringLiteral("sub")));
+        action(w, QStringLiteral("Trim common prefix from long folder names"))->setChecked(false);
+
+        // Marking: a highlight, not a checkbox.
+        const int a = indexOf(QStringLiteral("a.cpp"));
+        QVERIFY(a >= 0);
+        files->selectIndex(a);
+        action(w, QStringLiteral("Mark / unmark selected files"))->trigger();
+        QVERIFY(files->isMarked(a));
+        QTreeWidgetItem *item = files->findItems(QStringLiteral("a.cpp"), Qt::MatchExactly | Qt::MatchRecursive).first();
+        QCOMPARE(item->background(0).color(), Settings::markColor());
+        QVERIFY(!(item->flags() & Qt::ItemIsUserCheckable));
+        action(w, QStringLiteral("Hide marked files"))->setChecked(true);
+        QCOMPARE(files->visibleCount(), 3);
+        action(w, QStringLiteral("Hide marked files"))->setChecked(false);
+        action(w, QStringLiteral("Unmark all files"))->trigger();
+        QCOMPARE(files->markedCount(), 0);
+
+        // Options > Show ... files.
+        action(w, QStringLiteral("Show left-only files"))->setChecked(false);
+        QCOMPARE(files->visibleCount(), 3); // gone.txt hidden
+        action(w, QStringLiteral("Show blanks-only files"))->setChecked(false);
+        QCOMPARE(files->visibleCount(), 2); // blank.txt hidden too
+        action(w, QStringLiteral("Show no files"))->trigger();
+        QCOMPARE(files->visibleCount(), 0);
+        action(w, QStringLiteral("Show all files"))->trigger(); // includes identical: same.txt listed
+        QCOMPARE(files->visibleCount(), 5);
+        action(w, QStringLiteral("Mark identical files"))->trigger();
+        QCOMPARE(files->markedCount(), 1);
+        QVERIFY(files->isMarked(indexOf(QStringLiteral("same.txt"))));
+        action(w, QStringLiteral("Select marked files"))->trigger();
+        QCOMPARE(files->selectedIndices(), QVector<int>{indexOf(QStringLiteral("same.txt"))});
+        action(w, QStringLiteral("Show identical files"))->setChecked(false);
+        QCOMPARE(files->visibleCount(), 4);
+
+        // Context menu: Copy and Copy commit hash.
+        files->selectIndex(indexOf(QStringLiteral("a.cpp")));
+        auto runMenu = [&](const QString &actionText) {
+            bool found = false;
+            QTimer::singleShot(0, [&] {
+                auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                if (!menu)
+                    return;
+                for (QAction *act : menu->actions())
+                    if (act->text().remove(u'&') == actionText && act->isEnabled()) {
+                        act->trigger();
+                        found = true;
+                    }
+                menu->close();
+            });
+            emit files->contextMenuRequested(files->mapToGlobal(QPoint(10, 10)));
+            return found;
+        };
+        QVERIFY(runMenu(QStringLiteral("Copy")));
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("sub/a.cpp"));
+        QVERIFY(runMenu(QStringLiteral("Copy commit hash")));
+        QByteArray head;
+        {
+            QProcess p;
+            p.setWorkingDirectory(d);
+            p.start(QStringLiteral("git"), {QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+            p.waitForFinished();
+            head = p.readAllStandardOutput().trimmed();
+        }
+        QCOMPARE(QApplication::clipboard()->text().toLatin1(), head);
+
+        // Edit > Copy as Markdown / for code review, on a selection in the diff.
+        files->selectIndex(indexOf(QStringLiteral("a.cpp")));
+        QVERIFY(pane->goToLine(2, true));
+        QVERIFY(action(w, QStringLiteral("Copy as Markdown"))->isEnabled());
+        action(w, QStringLiteral("Copy as Markdown"))->trigger();
+        QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("```cpp\nint B;\n```\n"));
+        action(w, QStringLiteral("Copy for code review"))->trigger();
+        QVERIFY(QApplication::clipboard()->text().startsWith(QStringLiteral("`sub/a.cpp:2`\n```cpp\nint B;")));
+
+        // View options.
+        CodeView *right = nullptr, *left = nullptr;
+        for (CodeView *v : pane->findChildren<CodeView *>())
+            if (v->isVisible())
+                (v->rows().value(1).kind == LineKind::Removed ? left : right) = v;
+        QVERIFY(left && right);
+        action(w, QStringLiteral("Show right only"))->trigger();
+        QVERIFY(!left->isVisible() && right->isVisible());
+        action(w, QStringLiteral("Show both"))->trigger();
+        QVERIFY(left->isVisible());
+        const int gutter = right->gutterWidth();
+        action(w, QStringLiteral("Show line numbers"))->setChecked(false);
+        QVERIFY(right->gutterWidth() < gutter);
+        action(w, QStringLiteral("Show line numbers"))->setChecked(true);
+        const qreal size = right->font().pointSizeF();
+        action(w, QStringLiteral("Zoom in"))->trigger();
+        QVERIFY(right->font().pointSizeF() > size);
+        action(w, QStringLiteral("100%"))->trigger();
+        QCOMPARE(right->font().pointSizeF(), size);
+        emit right->wordClicked(QStringLiteral("int"));
+        QCOMPARE(right->extraSelections().size(), 6); // every "int" on the right
+        emit right->wordClicked(QString());
+        QVERIFY(right->extraSelections().isEmpty());
+
+        // Remembered scroll positions: back on a.cpp at its second change.
+        action(w, QStringLiteral("Remember scroll positions for files"))->setChecked(true);
+        pane->goToChange(1);
+        files->selectIndex(indexOf(QStringLiteral("blank.txt")));
+        files->selectIndex(indexOf(QStringLiteral("sub/a.cpp")) >= 0 ? indexOf(QStringLiteral("sub/a.cpp")) : indexOf(QStringLiteral("a.cpp")));
+        QCOMPARE(pane->currentChange(), 1);
+        action(w, QStringLiteral("Remember scroll positions for files"))->setChecked(false);
+
+        // Stage the selected file (File > Stage files): it moves to the index.
+        files->selectIndex(indexOf(QStringLiteral("new.txt")));
+        action(w, QStringLiteral("Stage files"))->trigger();
+        {
+            QProcess p;
+            p.setWorkingDirectory(d);
+            p.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--cached"), QStringLiteral("--name-only")});
+            p.waitForFinished();
+            QCOMPARE(p.readAllStandardOutput().trimmed(), QByteArray("new.txt"));
+        }
+
+        // Revert (confirmed in the dialog): a.cpp is back to HEAD.
+        files->selectIndex(indexOf(QStringLiteral("a.cpp")));
+        QTimer::singleShot(0, [&] {
+            for (QMessageBox *box : w.findChildren<QMessageBox *>())
+                for (QAbstractButton *b : box->buttons())
+                    if (b->text() == QStringLiteral("Revert"))
+                        b->click();
+        });
+        action(w, QStringLiteral("Revert files…"))->trigger();
+        QFile af(d + QStringLiteral("/sub/a.cpp"));
+        QVERIFY(af.open(QIODevice::ReadOnly));
+        QCOMPARE(af.readAll(), QByteArray("int a;\nint b;\nint c;\nint d;\nint e;\nint f;\n"));
+
+        // Swap: the working tree goes to the left, so the deleted file is now right-only.
+        action(w, QStringLiteral("Swap right and left"))->trigger();
+        const int gone = indexOf(QStringLiteral("gone.txt"));
+        QVERIFY(gone >= 0);
+        files->selectIndex(gone);
+        QVERIFY(pane->findChild<QLabel *>() != nullptr);
+        bool leftIsWorkingTree = false;
+        for (QLabel *l : pane->findChildren<QLabel *>())
+            leftIsWorkingTree |= l->text().startsWith(QStringLiteral("Working tree")) && l->text().contains(QStringLiteral("does not exist"));
+        QVERIFY(leftIsWorkingTree);
+        QVERIFY(!action(w, QStringLiteral("Revert files…"))->isEnabled());
+        action(w, QStringLiteral("Swap right and left"))->trigger();
+
+        // Globbing ignore patterns.
+        Settings::setIgnoreGlobs({QStringLiteral("*.txt")});
+        w.findChild<QAction *>(); // keep the window busy-free
+        action(w, QStringLiteral("Use globbing ignore patterns"))->setChecked(false);
+        action(w, QStringLiteral("Use globbing ignore patterns"))->setChecked(true);
+        QCOMPARE(files->visibleCount(), 0); // a.cpp was reverted; the rest are .txt
+        Settings::setIgnoreGlobs({});
+        action(w, QStringLiteral("Use globbing ignore patterns"))->setChecked(false);
+    }
+
+    void newComparisonDialogBuildsArguments()
+    {
+        QTemporaryDir tmp;
+        QDir(tmp.path()).mkpath(QStringLiteral("L"));
+        QDir(tmp.path()).mkpath(QStringLiteral("R"));
+        // A failed check would open a modal warning; close any so the test fails instead of hanging.
+        QTimer guard;
+        connect(&guard, &QTimer::timeout, [] {
+            if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+                box->reject();
+        });
+        guard.start(200);
+        NewComparisonDialog dlg{QString()};
+        auto *leftDir = dlg.findChild<QLineEdit *>(QStringLiteral("leftDir"));
+        auto *rightDir = dlg.findChild<QLineEdit *>(QStringLiteral("rightDir"));
+        QVERIFY(leftDir && rightDir);
+        leftDir->setText(tmp.filePath(QStringLiteral("L")));
+        rightDir->setText(tmp.filePath(QStringLiteral("R")));
+        QPushButton *compare = nullptr;
+        for (QPushButton *b : dlg.findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("Compare"))
+                compare = b;
+        QVERIFY(compare);
+        compare->click();
+        QCOMPARE(dlg.result(), int(QDialog::Accepted));
+        QCOMPARE(dlg.arguments(), (QStringList{QStringLiteral("--no-index"), tmp.filePath(QStringLiteral("L")), tmp.filePath(QStringLiteral("R"))}));
+
+        NewComparisonDialog pr{QString()};
+        for (QRadioButton *r : pr.findChildren<QRadioButton *>())
+            if (r->text().startsWith(QStringLiteral("A pull request")))
+                r->click();
+        pr.findChild<QLineEdit *>(QStringLiteral("prUrl"))->setText(QStringLiteral("https://dev.azure.com/o/p/_git/r/pullrequest/5"));
+        for (QPushButton *b : pr.findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("Compare"))
+                b->click();
+        QCOMPARE(pr.arguments(), (QStringList{QStringLiteral("-ado"), QStringLiteral("https://dev.azure.com/o/p/_git/r/pullrequest/5")}));
     }
 };
 

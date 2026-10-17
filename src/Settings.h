@@ -45,6 +45,35 @@ void setWordWrap(bool on);
 bool autoReload();
 void setAutoReload(bool on);
 
+// File list and marking.
+QColor markColor();
+void setMarkColor(const QColor &c);
+QStringList ignoreGlobs();
+void setIgnoreGlobs(const QStringList &globs);
+bool useIgnoreGlobs();
+void setUseIgnoreGlobs(bool on);
+bool showFileCategory(const QString &name); // "leftOnly", "rightOnly", "different", "identical", "blankOnly"
+void setShowFileCategory(const QString &name, bool on);
+bool trimFolderPrefix();
+void setTrimFolderPrefix(bool on);
+bool rememberScroll();
+void setRememberScroll(bool on);
+
+// Viewer.
+int paneVisibility(); // 0 both, 1 left only, 2 right only
+void setPaneVisibility(int v);
+bool showLineNumbers();
+void setShowLineNumbers(bool on);
+bool syntaxEnabled();
+void setSyntaxEnabled(bool on);
+bool highlightClickedWord();
+void setHighlightClickedWord(bool on);
+int zoomPercent();
+void setZoomPercent(int percent);
+// External editor command; {file} and {line} are substituted. Empty: the system default.
+QString editorCommand();
+void setEditorCommand(const QString &cmd);
+
 DiffOptions diffOptions();
 void setDiffOptions(const DiffOptions &o);
 

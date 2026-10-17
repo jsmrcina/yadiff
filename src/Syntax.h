@@ -19,6 +19,8 @@ bool available();
 
 // Language names suitable for a picker, sorted case-insensitively.
 QStringList languages();
+// The same, grouped by KSyntaxHighlighting's sections ("Sources", "Scripts", "Markup", ...).
+QList<QPair<QString, QStringList>> languagesBySection();
 
 // Best language for a file name ("C++", "Python", ...), or empty when unknown.
 QString detect(const QString &fileName);

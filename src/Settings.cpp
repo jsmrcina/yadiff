@@ -148,6 +148,41 @@ void setWordWrap(bool on) { setFlag("view/wordWrap", on); }
 bool autoReload() { return flag("behaviour/autoReload", false); }
 void setAutoReload(bool on) { setFlag("behaviour/autoReload", on); }
 
+QColor markColor()
+{
+    const QColor c(QSettings().value(QStringLiteral("marking/color")).toString());
+    if (c.isValid())
+        return c;
+    return isDarkTheme() ? QColor(0x8a, 0x6d, 0x0b, 150) : QColor(0xff, 0xd8, 0x4d, 120);
+}
+void setMarkColor(const QColor &c) { QSettings().setValue(QStringLiteral("marking/color"), c.name(QColor::HexArgb)); }
+QStringList ignoreGlobs() { return QSettings().value(QStringLiteral("files/ignoreGlobs")).toStringList(); }
+void setIgnoreGlobs(const QStringList &globs) { QSettings().setValue(QStringLiteral("files/ignoreGlobs"), globs); }
+bool useIgnoreGlobs() { return flag("files/useIgnoreGlobs", true); }
+void setUseIgnoreGlobs(bool on) { setFlag("files/useIgnoreGlobs", on); }
+bool showFileCategory(const QString &name)
+{
+    // Identical files are off by default: in a repository that would list every file.
+    return QSettings().value(QStringLiteral("files/show_") + name, name != QLatin1String("identical")).toBool();
+}
+void setShowFileCategory(const QString &name, bool on) { QSettings().setValue(QStringLiteral("files/show_") + name, on); }
+bool trimFolderPrefix() { return flag("files/trimFolderPrefix", false); }
+void setTrimFolderPrefix(bool on) { setFlag("files/trimFolderPrefix", on); }
+bool rememberScroll() { return flag("view/rememberScroll", false); }
+void setRememberScroll(bool on) { setFlag("view/rememberScroll", on); }
+int paneVisibility() { return std::clamp(QSettings().value(QStringLiteral("view/panes"), 0).toInt(), 0, 2); }
+void setPaneVisibility(int v) { QSettings().setValue(QStringLiteral("view/panes"), v); }
+bool showLineNumbers() { return flag("view/lineNumbers", true); }
+void setShowLineNumbers(bool on) { setFlag("view/lineNumbers", on); }
+bool syntaxEnabled() { return flag("view/syntax", true); }
+void setSyntaxEnabled(bool on) { setFlag("view/syntax", on); }
+bool highlightClickedWord() { return flag("view/highlightClickedWord", true); }
+void setHighlightClickedWord(bool on) { setFlag("view/highlightClickedWord", on); }
+int zoomPercent() { return std::clamp(QSettings().value(QStringLiteral("view/zoom"), 100).toInt(), 30, 400); }
+void setZoomPercent(int percent) { QSettings().setValue(QStringLiteral("view/zoom"), std::clamp(percent, 30, 400)); }
+QString editorCommand() { return QSettings().value(QStringLiteral("edit/editorCommand")).toString(); }
+void setEditorCommand(const QString &cmd) { QSettings().setValue(QStringLiteral("edit/editorCommand"), cmd); }
+
 DiffOptions diffOptions()
 {
     QSettings s;

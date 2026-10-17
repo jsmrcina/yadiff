@@ -53,6 +53,10 @@ FileDiff parseUnified(const QString &diffText, bool detectMoves = true);
 
 // Treat `content` as an entirely new file (e.g. an untracked file).
 FileDiff allAdded(const QString &content);
+// `content` unchanged on both sides (identical files).
+FileDiff allEqual(const QString &content);
+// The same diff with the sides swapped (added <-> removed, old <-> new numbers).
+FileDiff reversed(const FileDiff &d);
 
 // Splits lines into chunks, detects moved blocks and intra-line differences.
 void finalize(FileDiff &d, bool detectMoves = true);
