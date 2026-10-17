@@ -1,4 +1,7 @@
 #include "DiffModel.h"
+#include "LineDiff.h"
+
+#include <QRandomGenerator>
 
 #include <QTest>
 
@@ -126,6 +129,76 @@ private slots:
         QCOMPARE(d.lines.size(), 2);
         QCOMPARE(d.lines[1].newNo, 2);
         QCOMPARE(d.chunks.size(), 1);
+    }
+    void myersFindsALongestCommonSubsequence()
+    {
+        auto lcsLength = [](const QVector<int> &a, const QVector<int> &b) {
+            QVector<QVector<int>> t(a.size() + 1, QVector<int>(b.size() + 1, 0));
+            for (int i = int(a.size()) - 1; i >= 0; --i)
+                for (int j = int(b.size()) - 1; j >= 0; --j)
+                    t[i][j] = a[i] == b[j] ? t[i + 1][j + 1] + 1 : std::max(t[i + 1][j], t[i][j + 1]);
+            return t[0][0];
+        };
+        QRandomGenerator rng(42);
+        for (int round = 0; round < 500; ++round) {
+            QVector<int> a, b;
+            const int alphabet = 1 + int(rng.bounded(6));
+            for (int i = int(rng.bounded(25)); i > 0; --i)
+                a << int(rng.bounded(alphabet));
+            for (int i = int(rng.bounded(25)); i > 0; --i)
+                b << int(rng.bounded(alphabet));
+            for (const auto &align : {LineDiff::myers(a, b), LineDiff::heckel(a, b)}) {
+                int pa = -1, pb = -1;
+                for (const LineDiff::Match &m : align) {
+                    QVERIFY(m.first > pa && m.second > pb); // strictly increasing
+                    QCOMPARE(a[m.first], b[m.second]);
+                    pa = m.first;
+                    pb = m.second;
+                }
+            }
+            QCOMPARE(int(LineDiff::myers(a, b).size()), lcsLength(a, b));
+        }
+    }
+
+    void heckelAnchorsOnUniqueLines()
+    {
+        // a b c X d e  ->  d e X a b c : the unique lines anchor; crossing blocks can't
+        // all stay, so the longest in-order run does and the rest are removed and added.
+        const QStringList oldLines{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("X"),
+                                   QStringLiteral("d"), QStringLiteral("e")};
+        const QStringList newLines{QStringLiteral("d"), QStringLiteral("e"), QStringLiteral("X"), QStringLiteral("a"),
+                                   QStringLiteral("b"), QStringLiteral("c")};
+        const auto [a, b] = LineDiff::lineIds(oldLines, newLines);
+        const LineDiff::Alignment h = LineDiff::heckel(a, b);
+        QCOMPARE(h.size(), 3);
+        QCOMPARE(h.first(), LineDiff::Match(0, 3)); // a b c kept
+        const FileDiff d = LineDiff::build(oldLines, newLines, h, true);
+        QCOMPARE(d.lines.size(), 9);
+
+        // Repeated lines next to an anchor match through it; isolated repeats don't.
+        const QStringList o2{QStringLiteral("}"), QStringLiteral("unique1"), QStringLiteral("}"), QStringLiteral("}")};
+        const QStringList n2{QStringLiteral("}"), QStringLiteral("unique1"), QStringLiteral("}"), QStringLiteral("new"),
+                             QStringLiteral("}")};
+        const auto [a2, b2] = LineDiff::lineIds(o2, n2);
+        QCOMPARE(LineDiff::heckel(a2, b2).size(), 4);
+    }
+
+    void fromUnifiedZeroAndBuild()
+    {
+        const QString diff = QStringLiteral("@@ -2 +2 @@\n-b\n+B\n@@ -3,0 +4,2 @@\n+x\n+y\n@@ -5,1 +7,0 @@\n-e\n");
+        const LineDiff::Alignment al = LineDiff::fromUnifiedZero(diff, 5, 6);
+        QCOMPARE(al, (LineDiff::Alignment{{0, 0}, {2, 2}, {3, 5}}));
+        const QStringList o{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("C"), QStringLiteral("d"), QStringLiteral("e")};
+        const QStringList n{QStringLiteral("a"), QStringLiteral("B"), QStringLiteral("c"), QStringLiteral("x"),
+                            QStringLiteral("y"), QStringLiteral("d")};
+        const FileDiff d = LineDiff::build(o, n, al, false);
+        QCOMPARE(d.chunks.size(), 3);
+        QCOMPARE(d.lines[3].kind, LineKind::Equal); // C ~ c
+        QCOMPARE(d.lines[3].text, QStringLiteral("c"));
+        QCOMPARE(d.lines[3].oldText, QStringLiteral("C"));
+        QVERIFY(d.lines[0].oldText.isNull());
+        QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb\n")).size(), 2);
+        QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb")).size(), 2);
     }
 };
 

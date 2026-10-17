@@ -38,7 +38,9 @@ struct CommitInfo {
     QStringList parents;
 };
 
-enum class DiffAlgorithm { Histogram, Patience, Myers, Minimal };
+// Histogram to Minimal are git's; MyersLcs and Heckel are yadiff's own (LineDiff).
+enum class DiffAlgorithm { Histogram, Patience, Myers, Minimal, MyersLcs, Heckel };
+const QVector<DiffAlgorithm> &allAlgorithms(); // in menu order
 
 struct DiffOptions {
     DiffAlgorithm algorithm = DiffAlgorithm::Patience;
@@ -46,11 +48,21 @@ struct DiffOptions {
     bool ignoreAllSpace = false;      // git -w
     bool ignoreBlankLines = false;
     bool ignoreCrAtEol = false;
+    bool ignoreTrim = false;          // leading and trailing whitespace (yadiff)
+    bool ignoreCase = false;          // (yadiff)
     bool detectMoves = true;
 
     QStringList gitArgs() const;
     QStringList whitespaceArgs() const; // the subset that also affects which files are listed
-    bool ignoresWhitespace() const { return ignoreSpaceChange || ignoreAllSpace || ignoreBlankLines || ignoreCrAtEol; }
+    bool ignoresWhitespace() const
+    {
+        return ignoreSpaceChange || ignoreAllSpace || ignoreBlankLines || ignoreCrAtEol || ignoreTrim;
+    }
+    bool ignoresSomething() const { return ignoresWhitespace() || ignoreCase; }
+    // True when yadiff compares the lines itself instead of using git's diff output.
+    bool inProcess() const;
+    // A line as it is compared under these options.
+    QString normalized(QString line) const;
 };
 
 QString algorithmName(DiffAlgorithm a);         // git's name: "histogram", ...
@@ -178,6 +190,7 @@ private:
     std::optional<QByteArray> fileContentPhysical(const FileChange &change, const Comparison &cmp, bool newSide,
                                                   qint64 maxBytes) const;
     FileDiff loadPathDiff(const FileChange &change, const Comparison &cmp, QString *error) const;
+    FileDiff loadDiffInProcess(const FileChange &change, const Comparison &cmp, QString *error) const;
     QString m_root;
     bool m_bare = false;
     bool m_noRepo = false;

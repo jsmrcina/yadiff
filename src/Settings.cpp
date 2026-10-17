@@ -207,13 +207,15 @@ DiffOptions diffOptions()
     QSettings s;
     DiffOptions o;
     const QString algo = s.value(QStringLiteral("diff/algorithm"), QStringLiteral("patience")).toString();
-    for (DiffAlgorithm a : {DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers, DiffAlgorithm::Minimal})
+    for (DiffAlgorithm a : allAlgorithms())
         if (algorithmName(a) == algo)
             o.algorithm = a;
     o.ignoreSpaceChange = s.value(QStringLiteral("diff/ignoreSpaceChange"), false).toBool();
     o.ignoreAllSpace = s.value(QStringLiteral("diff/ignoreAllSpace"), false).toBool();
     o.ignoreBlankLines = s.value(QStringLiteral("diff/ignoreBlankLines"), false).toBool();
     o.ignoreCrAtEol = s.value(QStringLiteral("diff/ignoreCrAtEol"), false).toBool();
+    o.ignoreTrim = s.value(QStringLiteral("diff/ignoreTrim"), false).toBool();
+    o.ignoreCase = s.value(QStringLiteral("diff/ignoreCase"), false).toBool();
     o.detectMoves = s.value(QStringLiteral("diff/detectMoves"), true).toBool();
     return o;
 }
@@ -226,6 +228,8 @@ void setDiffOptions(const DiffOptions &o)
     s.setValue(QStringLiteral("diff/ignoreAllSpace"), o.ignoreAllSpace);
     s.setValue(QStringLiteral("diff/ignoreBlankLines"), o.ignoreBlankLines);
     s.setValue(QStringLiteral("diff/ignoreCrAtEol"), o.ignoreCrAtEol);
+    s.setValue(QStringLiteral("diff/ignoreTrim"), o.ignoreTrim);
+    s.setValue(QStringLiteral("diff/ignoreCase"), o.ignoreCase);
     s.setValue(QStringLiteral("diff/detectMoves"), o.detectMoves);
 }
 

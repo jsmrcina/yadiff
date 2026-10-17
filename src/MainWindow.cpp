@@ -60,9 +60,6 @@
 
 namespace {
 
-const DiffAlgorithm kAlgorithms[] = {DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers,
-                                     DiffAlgorithm::Minimal};
-
 // Small glyph for the view toggle: one column (inline) or two (side by side).
 QIcon viewIcon(bool sideBySide, const QColor &color)
 {
@@ -721,13 +718,17 @@ void MainWindow::createActions()
     m_ignoreAllSpaceAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_W));
     m_ignoreSpaceChangeAct = addToggle(optionsMenu, tr("Ignore &extra whitespace"),
                                        tr("Treat runs of whitespace as one space (git diff -b)"), &DiffOptions::ignoreSpaceChange);
+    m_ignoreTrimAct = addToggle(optionsMenu, tr("Ignore &leading/trailing whitespace"),
+                                tr("Ignore whitespace at the start and end of lines"), &DiffOptions::ignoreTrim);
     m_ignoreBlankLinesAct = addToggle(optionsMenu, tr("Ignore blan&k lines"),
                                       tr("Ignore lines that are added or removed and are blank"), &DiffOptions::ignoreBlankLines);
     m_ignoreCrAct = addToggle(optionsMenu, tr("Ignore C&R at end of line"), tr("Treat CRLF and LF line endings as equal"),
                               &DiffOptions::ignoreCrAtEol);
+    m_ignoreCaseAct = addToggle(optionsMenu, tr("Ignore c&ase"), tr("Treat upper and lower case letters as equal"),
+                                &DiffOptions::ignoreCase);
     QMenu *algoMenu = optionsMenu->addMenu(tr("Diff &algorithm"));
     m_algoGroup = new QActionGroup(this);
-    for (DiffAlgorithm a : kAlgorithms) {
+    for (DiffAlgorithm a : allAlgorithms()) {
         QAction *act = algoMenu->addAction(algorithmLabel(a));
         act->setCheckable(true);
         act->setData(int(a));
@@ -868,7 +869,7 @@ void MainWindow::createToolBar()
     tb->addSeparator();
     tb->addWidget(new QLabel(tr(" Algorithm: ")));
     m_algoCombo = new QComboBox;
-    for (DiffAlgorithm a : kAlgorithms) {
+    for (DiffAlgorithm a : allAlgorithms()) {
         m_algoCombo->addItem(algorithmLabel(a), int(a));
         m_algoCombo->setItemData(m_algoCombo->count() - 1, algorithmDescription(a), Qt::ToolTipRole);
     }
@@ -1013,6 +1014,8 @@ void MainWindow::syncOptionControls()
         m_whitespaceToggle->setChecked(o.ignoreAllSpace);
     m_ignoreBlankLinesAct->setChecked(o.ignoreBlankLines);
     m_ignoreCrAct->setChecked(o.ignoreCrAtEol);
+    m_ignoreTrimAct->setChecked(o.ignoreTrim);
+    m_ignoreCaseAct->setChecked(o.ignoreCase);
     m_detectMovesAct->setChecked(o.detectMoves);
     m_allChangesAct->setChecked(m_cmp.allChanges);
     if (m_scopeCombo)
@@ -1272,7 +1275,9 @@ void MainWindow::showFile(int index)
         title = tr("%1  (%2 from %3)").arg(fc.path, statusDescription(fc.status).toLower(), fc.oldPath);
     else
         title += QStringLiteral("  (%1)").arg(statusDescription(fc.status).toLower());
-    if (fc.added >= 0)
+    // yadiff's own comparisons can differ from git's counts: those come from the diff.
+    const bool countsFromDiff = m_cmp.options.inProcess() && fc.status != u'?';
+    if (fc.added >= 0 && !countsFromDiff)
         title += QStringLiteral("  +%1 −%2").arg(fc.added).arg(fc.removed);
 
     m_shownIndex = index;
@@ -1314,7 +1319,7 @@ void MainWindow::showFile(int index)
             }
             return r;
         },
-        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large](FileResult r) {
+        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large, countsFromDiff](FileResult r) {
             if (gen != m_fileGen)
                 return; // the user moved on to another file
             m_fileBusy = false;
@@ -1334,6 +1339,14 @@ void MainWindow::showFile(int index)
             FileView view;
             view.diff = r.diff;
             view.title = title;
+            if (countsFromDiff && !r.diff.binary) {
+                int added = 0, removed = 0;
+                for (const DiffLine &l : r.diff.lines) {
+                    added += l.kind == LineKind::Added;
+                    removed += l.kind == LineKind::Removed;
+                }
+                view.title += QStringLiteral("  +%1 −%2").arg(added).arg(removed);
+            }
             view.leftLabel = left;
             view.rightLabel = right;
             view.paths = {isNew ? QString() : fc.oldPath, isGone ? QString() : fc.path};

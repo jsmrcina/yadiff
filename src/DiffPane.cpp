@@ -804,7 +804,10 @@ void DiffPane::rebuild()
                     m_leftRowOfLine[k] = int(left.size());
                     m_rightRowOfLine[k] = int(right.size());
                     const Row r = makeRow(k);
-                    left.push_back(r);
+                    Row l = r;
+                    if (!m_file.diff.lines[k].oldText.isNull())
+                        l.text = m_file.diff.lines[k].oldText; // differs only in ignored ways
+                    left.push_back(l);
                     right.push_back(r);
                     addThreads(k);
                 }

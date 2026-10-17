@@ -18,6 +18,7 @@ struct DiffLine {
     int oldNo = 0;          // 1-based line number on the old side, 0 if none
     int newNo = 0;          // 1-based line number on the new side, 0 if none
     QString text;
+    QString oldText;        // Equal lines only: the old side's text, when it differs in ignored ways
     int moveId = -1;        // index into FileDiff::moves when part of a moved block
     int partner = -1;       // index of the matching line on the other side of a move
     int pair = -1;          // index of the similar line on the other side of an edit

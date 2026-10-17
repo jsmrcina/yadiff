@@ -1,10 +1,12 @@
 #include "GitRepo.h"
+#include "LineDiff.h"
 
 #include "FileFilter.h"
 
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QTemporaryDir>
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -201,6 +203,8 @@ QString algorithmName(DiffAlgorithm a)
     case DiffAlgorithm::Patience: return QStringLiteral("patience");
     case DiffAlgorithm::Myers: return QStringLiteral("myers");
     case DiffAlgorithm::Minimal: return QStringLiteral("minimal");
+    case DiffAlgorithm::MyersLcs: return QStringLiteral("myers-lcs");
+    case DiffAlgorithm::Heckel: return QStringLiteral("heckel");
     }
     return QStringLiteral("histogram");
 }
@@ -212,6 +216,8 @@ QString algorithmLabel(DiffAlgorithm a)
     case DiffAlgorithm::Patience: return QStringLiteral("Patience");
     case DiffAlgorithm::Myers: return QStringLiteral("Myers");
     case DiffAlgorithm::Minimal: return QStringLiteral("Minimal");
+    case DiffAlgorithm::MyersLcs: return QStringLiteral("Myers LCS");
+    case DiffAlgorithm::Heckel: return QStringLiteral("Heckel isolation");
     }
     return {};
 }
@@ -227,13 +233,64 @@ QString algorithmDescription(DiffAlgorithm a)
         return QStringLiteral("Git's classic greedy algorithm.");
     case DiffAlgorithm::Minimal:
         return QStringLiteral("Myers, spending extra time to find the smallest possible diff.");
+    case DiffAlgorithm::MyersLcs:
+        return QStringLiteral("yadiff's own exact Myers: a longest common subsequence of lines, so the fewest changes.");
+    case DiffAlgorithm::Heckel:
+        return QStringLiteral("Heckel's algorithm: unique lines anchor the match and isolate the changes between them.");
     }
     return {};
 }
 
+const QVector<DiffAlgorithm> &allAlgorithms()
+{
+    static const QVector<DiffAlgorithm> all{DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers,
+                                            DiffAlgorithm::Minimal,  DiffAlgorithm::MyersLcs,  DiffAlgorithm::Heckel};
+    return all;
+}
+
+bool DiffOptions::inProcess() const
+{
+    return algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel || ignoreCase || ignoreTrim;
+}
+
+QString DiffOptions::normalized(QString l) const
+{
+    if (ignoreCrAtEol && l.endsWith(u'\r'))
+        l.chop(1);
+    if (ignoreAllSpace) {
+        l.removeIf([](QChar c) { return c.isSpace(); });
+    } else {
+        if (ignoreTrim)
+            l = l.trimmed();
+        if (ignoreSpaceChange) {
+            // Like git -b: runs of whitespace are equal, and trailing whitespace is ignored.
+            QString out;
+            out.reserve(l.size());
+            bool space = false;
+            for (QChar c : std::as_const(l)) {
+                if (c.isSpace()) {
+                    space = true;
+                    continue;
+                }
+                if (space)
+                    out += u' ';
+                space = false;
+                out += c;
+            }
+            l = out;
+        }
+    }
+    if (ignoreCase)
+        l = l.toCaseFolded();
+    return l;
+}
+
 QStringList DiffOptions::gitArgs() const
 {
-    return QStringList{QStringLiteral("--diff-algorithm=") + algorithmName(algorithm)} + whitespaceArgs();
+    // yadiff's own algorithms diff in-process; git lists the files with plain Myers.
+    const DiffAlgorithm gitAlgorithm =
+        algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel ? DiffAlgorithm::Myers : algorithm;
+    return QStringList{QStringLiteral("--diff-algorithm=") + algorithmName(gitAlgorithm)} + whitespaceArgs();
 }
 
 QStringList DiffOptions::whitespaceArgs() const
@@ -598,6 +655,8 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
     }
     if (cmp.mode == Comparison::Mode::Paths)
         return loadPathDiff(fc, cmp, error);
+    if (fc.status != u'?' && cmp.options.inProcess())
+        return loadDiffInProcess(fc, cmp, error);
     if (fc.status == u'?') {
         QFile f(m_root + u'/' + fc.path);
         if (!f.open(QIODevice::ReadOnly)) {
@@ -646,7 +705,7 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
         d.message = QStringLiteral("Empty file deleted");
     else if (d.lines.isEmpty() && (fc.status == u'A'))
         d.message = QStringLiteral("Empty file added");
-    else if (d.lines.isEmpty() && cmp.options.ignoresWhitespace())
+    else if (d.lines.isEmpty() && cmp.options.ignoresSomething())
         d.message = QStringLiteral("No differences with the current whitespace options");
     else if (d.lines.isEmpty())
         d.message = QStringLiteral("No content differences (mode or metadata change only)");
@@ -734,6 +793,8 @@ FileDiff GitRepo::loadPathDiff(const FileChange &fc, const Comparison &cmp, QStr
         d.message = QStringLiteral("The files are identical");
         return d;
     }
+    if (cmp.options.inProcess())
+        return loadDiffInProcess(fc, cmp, error);
     QString left = cmp.pathsAreFiles ? cmp.leftPath : cmp.leftPath + u'/' + fc.oldPath;
     QString right = cmp.pathsAreFiles ? cmp.rightPath : cmp.rightPath + u'/' + fc.path;
     if (fc.status == u'A')
@@ -749,10 +810,91 @@ FileDiff GitRepo::loadPathDiff(const FileChange &fc, const Comparison &cmp, QStr
     FileDiff d = DiffModel::parseUnified(QString::fromUtf8(out), cmp.options.detectMoves);
     if (d.binary)
         d.message = QStringLiteral("Binary file differs");
-    else if (d.lines.isEmpty() && cmp.options.ignoresWhitespace())
+    else if (d.lines.isEmpty() && cmp.options.ignoresSomething())
         d.message = QStringLiteral("No differences with the current whitespace options");
     else if (d.lines.isEmpty())
         d.message = QStringLiteral("No content differences");
+    return d;
+}
+
+FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp, QString *error) const
+{
+    // Both sides' content, compared line by line after normalising each line.
+    const std::optional<QByteArray> oldData = fileContent(fc, cmp, false);
+    const std::optional<QByteArray> newData = fileContent(fc, cmp, true);
+    FileDiff d;
+    if (!oldData && !newData) {
+        if (error)
+            *error = QStringLiteral("Could not read either side of %1").arg(fc.path);
+        return d;
+    }
+    if (oldData.value_or(QByteArray()).left(8000).contains('\0') || newData.value_or(QByteArray()).left(8000).contains('\0')) {
+        d.binary = true;
+        d.message = QStringLiteral("Binary file differs");
+        return d;
+    }
+    const QStringList oldLines = LineDiff::splitLines(QString::fromUtf8(oldData.value_or(QByteArray())));
+    const QStringList newLines = LineDiff::splitLines(QString::fromUtf8(newData.value_or(QByteArray())));
+    const DiffOptions &o = cmp.options;
+    QStringList oldNorm, newNorm;
+    oldNorm.reserve(oldLines.size());
+    newNorm.reserve(newLines.size());
+    for (const QString &l : oldLines)
+        oldNorm << o.normalized(l);
+    for (const QString &l : newLines)
+        newNorm << o.normalized(l);
+
+    LineDiff::Alignment alignment;
+    if (o.algorithm == DiffAlgorithm::MyersLcs || o.algorithm == DiffAlgorithm::Heckel) {
+        const auto [a, b] = LineDiff::lineIds(oldNorm, newNorm);
+        alignment = o.algorithm == DiffAlgorithm::Heckel ? LineDiff::heckel(a, b) : LineDiff::myers(a, b);
+    } else {
+        // One of git's algorithms, run on the normalised lines.
+        QTemporaryDir tmp;
+        auto save = [&tmp](const QString &name, const QStringList &lines) {
+            QFile f(tmp.filePath(name));
+            if (!f.open(QIODevice::WriteOnly))
+                return false;
+            for (const QString &l : lines) {
+                f.write(l.toUtf8());
+                f.write("\n");
+            }
+            return true;
+        };
+        if (!tmp.isValid() || !save(QStringLiteral("old"), oldNorm) || !save(QStringLiteral("new"), newNorm)) {
+            if (error)
+                *error = QStringLiteral("Could not write temporary files");
+            return d;
+        }
+        QByteArray out;
+        if (!runDiff({QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--no-color"),
+                      QStringLiteral("--no-ext-diff"), QStringLiteral("-U0"),
+                      QStringLiteral("--diff-algorithm=") + algorithmName(o.algorithm), QStringLiteral("--"),
+                      tmp.filePath(QStringLiteral("old")), tmp.filePath(QStringLiteral("new"))},
+                     &out, error))
+            return d;
+        alignment = LineDiff::fromUnifiedZero(QString::fromUtf8(out), int(oldLines.size()), int(newLines.size()));
+    }
+
+    d = LineDiff::build(oldLines, newLines, alignment, o.detectMoves);
+    bool onlyBlank = o.ignoreBlankLines;
+    for (int i = 0; onlyBlank && i < d.lines.size(); ++i)
+        if (d.lines[i].kind != LineKind::Equal
+            && !(d.lines[i].kind == LineKind::Removed ? oldNorm[d.lines[i].oldNo - 1] : newNorm[d.lines[i].newNo - 1])
+                    .trimmed()
+                    .isEmpty())
+            onlyBlank = false;
+    if (d.chunks.isEmpty() || onlyBlank) {
+        // Nothing differs under the options: like git, show nothing.
+        d = FileDiff();
+        if (fc.status == u'D' && oldLines.isEmpty())
+            d.message = QStringLiteral("Empty file deleted");
+        else if (fc.status == u'A' && newLines.isEmpty())
+            d.message = QStringLiteral("Empty file added");
+        else
+            d.message = o.ignoresSomething() ? QStringLiteral("No differences with the current options")
+                                             : QStringLiteral("No content differences (mode or metadata change only)");
+    }
     return d;
 }
 

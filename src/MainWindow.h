@@ -235,5 +235,7 @@ private:
     QAction *m_ignoreAllSpaceAct = nullptr;
     QAction *m_ignoreBlankLinesAct = nullptr;
     QAction *m_ignoreCrAct = nullptr;
+    QAction *m_ignoreTrimAct = nullptr;
+    QAction *m_ignoreCaseAct = nullptr;
     QAction *m_detectMovesAct = nullptr;
 };

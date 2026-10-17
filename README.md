@@ -21,7 +21,7 @@ yadiff ... --export FILE    write an HTML report of the comparison instead of op
 
 Options: -C <dir>             run as if started in <dir>
          -a, --all            one list of all changes against HEAD, not staged/unstaged
-         --algorithm <name>   patience (default), histogram, myers or minimal
+         --algorithm <name>   patience (default), histogram, myers, minimal, myers-lcs or heckel
          --wait               stay attached to the terminal until the window closes
          --inline / --side-by-side   initial view mode
 ```
@@ -49,9 +49,20 @@ path looks like a revision.
   - Ctrl+Shift+M marks a file and moves to the next one.
 - **Diff pane** on the right, inline or side by side. One toolbar button toggles between them, and
   Ctrl+T does the same. Both views show editor-style line numbers, and inline shows old and new.
-- **Diff algorithm and options.** The algorithm can be Patience (the default), Histogram, Myers or
-  Minimal, set from the toolbar drop-down or the Diff menu. The Diff menu also ignores whitespace changes, all
-  whitespace, blank lines or CR at end of line. It can also turn move detection off.
+- **Diff algorithm and options.** Set the algorithm from the toolbar drop-down or Options → Diff
+  algorithm. Patience (the default), Histogram, Myers and Minimal are git's. Myers LCS and Heckel
+  isolation are yadiff's own:
+  - Myers LCS is exact Myers (a longest common subsequence), so it gives the fewest changes. It is
+    slower on files with very many changes.
+  - Heckel isolation anchors on lines that occur once on each side and grows matches from there.
+    It is fast and keeps blocks together.
+
+  The Options menu also ignores whitespace changes, all whitespace, leading and trailing
+  whitespace, blank lines, CR at end of line, or case. Ignoring case or leading and trailing
+  whitespace makes yadiff compare the lines itself, with the chosen algorithm. The left side still
+  shows its own text. These two options don't change which files are listed. A file whose only
+  differences are ignored says so when you open it. The Options menu can also turn move
+  detection off.
 - **Syntax highlighting** comes from KDE's KSyntaxHighlighting, which covers about 460 languages.
   The language is detected from the file name. The toolbar's Syntax drop-down overrides it for
   files with the same extension, and "None" turns highlighting off. Builds without the library
@@ -125,7 +136,7 @@ path looks like a revision.
   `difftool.yadiff.cmd` in `~/.gitconfig` and makes yadiff the default tool. Then
   `git difftool` opens yadiff file by file, and `git difftool -d` compares whole directories.
 - **Ignore whitespace** is a toolbar button next to the view toggle, also on Ctrl+Shift+W. It is
-  the same switch as Diff → Ignore all whitespace (`git diff -w`). Lines that differ only in
+  the same switch as Options → Ignore all whitespace (`git diff -w`). Lines that differ only in
   whitespace stop counting as changes, and files with only whitespace changes leave the list.
 - **Word-level highlights** within edited lines. Similar removed and added lines are paired, so
   side-by-side shows an edited line on one row.
@@ -196,7 +207,8 @@ computed by yadiff.
 - **Options:**
   - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
     no files. Identical files are listed only while that option is on.
-  - Ignore all whitespace, ignore extra whitespace, ignore blank lines, and ignore CR.
+  - Ignore all whitespace, extra whitespace, leading/trailing whitespace, blank lines, CR at end
+    of line, and case.
   - Diff algorithm and move detection.
   - All changes in one list, and comparing unstaged changes against HEAD.
   - Automatic reload, and remembering scroll positions per file.
@@ -314,6 +326,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | Path | What |
 |---|---|
 | `src/DiffModel.*` | Unified-diff parser, chunks, move detection, line pairing, word highlights |
+| `src/LineDiff.*` | yadiff's own line diff: Myers LCS, Heckel, and diffs of normalised lines |
 | `src/GitRepo.*` | Runs `git`, lists changed files, loads one file's diff, fingerprints file versions |
 | `src/GitHubPr.*` | Parses PR links, resolves them with `gh`, fetches them |
 | `src/DiffFormat.*` | Unified-diff text and coloured HTML for copying |

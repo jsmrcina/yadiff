@@ -116,7 +116,7 @@ int main(int argc, char *argv[])
     const QCommandLineOption adoLogoutOpt(QStringLiteral("ado-logout"),
                                           QStringLiteral("Forget the saved Azure DevOps token for an organisation and exit."));
     const QCommandLineOption algoOpt(QStringLiteral("algorithm"),
-                                     QStringLiteral("Diff algorithm: patience (default), histogram, myers or minimal."),
+                                     QStringLiteral("Diff algorithm: patience (default), histogram, myers, minimal, myers-lcs or heckel."),
                                      QStringLiteral("name"));
     const QCommandLineOption inlineOpt(QStringLiteral("inline"), QStringLiteral("Start in inline view."));
     const QCommandLineOption sideOpt(QStringLiteral("side-by-side"), QStringLiteral("Start in side-by-side view."));
@@ -198,7 +198,7 @@ int main(int argc, char *argv[])
     cmp.options = Settings::diffOptions();
     if (parser.isSet(algoOpt)) {
         bool found = false;
-        for (DiffAlgorithm a : {DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers, DiffAlgorithm::Minimal})
+        for (DiffAlgorithm a : allAlgorithms())
             if (algorithmName(a) == parser.value(algoOpt).toLower()) {
                 cmp.options.algorithm = a;
                 found = true;

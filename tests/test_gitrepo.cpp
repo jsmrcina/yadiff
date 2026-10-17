@@ -469,6 +469,65 @@ private slots:
         QVERIFY(repo->resolveCommit(repo->emptyTree(), &error));
         QVERIFY(!repo->resolveCommit(repo->emptyTree().left(8) + QStringLiteral("zz"), &error));
     }
+    void inProcessDiffOptions()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "Alpha\n  beta\ngamma\ndelta\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/f.txt"), "alpha\nbeta  \ngamma\nDELTA\nepsilon\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        const FileChange fc = repo->listChanges(cmp, &error).value(0);
+        QCOMPARE(fc.path, QStringLiteral("f.txt"));
+        auto changed = [](const FileDiff &fd) {
+            int n = 0;
+            for (const DiffLine &l : fd.lines)
+                n += l.kind != LineKind::Equal;
+            return n;
+        };
+
+        for (DiffAlgorithm algo : allAlgorithms()) {
+            cmp.options = DiffOptions();
+            cmp.options.algorithm = algo;
+            FileDiff fd = repo->loadDiff(fc, cmp, &error);
+            QVERIFY2(error.isEmpty(), qPrintable(error));
+            QCOMPARE(changed(fd), 7); // 3 removed + 4 added (gamma is unchanged)
+
+            cmp.options.ignoreCase = true;
+            fd = repo->loadDiff(fc, cmp, &error);
+            QCOMPARE(changed(fd), 3); // beta's whitespace (2 lines) + epsilon
+            QCOMPARE(fd.lines[0].kind, LineKind::Equal);
+            QCOMPARE(fd.lines[0].text, QStringLiteral("alpha"));
+            QCOMPARE(fd.lines[0].oldText, QStringLiteral("Alpha"));
+
+            cmp.options.ignoreTrim = true;
+            fd = repo->loadDiff(fc, cmp, &error);
+            QCOMPARE(changed(fd), 1);
+            QCOMPARE(fd.lines.last().text, QStringLiteral("epsilon"));
+            QCOMPARE(fd.lines.last().newNo, 5);
+        }
+
+        // Nothing left once everything that differs is ignored.
+        write(d + QStringLiteral("/f.txt"), "ALPHA\n  beta\ngamma\ndelta\n");
+        cmp.options = DiffOptions();
+        cmp.options.ignoreCase = true;
+        const FileDiff none = repo->loadDiff(fc, cmp, &error);
+        QVERIFY(none.lines.isEmpty());
+        QVERIFY(none.message.contains(QStringLiteral("current options")));
+
+        // Swapped sides work too.
+        cmp.reversed = true;
+        cmp.options.algorithm = DiffAlgorithm::Heckel;
+        cmp.options.ignoreCase = false;
+        const FileDiff rev = repo->loadDiff(repo->listChanges(cmp, &error).value(0), cmp, &error);
+        QCOMPARE(rev.lines[0].kind, LineKind::Removed);
+        QCOMPARE(rev.lines[0].text, QStringLiteral("ALPHA"));
+    }
 };
 
 QTEST_APPLESS_MAIN(TestGitRepo)
