@@ -8,6 +8,7 @@
 #include "NewComparisonDialog.h"
 #include "SearchBar.h"
 #include "Settings.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -1255,6 +1256,65 @@ private slots:
             if (b->text() == QStringLiteral("Compare"))
                 b->click();
         QCOMPARE(pr.arguments(), (QStringList{QStringLiteral("-ado"), QStringLiteral("https://dev.azure.com/o/p/_git/r/pullrequest/5")}));
+    }
+    void themesAndBlame()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "one\ntwo\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("first")});
+        write(d + QStringLiteral("/f.txt"), "one\nTWO\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        Settings::setShowBlame(false);
+        MainWindow w(std::move(*repo), cmp);
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *pane = w.findChild<DiffPane *>();
+        QVERIFY(pane->hasDiff());
+
+        // Themes: the palette follows, and light / dark switches to the counterpart.
+        action(w, QStringLiteral("Vibrant Ink"))->trigger();
+        QCOMPARE(Theme::current(), QStringLiteral("vibrant-ink"));
+        QVERIFY(Theme::isDark());
+        QCOMPARE(QApplication::palette().color(QPalette::Base), Theme::currentDef().base);
+        action(w, QStringLiteral("One Dark"))->trigger();
+        action(w, QStringLiteral("Switch light / dark"))->trigger();
+        QCOMPARE(Theme::current(), QStringLiteral("one-light"));
+        QVERIFY(!Theme::isDark());
+        QVERIFY(action(w, QStringLiteral("One Light"))->isChecked());
+        action(w, QStringLiteral("System"))->trigger();
+
+        // Blame: off by default, then one entry per line of each side.
+        CodeView *left = nullptr, *right = nullptr;
+        for (CodeView *v : pane->findChildren<CodeView *>()) {
+            if (v->numbers() == CodeView::Numbers::Old)
+                left = v;
+            else if (v->numbers() == CodeView::Numbers::New)
+                right = v;
+        }
+        QVERIFY(left && right);
+        const int plainGutter = right->viewport()->geometry().left();
+        QVERIFY(!right->blameAt(0));
+        action(w, QStringLiteral("Git blame"))->setChecked(true);
+        QVERIFY(right->viewport()->geometry().left() > plainGutter);
+        QVERIFY(right->blameAt(0));
+        QCOMPARE(right->blameAt(0)->summary, QStringLiteral("first"));
+        int changed = -1;
+        for (int row = 0; row < right->rows().size(); ++row)
+            if (right->rows()[row].newNo == 2)
+                changed = row;
+        QVERIFY(right->blameAt(changed) && right->blameAt(changed)->hash.isEmpty()); // not committed yet
+        for (int row = 0; row < left->rows().size(); ++row)
+            if (left->rows()[row].oldNo == 2)
+                QCOMPARE(left->blameAt(row)->summary, QStringLiteral("first"));
+        action(w, QStringLiteral("Git blame"))->setChecked(false);
+        QCOMPARE(right->viewport()->geometry().left(), plainGutter);
     }
 };
 

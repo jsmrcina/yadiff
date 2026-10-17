@@ -4,6 +4,17 @@
 
 namespace {
 
+QString &htmlFontFamily()
+{
+    static QString f = QStringLiteral("'Cascadia Mono','Source Code Pro',Consolas,'DejaVu Sans Mono',monospace");
+    return f;
+}
+double &htmlFontSize()
+{
+    static double size = 10;
+    return size;
+}
+
 enum class Style { Meta, Hunk, Context, Removed, Added };
 
 struct OutLine {
@@ -32,9 +43,8 @@ QString lineStyle(Style s)
 DiffFormat::Output render(const QVector<OutLine> &lines)
 {
     DiffFormat::Output out;
-    out.html = QStringLiteral(
-        "<div style=\"font-family:'Cascadia Mono','Source Code Pro',Consolas,'DejaVu Sans Mono',monospace;"
-        "font-size:10pt;background:#ffffff;\">");
+    out.html = QStringLiteral("<div style=\"font-family:%1;font-size:%2pt;background:#ffffff;\">")
+                   .arg(htmlFontFamily(), QString::number(htmlFontSize()));
     for (const OutLine &l : lines) {
         out.text += l.text + u'\n';
         QString escaped = l.text.toHtmlEscaped();
@@ -99,6 +109,12 @@ void appendHunk(QVector<OutLine> &out, const FileDiff &d, int first, int last)
 } // namespace
 
 namespace DiffFormat {
+
+void setHtmlFont(const QString &family, double pointSize)
+{
+    htmlFontFamily() = QStringLiteral("'%1',monospace").arg(family);
+    htmlFontSize() = pointSize > 0 ? pointSize : 10;
+}
 
 Output unified(const FileDiff &d, const Paths &paths, const QVector<int> &chunks, int context)
 {

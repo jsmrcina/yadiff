@@ -144,10 +144,19 @@ path looks like a revision.
   refs. If the current repository has a remote for that GitHub repo, the PR is fetched into it
   without creating branches. Otherwise yadiff keeps a blob-less partial clone in
   `~/.cache/yadiff/github/OWNER/REPO.git`, so file contents are downloaded only when viewed.
-- **Preferences → Colors and Font** sets the added, removed and moved colours, the font and the
-  tab width. Default colours follow the light or dark theme until you override them.
-  **Compare unstaged changes against HEAD** is on by default. Turn it off to compare against the
-  index, like `git diff`.
+- **Colour themes:** View → Color theme has System (the desktop's own style), Dark+ and Light+
+  (VS Code), Monokai, Solarized Dark and Light, One Dark and Light, GitHub Light and Dark, Dracula
+  and Vibrant Ink. A theme sets the window palette, the syntax colours and the default diff
+  colours. File → Switch light / dark (Ctrl+Shift+D) swaps a theme for its counterpart.
+- **Fonts:** View → Fonts sets the diff font, the file list font, and the font used for rich-text
+  copies. View → Diff colors and tab width overrides the added, removed and moved colours; until
+  you do, they follow the theme.
+- **Git blame:** View → Git blame (Ctrl+Shift+B) adds a column with the commit, date and author
+  of each line, on both sides. Newer commits are tinted more strongly, and lines that aren't
+  committed yet say so. Hover for the commit summary; click to open that commit against its
+  parent in a new window. Blame runs in the background with the file.
+- **Options → Compare unstaged changes against HEAD** is on by default. Turn it off to compare
+  against the index, like `git diff`.
 - F5 reloads. Settings live in `~/.config/yadiff/yadiff.conf` on Linux and the registry on Windows.
 
 Diffs come from `git diff` with full-file context. Moves, line pairing and word highlights are
@@ -166,6 +175,7 @@ computed by yadiff.
     the PR again and picks up new pushes.
   - Swap right and left (Ctrl+Shift+X). For working-tree comparisons, this puts the working tree
     on the left.
+  - Switch light / dark (Ctrl+Shift+D).
 - **Edit:**
   - Copy, which keeps syntax colours and diff backgrounds. Copy without markup, Copy as Markdown,
     and Copy for code review, which gives the path and line range, then the code.
@@ -182,7 +192,7 @@ computed by yadiff.
     width, and zoom (Ctrl++, Ctrl+-, and Ctrl+0 for 100%).
   - Collapse unchanged regions, expand or collapse review comments, and trim the common prefix
     from folder names, which are fully qualified otherwise.
-  - Colors and font.
+  - Git blame, Color theme, Fonts, and Diff colors and tab width.
 - **Options:**
   - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
     no files. Identical files are listed only while that option is on.
@@ -310,6 +320,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/Search.*`, `src/SearchBar.*` | Find: query matching, and the find bar |
 | `src/TextFile.*` | Reading and writing on-disk sides, applying a change to a file |
 | `src/Syntax.*` | KSyntaxHighlighting wrapper (no-op without it) |
+| `src/Theme.*` | Colour themes: window palette, syntax theme, default diff colours |
 | `src/OverviewBar.*` | The change overview strip |
 | `src/HistoryDialog.*` | Commit picker |
 | `src/Difftool.*` | git difftool registration |
@@ -327,4 +338,5 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/MainWindow.*` | Menus, toolbar, file operations, background loading |
 | `src/NewComparisonDialog.*` | File > New comparison |
 | `src/PreferencesDialog.*`, `src/Settings.*` | Colours, font, persisted options |
+| `resources/syntax-themes/` | Syntax themes KSyntaxHighlighting doesn't ship (Light+, Vibrant Ink) |
 | `resources/` | Icon (SVG source, PNG sizes, Windows `.ico`/`.rc`) and desktop entry |

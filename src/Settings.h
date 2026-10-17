@@ -45,6 +45,12 @@ void setWordWrap(bool on);
 bool autoReload();
 void setAutoReload(bool on);
 
+// Fonts besides the diff font (font()): the file list, and text copied as rich text.
+QFont fileListFont();
+void setFileListFont(const QFont &f);
+QFont clipboardFont();
+void setClipboardFont(const QFont &f);
+
 // File list and marking.
 QColor markColor();
 void setMarkColor(const QColor &c);
@@ -62,6 +68,8 @@ void setRememberScroll(bool on);
 // Viewer.
 int paneVisibility(); // 0 both, 1 left only, 2 right only
 void setPaneVisibility(int v);
+bool showBlame();
+void setShowBlame(bool on);
 bool showLineNumbers();
 void setShowLineNumbers(bool on);
 bool syntaxEnabled();

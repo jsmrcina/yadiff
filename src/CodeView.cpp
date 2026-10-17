@@ -1,5 +1,6 @@
 #include "CodeView.h"
 
+#include "Settings.h"
 #include "Syntax.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -8,6 +9,7 @@
 #include <QTextBrowser>
 #include <QWheelEvent>
 #include <QContextMenuEvent>
+#include <QDateTime>
 #include <QHelpEvent>
 #include <QPainter>
 #include <QScrollBar>
@@ -50,6 +52,11 @@ protected:
         const int row = m_view->rowAt(QPoint(0, int(e->position().y())));
         if (row < 0 || row >= m_view->rows().size())
             return;
+        if (e->position().x() < m_view->blameWidth()) {
+            if (const BlameLine *b = m_view->blameFor(row); b && !b->hash.isEmpty())
+                emit m_view->blameClicked(b->hash);
+            return;
+        }
         if (m_view->rows()[row].fold)
             emit m_view->foldClicked(row);
         else if (m_view->rows()[row].comment)
@@ -112,7 +119,7 @@ int CodeView::gutterWidth() const
     const int digits = std::max(3, int(QString::number(maxLineNumber()).size()));
     const int numberWidth = fontMetrics().horizontalAdvance(u'9') * digits;
     const int columns = !m_lineNumbers ? 0 : m_numbers == Numbers::Both ? 2 : 1;
-    return kPad + columns * (numberWidth + kPad) + kMarkerWidth + 2;
+    return blameWidth() + kPad + columns * (numberWidth + kPad) + kMarkerWidth + 2;
 }
 
 void CodeView::updateGutterWidth()
@@ -248,8 +255,10 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
 
 void CodeView::setSyntax(const QString &language, bool darkTheme)
 {
-    if (language == m_language && darkTheme == m_dark && (m_highlighter || language.isEmpty()))
+    if (language == m_language && darkTheme == m_dark && m_themeGeneration == Syntax::themeGeneration()
+        && (m_highlighter || language.isEmpty()))
         return;
+    m_themeGeneration = Syntax::themeGeneration();
     m_language = language;
     m_dark = darkTheme;
     m_highlighter = Syntax::apply(m_highlighter, document(), language, darkTheme);
@@ -487,13 +496,42 @@ void CodeView::paintGutter(QPaintEvent *event)
         const int row = block.blockNumber();
         if (row < m_rows.size()) {
             const Row &r = m_rows[row];
-            const QRect rowRect(0, top, w, h);
+            const int blameW = blameWidth(); // the blame column keeps the gutter background
+            const QRect rowRect(blameW, top, w - blameW, h);
             const int textH = std::min(h, lineH); // numbers sit on the first visual line
             if (r.filler)
                 p.fillRect(rowRect, m_pal.filler);
             else if (const QColor col = rowColor(r); col.isValid())
                 p.fillRect(rowRect, col);
 
+            if (const int bw = blameW; bw > 0) {
+                const BlameLine *b = blameFor(row);
+                const BlameLine *prev = row > 0 ? blameFor(row - 1) : nullptr;
+                if (b && !r.filler && !r.comment && !r.fold) {
+                    // Newer commits get a stronger tint.
+                    double age = 0.5;
+                    if (m_blameNewest > m_blameOldest && b->time > 0)
+                        age = double(b->time - m_blameOldest) / double(m_blameNewest - m_blameOldest);
+                    QColor tint = m_pal.current;
+                    tint.setAlphaF(float(b->hash.isEmpty() ? 0.35 : 0.06 + 0.24 * age));
+                    p.fillRect(QRect(0, top, bw - 2, h), tint);
+                    const bool sameAsAbove = prev && prev->hash == b->hash && !m_rows[row - 1].filler
+                                             && m_rows[row - 1].kind == r.kind;
+                    if (!sameAsAbove) {
+                        QString label;
+                        if (b->hash.isEmpty())
+                            label = tr("not committed yet");
+                        else
+                            label = QStringLiteral("%1 %2 %3")
+                                        .arg(b->hash.left(7), QDateTime::fromSecsSinceEpoch(b->time).toString(QStringLiteral("yyyy-MM-dd")),
+                                             b->author);
+                        p.setPen(m_pal.gutterText);
+                        p.drawText(QRect(4, top, bw - 8, textH), Qt::AlignLeft | Qt::AlignVCenter,
+                                   fm.elidedText(label, Qt::ElideRight, bw - 8));
+                    }
+                }
+                p.translate(bw, 0);
+            }
             p.setPen(m_pal.gutterText);
             if (r.fold) {
                 p.drawText(QRect(0, top, w, textH), Qt::AlignCenter, QStringLiteral("⋯"));
@@ -529,6 +567,7 @@ void CodeView::paintGutter(QPaintEvent *event)
 
             if (row >= m_currentFirst && row <= m_currentLast)
                 p.fillRect(QRect(0, top, 3, h), m_pal.current);
+            p.resetTransform();
         }
         block = block.next();
         top += h;
@@ -602,6 +641,18 @@ bool CodeView::gutterEvent(QEvent *event)
         return false;
     auto *he = static_cast<QHelpEvent *>(event);
     const int row = rowAt(QPoint(0, he->pos().y()));
+    if (he->pos().x() < blameWidth()) {
+        if (const BlameLine *b = blameFor(row)) {
+            const QString text = b->hash.isEmpty()
+                                     ? tr("Not committed yet")
+                                     : tr("%1\n%2, %3\n%4\n\nClick to open this commit")
+                                           .arg(b->hash.left(12), b->author,
+                                                QDateTime::fromSecsSinceEpoch(b->time).toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                                                b->summary);
+            QToolTip::showText(he->globalPos(), text, m_gutter);
+            return true;
+        }
+    }
     if (row >= 0 && row < m_rows.size() && !m_rows[row].tooltip.isEmpty())
         QToolTip::showText(he->globalPos(), m_rows[row].tooltip, m_gutter);
     else
@@ -795,7 +846,7 @@ void CodeView::mouseReleaseEvent(QMouseEvent *event)
     QTextCursor c = cursorForPosition(event->position().toPoint());
     c.select(QTextCursor::WordUnderCursor);
     QString word = c.selectedText();
-    if (word.isEmpty() || !word.at(0).isLetterOrNumber() && word.at(0) != u'_')
+    if (word.isEmpty() || (!word.at(0).isLetterOrNumber() && word.at(0) != u'_'))
         word.clear();
     emit wordClicked(word);
 }
@@ -844,7 +895,7 @@ QString CodeView::selectedHtml() const
     if (!c.hasSelection())
         return {};
     const int start = c.selectionStart(), end = c.selectionEnd();
-    const QFont f = font();
+    const QFont f = Settings::clipboardFont();
     QString html = QStringLiteral("<div style=\"font-family:'%1',monospace;font-size:%2pt;\">")
                        .arg(f.family().toHtmlEscaped())
                        .arg(f.pointSizeF());
@@ -898,4 +949,41 @@ QString CodeView::selectedHtml() const
         html += QStringLiteral("</div>");
     }
     return html + QStringLiteral("</div>");
+}
+
+// ---- Git blame column ------------------------------------------------------
+
+void CodeView::setBlame(const QVector<BlameLine> &oldSide, const QVector<BlameLine> &newSide)
+{
+    m_blameOld = oldSide;
+    m_blameNew = newSide;
+    m_blameOldest = m_blameNewest = 0;
+    for (const auto *v : {&m_blameOld, &m_blameNew})
+        for (const BlameLine &b : *v)
+            if (b.time > 0) {
+                m_blameOldest = m_blameOldest ? std::min(m_blameOldest, b.time) : b.time;
+                m_blameNewest = std::max(m_blameNewest, b.time);
+            }
+    updateGutterWidth();
+}
+
+int CodeView::blameWidth() const
+{
+    if (m_blameOld.isEmpty() && m_blameNew.isEmpty())
+        return 0;
+    return fontMetrics().horizontalAdvance(u'9') * 30 + 10;
+}
+
+const BlameLine *CodeView::blameFor(int row) const
+{
+    if (row < 0 || row >= m_rows.size())
+        return nullptr;
+    const Row &r = m_rows[row];
+    // Old-side numbering for the left view and removed lines; new-side otherwise.
+    const bool useOld = m_numbers == Numbers::Old || (m_numbers == Numbers::Both && r.kind == LineKind::Removed);
+    const int line = useOld ? r.oldNo : r.newNo;
+    const QVector<BlameLine> &v = useOld ? m_blameOld : m_blameNew;
+    if (line <= 0 || line > v.size())
+        return nullptr;
+    return &v[line - 1];
 }

@@ -21,6 +21,14 @@ struct FileChange {
     bool blankOnly = false; // the only differences are blank lines
 };
 
+// One line of `git blame`.
+struct BlameLine {
+    QString hash;     // empty for lines not committed yet
+    QString author;
+    qint64 time = 0;  // seconds since the epoch
+    QString summary;
+};
+
 // Which side(s) of a comparison a file exists on, for the file filters.
 enum class FileCategory { LeftOnly, RightOnly, Different, Identical };
 FileCategory categoryOf(const FileChange &fc, bool reversed = false);
@@ -114,6 +122,8 @@ public:
 
     // Resolves a user-supplied revision to a commit id.
     std::optional<QString> resolveCommit(const QString &rev, QString *error) const;
+    // The empty tree's id (accepted by resolveCommit as the parent of a root commit).
+    QString emptyTree() const;
     std::optional<QString> mergeBase(const QString &a, const QString &b, QString *error) const;
     bool hasCommit(const QString &oid) const;
 
@@ -148,6 +158,10 @@ public:
     // left revision (or the index), deletes files the left side doesn't have (to the
     // trash when possible), and in directory comparisons copies the left file over.
     bool revert(const QVector<FileChange> &changes, const Comparison &cmp, QString *error) const;
+    // `git blame` for one side of a change, one entry per line (empty when that side has
+    // no history: an untracked file, a directory comparison, ...).
+    QVector<BlameLine> blame(const FileChange &change, const Comparison &cmp, bool newSide) const;
+
     // The last commit that touched `path` (repository-relative), empty when unknown.
     QString lastCommit(const QString &path) const;
 

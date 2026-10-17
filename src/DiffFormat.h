@@ -23,6 +23,9 @@ struct Output {
 // `context` unchanged lines around each; nearby chunks merge into one hunk as git does.
 Output unified(const FileDiff &d, const Paths &paths, const QVector<int> &chunks, int context = 3);
 
+// Font for the HTML (CSS font-family and point size); the default is a monospace stack.
+void setHtmlFont(const QString &family, double pointSize);
+
 // Every chunk of the file.
 Output unifiedFile(const FileDiff &d, const Paths &paths, int context = 3);
 

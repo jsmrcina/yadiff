@@ -73,6 +73,8 @@ private:
     void updateModeUi();
     void showFile(int index);
     void reloadCurrentFile();
+    void loadBlame();
+    void openBlameCommit(const QString &hash);
     void nextChange();
     void prevChange();
     void setSideBySide(bool on);
@@ -114,6 +116,8 @@ private:
     void setEditorCommand();
     void goToLineDialog();
     void rebuildLanguageMenu();
+    void applyTheme();
+    void applyFonts();
     QString scrollKey(const FileChange &fc) const;
     QString describeComparison() const;
     QString reviewRoot() const;
@@ -183,6 +187,8 @@ private:
     QAction *m_rememberScrollAct = nullptr;
     QAction *m_syntaxAct = nullptr;
     QAction *m_lineNumbersAct = nullptr;
+    QAction *m_blameAct = nullptr;
+    quint64 m_blameGen = 0;
     QAction *m_trimPrefixAct = nullptr;
     QAction *m_clickWordAct = nullptr;
     QAction *m_stageAct = nullptr;
@@ -193,6 +199,7 @@ private:
     QAction *m_editRightAct = nullptr;
     QActionGroup *m_paneGroup = nullptr;
     QMenu *m_languageMenu = nullptr;
+    QMenu *m_themeMenu = nullptr;
     QString m_customTitle;
     QHash<QString, DiffPane::ScrollState> m_scrollMemory;
     QAction *m_collapseCommentsAct = nullptr;

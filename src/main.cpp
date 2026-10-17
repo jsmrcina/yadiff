@@ -8,6 +8,7 @@
 #include "Report.h"
 #include "ReviewStore.h"
 #include "Settings.h"
+#include "Theme.h"
 #include "Usage.h"
 
 #include <QApplication>
@@ -86,6 +87,7 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName(QStringLiteral("yadiff"));
     QApplication::setApplicationVersion(QStringLiteral(YADIFF_VERSION));
     QApplication::setDesktopFileName(QStringLiteral("yadiff"));
+    Theme::initialize();
     {
         QIcon icon;
         for (int size : {16, 24, 32, 48, 64, 128, 256})

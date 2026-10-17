@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.4.0 LANGUAGES CXX)
+project(yadiff VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,7 +48,10 @@ add_library(yadiffui STATIC
     src/SearchBar.cpp src/SearchBar.h
     src/Settings.cpp src/Settings.h
     src/Syntax.cpp src/Syntax.h
+    src/Theme.cpp src/Theme.h
 )
+qt_add_resources(yadiffui "syntax_themes" PREFIX "/yadiff-syntax/themes" BASE resources/syntax-themes
+    FILES resources/syntax-themes/vscode-light-plus.theme resources/syntax-themes/vibrant-ink.theme)
 target_link_libraries(yadiffui PUBLIC yadiffcore Qt6::Widgets Qt6::Concurrent)
 
 # Syntax highlighting comes from KDE's KSyntaxHighlighting when it is installed

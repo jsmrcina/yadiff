@@ -16,6 +16,7 @@
 #include "PrReview.h"
 #include "Report.h"
 #include "TextFile.h"
+#include "Theme.h"
 #include "Usage.h"
 
 #include <QActionGroup>
@@ -27,6 +28,7 @@
 #include <QClipboard>
 #include <QColorDialog>
 #include <QDateTime>
+#include <QFontDialog>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QDesktopServices>
@@ -84,6 +86,22 @@ QIcon viewIcon(bool sideBySide, const QColor &color)
             p.drawLine(10, y, 22, y);
         }
     }
+    return QIcon(pm);
+}
+
+// Up/down chevrons for change navigation, in the theme's text colour (icon themes don't
+// follow yadiff's own colour themes).
+QIcon arrowIcon(bool up, const QColor &color)
+{
+    QPixmap pm(32, 32);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(color, 3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    if (up)
+        p.drawPolyline(QPolygonF{QPointF(8, 20), QPointF(16, 11), QPointF(24, 20)});
+    else
+        p.drawPolyline(QPolygonF{QPointF(8, 12), QPointF(16, 21), QPointF(24, 12)});
     return QIcon(pm);
 }
 
@@ -181,6 +199,8 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     m_pane->setPaneVisibility(Settings::paneVisibility());
     m_pane->setZoom(Settings::zoomPercent());
     m_files->setMarkColor(Settings::markColor());
+    m_files->setFont(Settings::fileListFont());
+    DiffFormat::setHtmlFont(Settings::clipboardFont().family(), Settings::clipboardFont().pointSizeF());
     m_search = new SearchBar;
     m_search->hide();
 
@@ -202,6 +222,8 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
 
     createActions();
     createToolBar();
+    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
+    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
     syncOptionControls();
     updateViewToggle();
 
@@ -224,6 +246,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
         updateTitle();
     });
     connect(m_pane, &DiffPane::copyChangeRequested, this, &MainWindow::copyChange);
+    connect(m_pane, &DiffPane::blameCommitRequested, this, &MainWindow::openBlameCommit);
     connect(m_pane, &DiffPane::showLargeRequested, this, [this] {
         const int index = m_shownIndex;
         m_showLarge.insert(index);
@@ -367,6 +390,14 @@ void MainWindow::createActions()
     });
     refresh->setShortcut(QKeySequence(Qt::Key_F5));
     fileMenu->addSeparator();
+    QAction *lightDark = fileMenu->addAction(tr("Switch &light / dark"), this, [this] {
+        const QString key = Theme::toggleLightDark();
+        applyTheme();
+        for (const Theme::Def &d : Theme::all())
+            if (d.key == key)
+                statusBar()->showMessage(tr("Theme: %1").arg(d.label), 2000);
+    });
+    lightDark->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D));
     m_swapAct = fileMenu->addAction(tr("S&wap right and left"), this, &MainWindow::swapSides);
     m_swapAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_X));
     QAction *exportAct = fileMenu->addAction(tr("&Export HTML report…"), this, &MainWindow::exportReport);
@@ -524,6 +555,18 @@ void MainWindow::createActions()
         Settings::setShowLineNumbers(on);
         m_pane->setShowLineNumbers(on);
     });
+    m_blameAct = viewMenu->addAction(tr("Git &blame"));
+    m_blameAct->setCheckable(true);
+    m_blameAct->setChecked(Settings::showBlame());
+    m_blameAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_B));
+    m_blameAct->setStatusTip(tr("Show who last changed each line; click a commit to open it"));
+    connect(m_blameAct, &QAction::toggled, this, [this](bool on) {
+        Settings::setShowBlame(on);
+        if (on)
+            loadBlame();
+        else
+            m_pane->setBlame({}, {});
+    });
     m_wordWrapAct = viewMenu->addAction(tr("Word w&rap"));
     m_wordWrapAct->setCheckable(true);
     m_wordWrapAct->setChecked(Settings::wordWrap());
@@ -590,7 +633,41 @@ void MainWindow::createActions()
         m_files->setFolderDisplay(m_files->property("folderRoot").toString(), on);
     });
     viewMenu->addSeparator();
-    viewMenu->addAction(tr("Colors and &font…"), this, &MainWindow::openPreferences);
+    m_themeMenu = viewMenu->addMenu(tr("Color t&heme"));
+    auto *themeGroup = new QActionGroup(this);
+    for (const Theme::Def &d : Theme::all()) {
+        QAction *a = m_themeMenu->addAction(d.label);
+        a->setCheckable(true);
+        a->setData(d.key);
+        a->setChecked(d.key == Theme::current());
+        themeGroup->addAction(a);
+        if (d.key == QLatin1String("system"))
+            m_themeMenu->addSeparator();
+        connect(a, &QAction::triggered, this, [this, key = d.key] {
+            Theme::apply(key);
+            applyTheme();
+        });
+    }
+    QMenu *fonts = viewMenu->addMenu(tr("F&onts"));
+    auto pickFont = [this](const QString &title, const QFont &current, bool monospaced, auto store) {
+        bool ok = false;
+        const QFont f = QFontDialog::getFont(&ok, current, this, title,
+                                             monospaced ? QFontDialog::MonospacedFonts : QFontDialog::FontDialogOptions());
+        if (ok) {
+            store(f);
+            applyFonts();
+        }
+    };
+    fonts->addAction(tr("&Diff font\u2026"), this, [pickFont] {
+        pickFont(tr("Diff font"), Settings::font(), true, [](const QFont &f) { Settings::setFont(f); });
+    });
+    fonts->addAction(tr("&File list font\u2026"), this, [pickFont] {
+        pickFont(tr("File list font"), Settings::fileListFont(), false, [](const QFont &f) { Settings::setFileListFont(f); });
+    });
+    fonts->addAction(tr("&Clipboard font\u2026"), this, [pickFont] {
+        pickFont(tr("Font for copied text"), Settings::clipboardFont(), false, [](const QFont &f) { Settings::setClipboardFont(f); });
+    })->setStatusTip(tr("The font used when copying with formatting (Copy, Copy this change as diff)"));
+    viewMenu->addAction(tr("Diff &colors and tab width\u2026"), this, &MainWindow::openPreferences);
 
     // ---- Options -----------------------------------------------------------
     QMenu *optionsMenu = menuBar()->addMenu(tr("&Options"));
@@ -1208,6 +1285,7 @@ void MainWindow::showFile(int index)
         QString error;
         QImage oldImage, newImage;
         qint64 oldBytes = 0, newBytes = 0;
+        QVector<BlameLine> oldBlame, newBlame;
     };
     const bool imagePath = isImagePath(fc.path) || isImagePath(fc.oldPath);
     const auto cached = m_diffCache.constFind(index);
@@ -1216,9 +1294,13 @@ void MainWindow::showFile(int index)
     const bool large = m_showLarge.contains(index);
 
     runJob<FileResult>(
-        [repo = m_repo, cmp = m_cmp, fc, imagePath, haveCached, cachedDiff] {
+        [repo = m_repo, cmp = m_cmp, fc, imagePath, haveCached, cachedDiff, blame = Settings::showBlame()] {
             FileResult r;
             r.diff = haveCached ? cachedDiff : repo.loadDiff(fc, cmp, &r.error);
+            if (blame && !r.diff.binary && r.error.isEmpty()) {
+                r.oldBlame = repo.blame(fc, cmp, false);
+                r.newBlame = repo.blame(fc, cmp, true);
+            }
             if (imagePath && r.diff.binary) {
                 // Images are decoded here too, off the UI thread.
                 if (const auto bytes = repo.fileContent(fc, cmp, false)) {
@@ -1265,6 +1347,8 @@ void MainWindow::showFile(int index)
             view.newBytes = r.newBytes;
             view.reviewEnabled = m_cmp.prNumber > 0;
             view.threads = threadsFor(fc);
+            view.oldBlame = r.oldBlame;
+            view.newBlame = r.newBlame;
             m_pane->setLanguageOverride(m_syntaxBySuffix.value(QFileInfo(fc.path).suffix().toLower()));
             m_pane->setFile(view);
             if (wasEditing)
@@ -2481,4 +2565,58 @@ void MainWindow::rebuildLanguageMenu()
         for (const QString &lang : section.second)
             add(sub, lang, lang);
     }
+}
+
+// ---- Themes and fonts -------------------------------------------------------
+
+void MainWindow::applyTheme()
+{
+    // Everything that caches colours picks up the new palette.
+    for (QAction *a : m_themeMenu->actions())
+        a->setChecked(a->data().toString() == Theme::current());
+    m_files->setMarkColor(Settings::markColor());
+    m_pane->applySettings();
+    updateViewToggle();
+    m_whitespaceToggle->setIcon(whitespaceIcon(palette().color(QPalette::ButtonText)));
+    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
+    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
+}
+
+void MainWindow::applyFonts()
+{
+    m_files->setFont(Settings::fileListFont());
+    DiffFormat::setHtmlFont(Settings::clipboardFont().family(), Settings::clipboardFont().pointSizeF());
+    m_pane->applySettings();
+}
+
+void MainWindow::loadBlame()
+{
+    const int index = m_shownIndex;
+    if (index < 0 || index >= m_changes.size() || !m_pane->hasDiff())
+        return;
+    const FileChange fc = m_changes[index];
+    const quint64 gen = ++m_blameGen;
+    const quint64 fileGen = m_fileGen;
+    statusBar()->showMessage(tr("Running git blame…"));
+    using Pair = std::pair<QVector<BlameLine>, QVector<BlameLine>>;
+    runJob<Pair>([repo = m_repo, cmp = m_cmp, fc] { return Pair{repo.blame(fc, cmp, false), repo.blame(fc, cmp, true)}; },
+                 [this, gen, fileGen](Pair r) {
+                     if (gen != m_blameGen || fileGen != m_fileGen || !Settings::showBlame())
+                         return;
+                     statusBar()->clearMessage();
+                     if (r.first.isEmpty() && r.second.isEmpty())
+                         statusBar()->showMessage(tr("No blame for this file"), 3000);
+                     m_pane->setBlame(r.first, r.second);
+                 });
+}
+
+void MainWindow::openBlameCommit(const QString &hash)
+{
+    // The commit against its first parent (the empty tree for a root commit), in a new window.
+    QString parent = hash + QStringLiteral("^");
+    if (!m_repo.resolveCommit(parent, nullptr))
+        parent = m_repo.emptyTree();
+    const QStringList args{QStringLiteral("-C"), m_repo.root(), parent, hash};
+    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), args))
+        QMessageBox::warning(this, tr("Git blame"), tr("Could not start yadiff."));
 }

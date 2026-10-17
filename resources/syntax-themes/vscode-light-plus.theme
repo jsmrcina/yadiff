@@ -1,0 +1,134 @@
+{
+  "metadata": {
+    "name": "VS Code Light+",
+    "revision": 1,
+    "license": "MIT",
+    "read-only": true
+  },
+  "text-styles": {
+    "Normal": {
+      "text-color": "#000000"
+    },
+    "Keyword": {
+      "text-color": "#0000ff"
+    },
+    "ControlFlow": {
+      "text-color": "#af00db"
+    },
+    "Function": {
+      "text-color": "#795e26"
+    },
+    "Variable": {
+      "text-color": "#001080"
+    },
+    "Operator": {
+      "text-color": "#000000"
+    },
+    "BuiltIn": {
+      "text-color": "#267f99"
+    },
+    "Extension": {
+      "text-color": "#267f99"
+    },
+    "Preprocessor": {
+      "text-color": "#0000ff"
+    },
+    "Attribute": {
+      "text-color": "#e50000"
+    },
+    "Char": {
+      "text-color": "#a31515"
+    },
+    "SpecialChar": {
+      "text-color": "#ee0000"
+    },
+    "String": {
+      "text-color": "#a31515"
+    },
+    "VerbatimString": {
+      "text-color": "#a31515"
+    },
+    "SpecialString": {
+      "text-color": "#811f3f"
+    },
+    "Import": {
+      "text-color": "#af00db"
+    },
+    "DataType": {
+      "text-color": "#267f99"
+    },
+    "DecVal": {
+      "text-color": "#098658"
+    },
+    "BaseN": {
+      "text-color": "#098658"
+    },
+    "Float": {
+      "text-color": "#098658"
+    },
+    "Constant": {
+      "text-color": "#0070c1"
+    },
+    "Comment": {
+      "text-color": "#008000"
+    },
+    "Documentation": {
+      "text-color": "#008000"
+    },
+    "Annotation": {
+      "text-color": "#795e26"
+    },
+    "CommentVar": {
+      "text-color": "#008000"
+    },
+    "RegionMarker": {
+      "text-color": "#008000"
+    },
+    "Information": {
+      "text-color": "#1a85ff"
+    },
+    "Warning": {
+      "text-color": "#bf8803"
+    },
+    "Alert": {
+      "text-color": "#e51400",
+      "bold": true
+    },
+    "Others": {
+      "text-color": "#000000"
+    },
+    "Error": {
+      "text-color": "#e51400"
+    }
+  },
+  "editor-colors": {
+    "BackgroundColor": "#ffffff",
+    "TextSelection": "#add6ff",
+    "CurrentLine": "#add6ff",
+    "LineNumbers": "#000000",
+    "CurrentLineNumber": "#000000",
+    "IconBorder": "#ffffff",
+    "Separator": "#add6ff",
+    "SearchHighlight": "#ffe066",
+    "ReplaceHighlight": "#ffb347",
+    "TabMarker": "#add6ff",
+    "IndentationLine": "#add6ff",
+    "WordWrapMarker": "#add6ff",
+    "BracketMatching": "#add6ff",
+    "CodeFolding": "#add6ff",
+    "MarkBookmark": "#add6ff",
+    "SpellChecking": "#ff0000",
+    "TemplateBackground": "#ffffff",
+    "TemplatePlaceholder": "#add6ff",
+    "TemplateFocusedPlaceholder": "#add6ff",
+    "TemplateReadOnlyPlaceholder": "#add6ff",
+    "MarkBreakpointActive": "#ff0000",
+    "MarkBreakpointReached": "#ffff00",
+    "MarkBreakpointDisabled": "#888888",
+    "MarkExecution": "#00ff00",
+    "MarkWarning": "#ffaa00",
+    "MarkError": "#ff0000",
+    "ModifiedLines": "#ffaa00",
+    "SavedLines": "#00aa00"
+  }
+}

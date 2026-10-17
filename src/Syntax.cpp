@@ -1,6 +1,7 @@
 #include "Syntax.h"
 
 #include <QMap>
+#include <QSet>
 #include <QTextDocument>
 
 #ifdef YADIFF_HAVE_KSYNTAX
@@ -12,8 +13,30 @@
 namespace {
 KSyntaxHighlighting::Repository &repository()
 {
-    static KSyntaxHighlighting::Repository repo;
-    return repo;
+    static KSyntaxHighlighting::Repository *repo = [] {
+        auto *r = new KSyntaxHighlighting::Repository;
+        // yadiff's own themes (VS Code Light+, Vibrant Ink) live in its resources.
+        r->addCustomSearchPath(QStringLiteral(":/yadiff-syntax"));
+        return r;
+    }();
+    return *repo;
+}
+
+QString &themeName()
+{
+    static QString name;
+    return name;
+}
+
+KSyntaxHighlighting::Theme themeFor(bool darkTheme)
+{
+    if (!themeName().isEmpty()) {
+        const auto t = repository().theme(themeName());
+        if (t.isValid())
+            return t;
+    }
+    return repository().defaultTheme(darkTheme ? KSyntaxHighlighting::Repository::DarkTheme
+                                               : KSyntaxHighlighting::Repository::LightTheme);
 }
 // Skips placeholder blocks so they keep their own look.
 class Highlighter : public KSyntaxHighlighting::SyntaxHighlighter
@@ -42,6 +65,32 @@ namespace Syntax {
 bool available()
 {
     return true;
+}
+
+int &generation()
+{
+    static int g = 0;
+    return g;
+}
+
+void setThemeName(const QString &name)
+{
+    if (themeName() != name)
+        ++generation();
+    themeName() = name;
+}
+
+int themeGeneration()
+{
+    return generation();
+}
+
+QStringList themeNames()
+{
+    QStringList names;
+    for (const auto &t : repository().themes())
+        names << t.name();
+    return names;
 }
 
 QStringList languages()
@@ -87,8 +136,7 @@ QObject *apply(QObject *existing, QTextDocument *doc, const QString &language, b
         h = new Highlighter(doc);
     else if (h->document() != doc)
         h->setDocument(doc);
-    h->setTheme(repository().defaultTheme(darkTheme ? KSyntaxHighlighting::Repository::DarkTheme
-                                                    : KSyntaxHighlighting::Repository::LightTheme));
+    h->setTheme(themeFor(darkTheme));
     h->setDefinition(def);
     h->rehighlight();
     return h;
@@ -112,6 +160,9 @@ void resume(QObject *highlighter, QTextDocument *doc)
 
 namespace Syntax {
 bool available() { return false; }
+void setThemeName(const QString &) {}
+int themeGeneration() { return 0; }
+QStringList themeNames() { return {}; }
 QStringList languages() { return {}; }
 QList<QPair<QString, QStringList>> languagesBySection() { return {}; }
 QString detect(const QString &) { return {}; }

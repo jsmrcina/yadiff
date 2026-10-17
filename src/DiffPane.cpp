@@ -153,6 +153,7 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
                 [this, v](int row, const QPoint &pos) { showContextMenu(v, row, pos); });
         connect(v, &CodeView::commentToggled, this, &DiffPane::toggleThread);
         connect(v, &CodeView::wordClicked, this, &DiffPane::highlightWord);
+        connect(v, &CodeView::blameClicked, this, &DiffPane::blameCommitRequested);
         connect(v, &CodeView::cursorPositionChanged, this, [this, v] { m_lastFocused = v; });
         connect(v, &CodeView::foldClicked, this, [v, this](int row) {
             if (row >= 0 && row < v->rows().size())
@@ -701,6 +702,8 @@ void DiffPane::rebuild()
     const FileDiff &d = m_file.diff;
     const int n = int(d.lines.size());
     const bool folding = m_collapse && !isEditing();
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setBlame(m_file.oldBlame, m_file.newBlame);
 
     m_inlineChunkRows.clear();
     m_sideChunkRows.clear();
@@ -1367,6 +1370,14 @@ void DiffPane::setShowLineNumbers(bool on)
     m_lineNumbers = on;
     for (CodeView *v : {m_inline, m_left, m_right})
         v->setShowLineNumbers(on);
+}
+
+void DiffPane::setBlame(const QVector<BlameLine> &oldSide, const QVector<BlameLine> &newSide)
+{
+    m_file.oldBlame = oldSide;
+    m_file.newBlame = newSide;
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setBlame(oldSide, newSide);
 }
 
 void DiffPane::setSyntaxEnabled(bool on)

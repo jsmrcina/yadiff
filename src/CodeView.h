@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DiffModel.h"
+#include "GitRepo.h"
 
 #include <QBrush>
 #include <QHash>
@@ -58,6 +59,7 @@ public:
     enum class Numbers { Old, New, Both };
 
     explicit CodeView(Numbers numbers, QWidget *parent = nullptr);
+    Numbers numbers() const { return m_numbers; }
 
     void setRows(const QVector<Row> &rows, const ViewPalette &palette, const QFont &font, int tabWidth);
     const QVector<Row> &rows() const { return m_rows; }
@@ -76,6 +78,10 @@ public:
     // Every whole-word occurrence of `word` gets a soft highlight (empty clears).
     void setWordHighlight(const QString &word, const QColor &color);
     void setShowLineNumbers(bool on);
+    // Git blame beside the line numbers: one entry per line of the old and new side
+    // (both empty hides the column).
+    void setBlame(const QVector<BlameLine> &oldSide, const QVector<BlameLine> &newSide);
+    const BlameLine *blameAt(int row) const { return blameFor(row); } // null when there is none
     void setHighlightClickedWord(bool on) { m_clickWord = on; }
 
     // The selection without diff placeholders (fillers, folds, comments, padding).
@@ -116,6 +122,7 @@ signals:
     void commentToggled(qint64 threadId);
     void contextMenuRequested(int row, const QPoint &globalPos);
     void wordClicked(const QString &word); // empty when the click was not on a word
+    void blameClicked(const QString &hash);
     void modifiedChanged(bool modified);
 
 protected:
@@ -146,12 +153,19 @@ private:
     QHash<int, QTextBrowser *> m_commentWidgets; // row -> overlay
     QList<QTextEdit::ExtraSelection> m_searchSelections, m_wordSelections;
     bool m_lineNumbers = true;
+    QVector<BlameLine> m_blameOld, m_blameNew;
+    qint64 m_blameOldest = 0, m_blameNewest = 0;
+    int blameWidth() const;
+    const BlameLine *blameFor(int row) const;
+    void mousePressInGutter(const QPoint &pos);
+    friend class Gutter;
     bool m_clickWord = true;
     void updateExtraSelections();
     ViewPalette m_pal;
     QObject *m_highlighter = nullptr;
     QString m_language;
     bool m_dark = false;
+    int m_themeGeneration = -1;
     bool m_showWhitespace = false;
     bool m_wrap = false;
     bool m_editing = false;

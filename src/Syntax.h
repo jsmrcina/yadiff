@@ -17,6 +17,11 @@ constexpr int kPlainBlockProperty = QTextFormat::UserProperty + 100;
 
 bool available();
 
+// The syntax colour theme (a KSyntaxHighlighting theme name); empty: Breeze, light or dark.
+void setThemeName(const QString &name);
+int themeGeneration(); // changes whenever the theme does, so views know to re-highlight
+QStringList themeNames();
+
 // Language names suitable for a picker, sorted case-insensitively.
 QStringList languages();
 // The same, grouped by KSyntaxHighlighting's sections ("Sources", "Scripts", "Markup", ...).

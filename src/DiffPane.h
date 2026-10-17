@@ -36,6 +36,9 @@ struct FileView {
     // comments can be added.
     QVector<GitHubReview::Thread> threads;
     bool reviewEnabled = false;
+
+    // Git blame per line of each side; empty when blame is off or not available.
+    QVector<BlameLine> oldBlame, newBlame;
 };
 
 // Right-hand side of the window: shows one file's diff inline or side by side and
@@ -74,6 +77,8 @@ public:
     void setSyntaxEnabled(bool on);
     void setHighlightClickedWord(bool on);
     void setZoom(int percent);
+    // Replaces the blame of the current file (both empty hides the blame column).
+    void setBlame(const QVector<BlameLine> &oldSide, const QVector<BlameLine> &newSide);
 
     // Moves to line `line` of the new (or old) side; false when there is no such line.
     bool goToLine(int line, bool newSide);
@@ -136,6 +141,7 @@ signals:
     void copyChangeRequested(int chunk, bool toNewSide);
     void searchResultsChanged(int count, int current);
     void showLargeRequested();
+    void blameCommitRequested(const QString &hash);
     // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
     void replyRequested(qint64 threadId);

@@ -408,6 +408,67 @@ private slots:
         QVERIFY(r.open(QIODevice::ReadOnly));
         QCOMPARE(r.readAll(), QByteArray("left\n"));
     }
+    void blameEachSide()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "one\ntwo\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("first")});
+        write(d + QStringLiteral("/f.txt"), "one\nTWO\nthree\n");
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("second")});
+        write(d + QStringLiteral("/f.txt"), "one\nTWO\nthree\nstaged\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("f.txt")});
+        write(d + QStringLiteral("/f.txt"), "zero\none\nTWO\nthree\nstaged\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        QVERIFY(repo);
+
+        // Working tree against HEAD: the old side is HEAD, the new side the working tree.
+        Comparison all;
+        all.allChanges = true;
+        const auto changes = repo->listChanges(all, &error);
+        QCOMPARE(changes.size(), 1);
+        const QVector<BlameLine> head = repo->blame(changes[0], all, false);
+        QCOMPARE(head.size(), 3);
+        QCOMPARE(head[0].summary, QStringLiteral("first"));
+        QCOMPARE(head[1].summary, QStringLiteral("second"));
+        QCOMPARE(head[1].author, QStringLiteral("t"));
+        QVERIFY(head[1].time > 0);
+        QVERIFY(head[0].hash != head[1].hash);
+        const QVector<BlameLine> work = repo->blame(changes[0], all, true);
+        QCOMPARE(work.size(), 5);
+        QVERIFY(work[0].hash.isEmpty()); // not committed yet
+        QCOMPARE(work[1].summary, QStringLiteral("first"));
+        QVERIFY(work[4].hash.isEmpty());
+
+        // Staged: the new side is the index (which lacks "zero").
+        Comparison split;
+        const auto splitChanges = repo->listChanges(split, &error);
+        const FileChange *staged = find(splitChanges, QStringLiteral("f.txt"), ChangeGroup::Staged);
+        QVERIFY(staged);
+        const QVector<BlameLine> index = repo->blame(*staged, split, true);
+        QCOMPARE(index.size(), 4);
+        QCOMPARE(index[0].summary, QStringLiteral("first"));
+        QVERIFY(index[3].hash.isEmpty());
+
+        // Revisions, also swapped.
+        Comparison rc;
+        rc.mode = Comparison::Mode::Revisions;
+        rc.rev1 = *repo->resolveCommit(QStringLiteral("HEAD~1"), &error);
+        rc.rev2 = *repo->resolveCommit(QStringLiteral("HEAD"), &error);
+        const auto revChanges = repo->listChanges(rc, &error);
+        QCOMPARE(repo->blame(revChanges[0], rc, false).size(), 2);
+        QCOMPARE(repo->blame(revChanges[0], rc, true).size(), 3);
+        rc.reversed = true;
+        const auto swapped = repo->listChanges(rc, &error);
+        QCOMPARE(repo->blame(swapped[0], rc, false).size(), 3);
+
+        // The empty tree resolves, so a root commit can be compared with "its parent".
+        QVERIFY(repo->resolveCommit(repo->emptyTree(), &error));
+        QVERIFY(!repo->resolveCommit(repo->emptyTree().left(8) + QStringLiteral("zz"), &error));
+    }
 };
 
 QTEST_APPLESS_MAIN(TestGitRepo)

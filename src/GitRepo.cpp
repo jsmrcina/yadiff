@@ -315,6 +315,9 @@ std::optional<QString> GitRepo::resolveCommit(const QString &rev, QString *error
             *error = QStringLiteral("Invalid revision: '%1'").arg(rev);
         return std::nullopt;
     }
+    // The empty tree stands in for the parent of a root commit.
+    if (rev == emptyTree())
+        return rev;
     QByteArray out;
     if (!run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
               rev + QStringLiteral("^{commit}")},
@@ -351,7 +354,14 @@ QString GitRepo::headOrEmptyTree() const
              QStringLiteral("HEAD^{commit}")},
             &out, nullptr))
         return QString::fromUtf8(out).trimmed();
-    // No commits yet: compare against the empty tree (works for SHA-1 and SHA-256 repos).
+    // No commits yet: compare against the empty tree.
+    return emptyTree();
+}
+
+QString GitRepo::emptyTree() const
+{
+    // Works for SHA-1 and SHA-256 repos.
+    QByteArray out;
     if (run({QStringLiteral("hash-object"), QStringLiteral("-t"), QStringLiteral("tree"), QStringLiteral("--stdin")},
             &out, nullptr))
         return QString::fromUtf8(out).trimmed();
@@ -1023,4 +1033,85 @@ QString GitRepo::lastCommit(const QString &path) const
              &out, nullptr))
         return {};
     return QString::fromUtf8(out).trimmed();
+}
+
+namespace {
+// Parses `git blame --porcelain`: a header per line (hash, original line, final line),
+// commit details the first time a commit appears, then the line itself after a tab.
+QVector<BlameLine> parseBlame(const QByteArray &out)
+{
+    QHash<QString, BlameLine> commits;
+    QVector<BlameLine> lines;
+    QString current;
+    int finalLine = 0;
+    for (const QByteArray &raw : out.split('\n')) {
+        if (raw.startsWith('\t')) {
+            if (finalLine > 0) {
+                if (lines.size() < finalLine)
+                    lines.resize(finalLine);
+                lines[finalLine - 1] = commits.value(current);
+            }
+            continue;
+        }
+        const QList<QByteArray> parts = raw.split(' ');
+        if (parts.size() >= 3 && parts[0].size() == 40) {
+            current = QString::fromLatin1(parts[0]);
+            finalLine = parts[2].toInt();
+            if (!commits.contains(current)) {
+                BlameLine b;
+                if (current != QLatin1String("0000000000000000000000000000000000000000"))
+                    b.hash = current;
+                commits.insert(current, b);
+            }
+            continue;
+        }
+        BlameLine &b = commits[current];
+        if (raw.startsWith("author "))
+            b.author = QString::fromUtf8(raw.mid(7));
+        else if (raw.startsWith("author-time "))
+            b.time = raw.mid(12).toLongLong();
+        else if (raw.startsWith("summary "))
+            b.summary = QString::fromUtf8(raw.mid(8));
+    }
+    return lines;
+}
+} // namespace
+
+QVector<BlameLine> GitRepo::blame(const FileChange &displayed, const Comparison &displayedCmp, bool displayedNewSide) const
+{
+    if (m_noRepo || displayedCmp.mode == Comparison::Mode::Paths)
+        return {};
+    const FileChange fc = physicalChange(displayed, displayedCmp);
+    const Comparison cmp = physicalComparison(displayedCmp);
+    const bool newSide = displayedCmp.reversed ? !displayedNewSide : displayedNewSide;
+    if ((newSide && (fc.status == u'D')) || (!newSide && fc.status == u'A') || fc.status == u'?')
+        return {};
+    const QString path = newSide ? fc.path : fc.oldPath;
+    QStringList args{QStringLiteral("blame"), QStringLiteral("--porcelain")};
+    QByteArray input;
+    if (cmp.mode == Comparison::Mode::Revisions) {
+        if (newSide && cmp.rev2.isEmpty()) {
+            // The working tree: no revision, uncommitted lines show as such.
+        } else {
+            args << (newSide ? cmp.rev2 : cmp.rev1);
+        }
+    } else if (newSide && (cmp.allChanges || fc.group != ChangeGroup::Staged || fc.status == u'U')) {
+        // The working tree.
+    } else if (newSide || (fc.group == ChangeGroup::Unstaged && !cmp.allChanges && !cmp.unstagedAgainstHead)) {
+        // The index: blame its content (from stdin) against the history.
+        QByteArray out;
+        if (!run({QStringLiteral("cat-file"), QStringLiteral("blob"), QStringLiteral(":0:") + path}, &out, nullptr))
+            return {};
+        input = out;
+        args << QStringLiteral("--contents") << QStringLiteral("-");
+    } else {
+        if (!hasHead())
+            return {};
+        args << QStringLiteral("HEAD");
+    }
+    args << QStringLiteral("--") << path;
+    QByteArray out;
+    if (!run(args, &out, nullptr, input))
+        return {};
+    return parseBlame(out);
 }

@@ -1,5 +1,7 @@
 #include "Settings.h"
 
+#include "Theme.h"
+
 #include <QApplication>
 #include <QFontDatabase>
 #include <QPalette>
@@ -22,16 +24,12 @@ namespace Settings {
 
 bool isDarkTheme()
 {
-    if (QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark)
-        return true;
-    return QApplication::palette().color(QPalette::Base).lightness() < 128;
+    return Theme::isDark();
 }
 
 DiffColors defaultColors()
 {
-    if (isDarkTheme())
-        return {QColor(0x21, 0x3d, 0x2a), QColor(0x4b, 0x23, 0x27), QColor(0x2c, 0x2f, 0x5c)};
-    return {QColor(0xd7, 0xf5, 0xdd), QColor(0xfb, 0xdc, 0xdc), QColor(0xdd, 0xe2, 0xff)};
+    return {Theme::addedColor(), Theme::removedColor(), Theme::movedColor()};
 }
 
 DiffColors colors()
@@ -156,6 +154,25 @@ QColor markColor()
     return isDarkTheme() ? QColor(0x8a, 0x6d, 0x0b, 150) : QColor(0xff, 0xd8, 0x4d, 120);
 }
 void setMarkColor(const QColor &c) { QSettings().setValue(QStringLiteral("marking/color"), c.name(QColor::HexArgb)); }
+QFont fileListFont()
+{
+    QFont f = QApplication::font();
+    const QString stored = QSettings().value(QStringLiteral("view/fileListFont")).toString();
+    if (!stored.isEmpty())
+        f.fromString(stored);
+    return f;
+}
+void setFileListFont(const QFont &f) { QSettings().setValue(QStringLiteral("view/fileListFont"), f.toString()); }
+QFont clipboardFont()
+{
+    QFont f = font();
+    const QString stored = QSettings().value(QStringLiteral("view/clipboardFont")).toString();
+    if (!stored.isEmpty())
+        f.fromString(stored);
+    return f;
+}
+void setClipboardFont(const QFont &f) { QSettings().setValue(QStringLiteral("view/clipboardFont"), f.toString()); }
+
 QStringList ignoreGlobs() { return QSettings().value(QStringLiteral("files/ignoreGlobs")).toStringList(); }
 void setIgnoreGlobs(const QStringList &globs) { QSettings().setValue(QStringLiteral("files/ignoreGlobs"), globs); }
 bool useIgnoreGlobs() { return flag("files/useIgnoreGlobs", true); }
@@ -172,6 +189,8 @@ bool rememberScroll() { return flag("view/rememberScroll", false); }
 void setRememberScroll(bool on) { setFlag("view/rememberScroll", on); }
 int paneVisibility() { return std::clamp(QSettings().value(QStringLiteral("view/panes"), 0).toInt(), 0, 2); }
 void setPaneVisibility(int v) { QSettings().setValue(QStringLiteral("view/panes"), v); }
+bool showBlame() { return flag("view/blame", false); }
+void setShowBlame(bool on) { setFlag("view/blame", on); }
 bool showLineNumbers() { return flag("view/lineNumbers", true); }
 void setShowLineNumbers(bool on) { setFlag("view/lineNumbers", on); }
 bool syntaxEnabled() { return flag("view/syntax", true); }
