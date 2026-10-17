@@ -9,6 +9,7 @@
 #include "ReviewStore.h"
 #include "Settings.h"
 #include "Theme.h"
+#include "Updater.h"
 #include "Usage.h"
 
 #include <QApplication>
@@ -87,6 +88,9 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName(QStringLiteral("yadiff"));
     QApplication::setApplicationVersion(QStringLiteral(YADIFF_VERSION));
     QApplication::setDesktopFileName(QStringLiteral("yadiff"));
+#ifdef Q_OS_WIN
+    Updater::cleanUpOldFiles(QApplication::applicationDirPath()); // left by the last update
+#endif
     Theme::initialize();
     {
         QIcon icon;

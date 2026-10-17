@@ -68,6 +68,10 @@ void setRememberScroll(bool on);
 // Viewer.
 int paneVisibility(); // 0 both, 1 left only, 2 right only
 void setPaneVisibility(int v);
+bool autoUpdate();
+void setAutoUpdate(bool on);
+qint64 lastUpdateCheck(); // seconds since the epoch, 0 never
+void setLastUpdateCheck(qint64 secs);
 bool showBlame();
 void setShowBlame(bool on);
 bool showLineNumbers();

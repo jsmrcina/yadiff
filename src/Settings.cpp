@@ -189,6 +189,10 @@ bool rememberScroll() { return flag("view/rememberScroll", false); }
 void setRememberScroll(bool on) { setFlag("view/rememberScroll", on); }
 int paneVisibility() { return std::clamp(QSettings().value(QStringLiteral("view/panes"), 0).toInt(), 0, 2); }
 void setPaneVisibility(int v) { QSettings().setValue(QStringLiteral("view/panes"), v); }
+bool autoUpdate() { return flag("update/automatic", false); }
+void setAutoUpdate(bool on) { setFlag("update/automatic", on); }
+qint64 lastUpdateCheck() { return QSettings().value(QStringLiteral("update/lastCheck"), 0).toLongLong(); }
+void setLastUpdateCheck(qint64 secs) { QSettings().setValue(QStringLiteral("update/lastCheck"), secs); }
 bool showBlame() { return flag("view/blame", false); }
 void setShowBlame(bool on) { setFlag("view/blame", on); }
 bool showLineNumbers() { return flag("view/lineNumbers", true); }

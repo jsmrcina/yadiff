@@ -11,6 +11,8 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QFile>
@@ -1315,6 +1317,67 @@ private slots:
                 QCOMPARE(left->blameAt(row)->summary, QStringLiteral("first"));
         action(w, QStringLiteral("Git blame"))->setChecked(false);
         QCOMPARE(right->viewport()->geometry().left(), plainGutter);
+    }
+    void checkForUpdateAsksFirst()
+    {
+        // A fake GitHub API with a newer release.
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        const QByteArray body = R"({"tag_name":"v99.0.0","name":"yadiff 99","body":"Big release","html_url":"https://example.invalid/r"})";
+        connect(&server, &QTcpServer::newConnection, &server, [&] {
+            while (QTcpSocket *s = server.nextPendingConnection())
+                connect(s, &QTcpSocket::readyRead, s, [s, body] {
+                    s->readAll();
+                    s->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + QByteArray::number(body.size())
+                             + "\r\nConnection: close\r\n\r\n" + body);
+                    s->disconnectFromHost();
+                });
+        });
+        qputenv("YADIFF_UPDATE_NO_GH", "1");
+        qputenv("YADIFF_UPDATE_API", QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()).toUtf8());
+
+        QTemporaryDir tmp;
+        git(tmp.path(), {QStringLiteral("init"), QStringLiteral("-q")});
+        QString error;
+        auto repo = GitRepo::open(tmp.path(), &error);
+        MainWindow w(std::move(*repo), Comparison());
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+
+        // The dialog names the release, shows its notes, and installs nothing unless asked.
+        QString text, notes;
+        QStringList buttons;
+        QTimer poll;
+        poll.setInterval(20);
+        connect(&poll, &QTimer::timeout, &w, [&] {
+            for (QMessageBox *box : w.findChildren<QMessageBox *>()) {
+                if (!box->isVisible())
+                    continue;
+                text = box->text();
+                notes = box->detailedText();
+                for (QAbstractButton *b : box->buttons())
+                    buttons << b->text();
+                for (QAbstractButton *b : box->buttons())
+                    if (b->text() == QStringLiteral("Later") || b->text() == QStringLiteral("Close"))
+                        b->click();
+                poll.stop();
+            }
+        });
+        poll.start();
+        QTimer guard;
+        guard.setSingleShot(true);
+        connect(&guard, &QTimer::timeout, &w, [] {
+            if (QWidget *m = QApplication::activeModalWidget())
+                m->close();
+        });
+        guard.start(10000);
+        action(w, QStringLiteral("Check for update now…"))->trigger();
+        qunsetenv("YADIFF_UPDATE_NO_GH");
+        qunsetenv("YADIFF_UPDATE_API");
+        QVERIFY2(text.contains(QStringLiteral("v99.0.0")), qPrintable(text));
+        QCOMPARE(notes, QStringLiteral("Big release"));
+        QVERIFY(buttons.contains(QStringLiteral("Open release page")));
+        QVERIFY(!Settings::autoUpdate());
     }
 };
 

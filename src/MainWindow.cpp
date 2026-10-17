@@ -17,6 +17,7 @@
 #include "Report.h"
 #include "TextFile.h"
 #include "Theme.h"
+#include "Updater.h"
 #include "Usage.h"
 
 #include <QActionGroup>
@@ -287,6 +288,11 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     splitter->restoreState(s.value(QStringLiteral("window/splitter")).toByteArray());
 
     reload();
+
+    // Automatic updates: at most one check a day, a little after start-up.
+    if (Settings::autoUpdate() && !m_sync && !qEnvironmentVariableIsSet("YADIFF_NO_UPDATE_CHECK")
+        && QDateTime::currentSecsSinceEpoch() - Settings::lastUpdateCheck() > 20 * 60 * 60)
+        QTimer::singleShot(5000, this, [this] { checkForUpdates(false); });
 }
 
 QString MainWindow::reviewRoot() const
@@ -830,6 +836,18 @@ void MainWindow::createActions()
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&Register as git difftool…"), this, &MainWindow::registerDifftool);
     helpMenu->addAction(tr("U&nregister as git difftool"), this, &MainWindow::unregisterDifftool);
+    helpMenu->addSeparator();
+    QAction *autoUpdate = helpMenu->addAction(tr("&Automatically install updates"));
+    autoUpdate->setCheckable(true);
+    autoUpdate->setChecked(Settings::autoUpdate());
+    autoUpdate->setStatusTip(tr("Check GitHub for a new release once a day and install it"));
+    connect(autoUpdate, &QAction::toggled, this, [this](bool on) {
+        Settings::setAutoUpdate(on);
+        if (on)
+            checkForUpdates(false);
+    });
+    helpMenu->addAction(tr("&Check for update now…"), this, [this] { checkForUpdates(true); })
+        ->setStatusTip(tr("Look for a new release on GitHub and offer to install it"));
     helpMenu->addSeparator();
     helpMenu->addAction(tr("&Usage"), this, &MainWindow::showUsage);
     helpMenu->addAction(tr("&About yadiff"), this, [this] {
@@ -2632,4 +2650,129 @@ void MainWindow::openBlameCommit(const QString &hash)
     const QStringList args{QStringLiteral("-C"), m_repo.root(), parent, hash};
     if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), args))
         QMessageBox::warning(this, tr("Git blame"), tr("Could not start yadiff."));
+}
+
+// ---- Updates ---------------------------------------------------------------
+
+void MainWindow::checkForUpdates(bool interactive)
+{
+    if (m_updating) {
+        if (interactive)
+            statusBar()->showMessage(tr("An update is already being installed"), 4000);
+        return;
+    }
+    if (interactive)
+        statusBar()->showMessage(tr("Checking for updates…"));
+    struct Result {
+        std::optional<Updater::Release> release;
+        QString error;
+    };
+    runJob<Result>(
+        [] {
+            Result r;
+            r.release = Updater::latest(&r.error);
+            return r;
+        },
+        [this, interactive](Result r) {
+            statusBar()->clearMessage();
+            if (!r.release) {
+                if (interactive)
+                    QMessageBox::warning(this, tr("Check for update"), tr("Could not check for updates.\n\n%1").arg(r.error));
+                return;
+            }
+            Settings::setLastUpdateCheck(QDateTime::currentSecsSinceEpoch());
+            const Updater::Release rel = *r.release;
+            const QString current = QApplication::applicationVersion();
+            if (!Updater::isNewer(rel.tag, current)) {
+                if (interactive)
+                    QMessageBox::information(this, tr("Check for update"),
+                                             tr("yadiff %1 is the latest version.").arg(current));
+                return;
+            }
+            const bool canInstall = Updater::currentInstallKind() != Updater::InstallKind::Unsupported;
+            if (!interactive) {
+                if (canInstall)
+                    installUpdate(rel, false);
+                else
+                    statusBar()->showMessage(tr("yadiff %1 is available").arg(rel.tag), 10000);
+                return;
+            }
+            QMessageBox box(this);
+            box.setWindowTitle(tr("Update available"));
+            box.setIcon(QMessageBox::Information);
+            box.setText(tr("yadiff %1 is available (you have %2).").arg(rel.tag, current));
+            box.setInformativeText(canInstall ? tr("Install it now? yadiff keeps working while it installs.")
+                                              : Updater::unsupportedReason());
+            if (!rel.notes.isEmpty())
+                box.setDetailedText(rel.notes);
+            QPushButton *install = canInstall ? box.addButton(tr("Install"), QMessageBox::AcceptRole) : nullptr;
+            QPushButton *page = box.addButton(tr("Open release page"), QMessageBox::ActionRole);
+            box.addButton(canInstall ? tr("Later") : tr("Close"), QMessageBox::RejectRole);
+            box.setDefaultButton(install ? install : page);
+            box.exec();
+            if (install && box.clickedButton() == install)
+                installUpdate(rel, true);
+            else if (box.clickedButton() == page && !rel.url.isEmpty())
+                QDesktopServices::openUrl(QUrl(rel.url));
+        });
+}
+
+void MainWindow::installUpdate(const Updater::Release &release, bool interactive)
+{
+    m_updating = true;
+    QPointer<MainWindow> self(this);
+    auto progress = [self](const QString &message) {
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, message] {
+                if (self)
+                    self->statusBar()->showMessage(message);
+            },
+            Qt::QueuedConnection);
+    };
+    using Result = std::pair<bool, QString>;
+    runJob<Result>(
+        [release, progress] {
+            QString error;
+            const bool ok = Updater::install(release, progress, &error);
+            return Result{ok, error};
+        },
+        [this, release, interactive](Result r) {
+            m_updating = false;
+            statusBar()->clearMessage();
+            if (!r.first) {
+                if (interactive)
+                    QMessageBox::warning(this, tr("Update"), tr("Installing yadiff %1 failed.\n\n%2").arg(release.tag, r.second));
+                else
+                    statusBar()->showMessage(tr("Installing yadiff %1 failed: %2").arg(release.tag, r.second.section(u'\n', 0, 0)),
+                                             15000);
+                return;
+            }
+            // The new version starts next time; offer to restart now.
+            if (!m_restartButton) {
+                m_restartButton = new QPushButton(this);
+                m_restartButton->setFlat(true);
+                connect(m_restartButton, &QPushButton::clicked, this, &MainWindow::restartForUpdate);
+                statusBar()->addPermanentWidget(m_restartButton);
+            }
+            m_restartButton->setText(tr("yadiff %1 installed. Restart now").arg(release.tag));
+            m_restartButton->show();
+            if (interactive
+                && QMessageBox::question(this, tr("Update"),
+                                         tr("yadiff %1 is installed. Restart now to use it?").arg(release.tag))
+                       == QMessageBox::Yes)
+                restartForUpdate();
+        });
+}
+
+void MainWindow::restartForUpdate()
+{
+    if (!maybeKeepEdits())
+        return;
+    // Same arguments, in a new process of the updated install.
+    if (!QProcess::startDetached(Updater::restartProgram(), QApplication::arguments().mid(1))) {
+        QMessageBox::warning(this, tr("Update"), tr("Could not start the updated yadiff. Start it yourself."));
+        return;
+    }
+    close();
 }

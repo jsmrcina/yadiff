@@ -216,11 +216,34 @@ computed by yadiff.
 - **Review:** for pull requests only.
 - **Help:**
   - Register and Unregister as git difftool.
+  - Automatically install updates, and Check for update now (see Updates below).
   - Usage, which is the command-line summary, and About.
 
 Right-click files in the list for: Copy (paths), Select all, Copy commit hash, View differences
 (Enter), View filelog in gitk, Mark file, Stage file, Revert file, Download file again, and Refresh
 list. Several files can be selected.
+
+## Updates
+
+Help → Check for update now looks up the latest GitHub release. If it is newer, yadiff shows the
+release notes and asks before installing it. Help → Automatically install updates (off by
+default) checks once a day, a few seconds after start-up, and installs without asking. Either way,
+the new version starts the next time yadiff does. A "Restart now" button in the status bar starts
+it straight away.
+
+Releases are read with the `gh` CLI, which handles sign-in for the private repository. Without
+`gh`, yadiff uses GitHub's REST API, sending `GH_TOKEN` or `GITHUB_TOKEN` when one is set.
+Installing depends on how yadiff was installed:
+
+- **Linux, installed with `install.sh`:** releases have no Linux binaries, so yadiff builds the
+  release's source, runs its tests, and installs it as a new `~/.local/opt/yadiff-<tag>` snapshot.
+  Then it moves the `~/.local/bin/yadiff` link to that snapshot. This needs the same build tools
+  as `install.sh`. Building against this machine's own Qt keeps yadiff working across Qt updates.
+  The old snapshot stays, so going back is a matter of moving the link.
+- **Windows, an unzipped folder:** yadiff downloads `yadiff-windows-x64.zip` and replaces its files
+  in place. Files in use are renamed to `*.old` first and deleted on the next start.
+- **Anything else,** such as a package manager or a build tree: yadiff says a release is available
+  and links to it, but doesn't install it.
 
 ## Signing in to Azure DevOps
 
@@ -296,23 +319,27 @@ and smoke-tests the zip on a clean `PATH` with a headless `--export`.
 ctest --test-dir build --output-on-failure
 ```
 
-- `test_diffmodel` covers the diff parser, moves, pairing and word highlights.
+- `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
+  yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
   applying a change to a file, line-ending preservation, and difftool registration. That last one
   uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
-  options, review fingerprints, line counts, directory and file comparison, and `/dev/null` sides.
+  options (including ignore case and leading/trailing whitespace with every algorithm), review
+  fingerprints, line counts, directory and file comparison, `/dev/null` sides, and blame.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
   line. The keyring is redirected to a temporary file there.
+- `test_update` covers version comparison, telling an `install.sh` snapshot from other installs,
+  replacing files in use the Windows way, and reading the latest release from a fake GitHub API.
 - `test_navigation` drives the real window offscreen. It checks change navigation across files, the
   view toggle, review marks, right-click copy, and that unchanged lines never inherit a highlight.
   It also covers folds, find in all three scopes, editing and saving (with highlighting on), applying
   a change to disk, wrap alignment, auto-reload, the commit picker, and that no two actions share a
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
-  the file filter, image diffs, review-thread placement, and the large-diff notice. The other GUI
+  the file filter, image diffs, review-thread placement, the large-diff notice, themes and blame. The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
 To look at the UI without a display, render every file in both modes to PNG:
@@ -344,6 +371,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |
 | `src/PrReview.*` | Review operations for whichever host a PR is on |
 | `src/Http.*`, `src/SecretStore.*` | HTTP client, system keyring |
+| `src/Updater.*` | Update checks and installs from GitHub releases |
 | `src/ReviewStore.*` | Persisted review marks |
 | `src/CodeView.*` | Text view: gutter, move annotations, folds, search hits, wrap padding, editing |
 | `src/DiffPane.*` | Inline and side-by-side layout, change navigation |

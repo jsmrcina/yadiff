@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.6.0 LANGUAGES CXX)
+project(yadiff VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,7 @@ add_library(yadiffcore STATIC
     src/GitHubReview.cpp src/GitHubReview.h
     src/GitRepo.cpp src/GitRepo.h
     src/Http.cpp src/Http.h
+    src/Updater.cpp src/Updater.h
     src/PrReview.cpp src/PrReview.h
     src/Report.cpp src/Report.h
     src/ReviewStore.cpp src/ReviewStore.h
@@ -120,6 +121,10 @@ if(BUILD_TESTING)
     target_compile_definitions(test_ado PRIVATE YADIFF_BINARY="$<TARGET_FILE:yadiff>")
     add_dependencies(test_ado yadiff)
     add_test(NAME test_ado COMMAND test_ado)
+
+    qt_add_executable(test_update tests/test_update.cpp)
+    target_link_libraries(test_update PRIVATE yadiffcore Qt6::Test)
+    add_test(NAME test_update COMMAND test_update)
 
     qt_add_executable(test_navigation tests/test_navigation.cpp)
     target_link_libraries(test_navigation PRIVATE yadiffui Qt6::Test)

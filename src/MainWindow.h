@@ -4,6 +4,7 @@
 #include "FileFilter.h"
 #include "GitHubReview.h"
 #include "GitRepo.h"
+#include "Updater.h"
 #include "ReviewStore.h"
 
 #include <QFutureWatcher>
@@ -18,6 +19,7 @@
 class DiffPane;
 class FileList;
 class QAction;
+class QPushButton;
 class QActionGroup;
 class QComboBox;
 class QLabel;
@@ -75,6 +77,10 @@ private:
     void reloadCurrentFile();
     void loadBlame();
     void openBlameCommit(const QString &hash);
+    // Updates: `interactive` reports every outcome and asks before installing.
+    void checkForUpdates(bool interactive);
+    void installUpdate(const Updater::Release &release, bool interactive);
+    void restartForUpdate();
     void nextChange();
     void prevChange();
     void setSideBySide(bool on);
@@ -189,6 +195,8 @@ private:
     QAction *m_lineNumbersAct = nullptr;
     QAction *m_blameAct = nullptr;
     quint64 m_blameGen = 0;
+    bool m_updating = false;
+    QPushButton *m_restartButton = nullptr;
     QAction *m_trimPrefixAct = nullptr;
     QAction *m_clickWordAct = nullptr;
     QAction *m_stageAct = nullptr;
