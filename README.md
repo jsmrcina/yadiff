@@ -177,8 +177,9 @@ computed by yadiff.
 ## Menus
 
 - **File:**
-  - New comparison, which opens in a new window: a repository, two revisions, two folders, two
-    files, or a PR link.
+  - New comparison: a repository, two revisions, two folders, two files, or a PR link. It opens
+    in a new window, except in the empty window plain `yadiff` opens outside a repository, which
+    shows it in place.
   - Compare commits, Change window title, and Export HTML report.
   - Globbing ignore patterns (`.gitignore` syntax), which can be turned off.
   - Stage, unstage or revert the selected files. Revert asks first and moves deleted files to the
@@ -379,6 +380,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/FileList.*` | Directory-grouped file pane |
 | `src/MainWindow.*` | Menus, toolbar, file operations, background loading |
 | `src/NewComparisonDialog.*` | File > New comparison |
+| `src/ComparisonArgs.*` | Command-line arguments to a repository and comparison (also used by New comparison) |
 | `src/PreferencesDialog.*`, `src/Settings.*` | Colours, font, persisted options |
 | `resources/syntax-themes/` | Syntax themes KSyntaxHighlighting doesn't ship (Light+, Vibrant Ink) |
 | `resources/` | Icon (SVG source, PNG sizes, Windows `.ico`/`.rc`) and desktop entry |

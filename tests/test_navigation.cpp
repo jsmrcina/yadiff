@@ -1,4 +1,5 @@
 #include "AdoLoginDialog.h"
+#include "ComparisonArgs.h"
 #include "CodeView.h"
 #include "DiffPane.h"
 #include "FileList.h"
@@ -1397,6 +1398,69 @@ private slots:
         QVERIFY(hint);
         action(w, QStringLiteral("Refresh list"))->trigger(); // still nothing, and no git error
         QCOMPARE(w.findChild<FileList *>()->visibleCount(), 0);
+
+        // File > New comparison then shows the new comparison in this same window.
+        QDir(tmp.path()).mkpath(QStringLiteral("L"));
+        QDir(tmp.path()).mkpath(QStringLiteral("R"));
+        write(tmp.filePath(QStringLiteral("L/a.txt")), "one\n");
+        write(tmp.filePath(QStringLiteral("R/a.txt")), "two\n");
+        bool filled = false;
+        QTimer poll;
+        poll.setInterval(20);
+        connect(&poll, &QTimer::timeout, &w, [&] {
+            auto *dlg = w.findChild<NewComparisonDialog *>();
+            if (!dlg || !dlg->isVisible())
+                return;
+            poll.stop();
+            dlg->findChild<QLineEdit *>(QStringLiteral("leftDir"))->setText(tmp.filePath(QStringLiteral("L")));
+            dlg->findChild<QLineEdit *>(QStringLiteral("rightDir"))->setText(tmp.filePath(QStringLiteral("R")));
+            for (QPushButton *b : dlg->findChildren<QPushButton *>())
+                if (b->text() == QStringLiteral("Compare"))
+                    b->click();
+            filled = true;
+        });
+        poll.start();
+        QTimer guard;
+        guard.setSingleShot(true);
+        connect(&guard, &QTimer::timeout, &w, [] {
+            if (QWidget *m = QApplication::activeModalWidget())
+                m->close();
+        });
+        guard.start(10000);
+        action(w, QStringLiteral("New comparison…"))->trigger();
+        QVERIFY(filled);
+        QVERIFY(w.isVisible());
+        QCOMPARE(w.findChild<FileList *>()->visibleCount(), 1);
+        QVERIFY(w.findChild<DiffPane *>()->hasDiff());
+        QVERIFY2(w.windowTitle().contains(QStringLiteral("compare")), qPrintable(w.windowTitle()));
+    }
+    void newComparisonArgumentsResolve()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "a\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("one")});
+        QString error;
+        // A repository: its working tree.
+        auto req = ComparisonArgs::fromArguments({QStringLiteral("-C"), d}, QDir::tempPath(), &error);
+        QVERIFY(req);
+        auto r = ComparisonArgs::resolve(*req, &error);
+        QVERIFY2(r, qPrintable(error));
+        QCOMPARE(r->cmp.mode, Comparison::Mode::WorkingTree);
+        QVERIFY(!r->cmp.empty);
+        // Revisions in it.
+        req = ComparisonArgs::fromArguments({QStringLiteral("-C"), d, QStringLiteral("HEAD")}, QDir::tempPath(), &error);
+        r = ComparisonArgs::resolve(*req, &error);
+        QVERIFY2(r, qPrintable(error));
+        QCOMPARE(r->cmp.mode, Comparison::Mode::Revisions);
+        QVERIFY(r->cmp.rev2.isEmpty()); // against the working tree
+        // Mistakes come back as errors, not exits.
+        req = ComparisonArgs::fromArguments({QStringLiteral("-C"), d, QStringLiteral("nosuchrev")}, QDir::tempPath(), &error);
+        QVERIFY(!ComparisonArgs::resolve(*req, &error));
+        QVERIFY(error.contains(QStringLiteral("nosuchrev")));
+        QVERIFY(!ComparisonArgs::fromArguments({QStringLiteral("--bogus")}, QDir::tempPath(), &error));
     }
 };
 

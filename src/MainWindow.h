@@ -81,6 +81,8 @@ private:
     void checkForUpdates(bool interactive);
     void installUpdate(const Updater::Release &release, bool interactive);
     void restartForUpdate();
+    // Shows a different comparison in this window (used by an empty window).
+    void setComparison(GitRepo repo, Comparison cmp);
     void nextChange();
     void prevChange();
     void setSideBySide(bool on);

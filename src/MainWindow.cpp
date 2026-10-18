@@ -17,6 +17,7 @@
 #include "Report.h"
 #include "TextFile.h"
 #include "Theme.h"
+#include "ComparisonArgs.h"
 #include "Updater.h"
 #include "Usage.h"
 
@@ -2418,12 +2419,31 @@ void MainWindow::newComparison()
     NewComparisonDialog dlg(m_repo.isRepository() && !m_repo.isBare() ? m_repo.root() : QString(), this);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    // A new window (its own process), so this comparison stays as it is. An empty
-    // window has nothing to keep: the new one takes its place.
-    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), dlg.arguments()))
-        QMessageBox::warning(this, tr("New comparison"), tr("Could not start yadiff."));
-    else if (m_cmp.empty)
-        close();
+    if (!m_cmp.empty) {
+        // A new window (its own process), so this comparison stays as it is.
+        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), dlg.arguments()))
+            QMessageBox::warning(this, tr("New comparison"), tr("Could not start yadiff."));
+        return;
+    }
+    // An empty window has nothing to keep: show the comparison right here.
+    QString error;
+    auto req = ComparisonArgs::fromArguments(dlg.arguments(), m_repo.root(), &error);
+    std::optional<ComparisonArgs::Result> resolved;
+    if (req) {
+        req->progress = [this](const QString &msg) {
+            statusBar()->showMessage(msg);
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        };
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        resolved = ComparisonArgs::resolve(*req, &error);
+        QApplication::restoreOverrideCursor();
+        statusBar()->clearMessage();
+    }
+    if (!resolved) {
+        QMessageBox::warning(this, tr("New comparison"), error);
+        return;
+    }
+    setComparison(std::move(resolved->repo), resolved->cmp);
 }
 
 void MainWindow::changeWindowTitle()
@@ -2784,4 +2804,29 @@ void MainWindow::restartForUpdate()
         return;
     }
     close();
+}
+
+void MainWindow::setComparison(GitRepo repo, Comparison cmp)
+{
+    m_repo = std::move(repo);
+    m_cmp = std::move(cmp);
+    m_cmp.ignoreGlobs = Settings::ignoreGlobs();
+    m_cmp.useIgnoreGlobs = Settings::useIgnoreGlobs();
+    m_cmp.includeIdentical = Settings::showFileCategory(QStringLiteral("identical"));
+    // Everything that belonged to the old comparison goes.
+    ++m_listGen;
+    ++m_fileGen;
+    m_reviews = std::make_unique<ReviewStore>(reviewRoot());
+    m_changes.clear();
+    m_diffCache.clear();
+    m_matchCounts.clear();
+    m_showLarge.clear();
+    m_comments.clear();
+    m_scrollMemory.clear();
+    m_lastSignature.clear();
+    m_shownIndex = -1;
+    m_customTitle.clear();
+    updateModeUi();
+    updateTitle();
+    reload();
 }
