@@ -8,6 +8,7 @@ inline QString yadiffUsageText()
     return QStringLiteral(
         "Graphical diff viewer for Git.\n\n"
         "  yadiff                      staged and unstaged changes, compared against HEAD\n"
+        "                             (outside a repository: an empty window; use File > New comparison)\n"
         "  yadiff PATH...              just these files or directories, compared against HEAD\n"
         "  yadiff REV                  REV compared against the working tree\n"
         "  yadiff REV1 REV2            REV1 compared against REV2\n"

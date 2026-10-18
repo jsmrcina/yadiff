@@ -103,6 +103,8 @@ struct Comparison {
     // Swapped sides for comparisons that involve the working tree (git diff -R): the
     // working tree is on the left. (Other comparisons swap rev1/rev2 or the paths.)
     bool reversed = false;
+    // Nothing to compare yet (yadiff started outside a repository): no files.
+    bool empty = false;
     // Also list files that are the same on both sides (status '=').
     bool includeIdentical = false;
     // Files whose path matches one of these globs are left out (when useIgnoreGlobs).

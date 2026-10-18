@@ -4,6 +4,7 @@ A graphical diff viewer for Git, written in C++20 with Qt 6 Widgets. It runs on 
 
 ```
 yadiff                      staged and unstaged changes, compared against HEAD
+                           (outside a repository: an empty window; use File > New comparison)
 yadiff PATH...              just these files or directories, compared against HEAD
 yadiff REV                  REV compared against the working tree
 yadiff REV1 REV2            REV1 compared against REV2

@@ -334,6 +334,10 @@ QString MainWindow::describeComparison() const
 void MainWindow::updateTitle()
 {
     QString name;
+    if (m_cmp.empty) {
+        setWindowTitle(m_customTitle.isEmpty() ? tr("yadiff") : m_customTitle);
+        return;
+    }
     if (m_cmp.mode == Comparison::Mode::Paths)
         name = tr("compare");
     else
@@ -1157,7 +1161,9 @@ void MainWindow::reload(std::function<void()> afterFile)
                 loadComments();
 
             if (m_changes.isEmpty() || m_files->visibleCount() == 0) {
-                m_pane->showMessage(QString(), m_changes.isEmpty() ? (m_cmp.paths.isEmpty() ? tr("No changes")
+                m_pane->showMessage(QString(), m_cmp.empty ? tr("Nothing to compare yet.\n\nUse File → New comparison (Ctrl+N) to "
+                                                                "pick a repository, two revisions, two folders, two files or a PR link.")
+                                               : m_changes.isEmpty() ? (m_cmp.paths.isEmpty() ? tr("No changes")
                                                                                             : tr("No changes in the selected paths"))
                                                                    : tr("No files match the filter"));
                 updateEditActions();
@@ -2412,9 +2418,12 @@ void MainWindow::newComparison()
     NewComparisonDialog dlg(m_repo.isRepository() && !m_repo.isBare() ? m_repo.root() : QString(), this);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    // A new window (its own process), so this comparison stays as it is.
+    // A new window (its own process), so this comparison stays as it is. An empty
+    // window has nothing to keep: the new one takes its place.
     if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), dlg.arguments()))
         QMessageBox::warning(this, tr("New comparison"), tr("Could not start yadiff."));
+    else if (m_cmp.empty)
+        close();
 }
 
 void MainWindow::changeWindowTitle()

@@ -334,8 +334,13 @@ int main(int argc, char *argv[])
         pathArgs = positional; // anything else limits the PR to those paths
     } else {
         repo = GitRepo::open(cwd, &error);
-        if (!repo)
+        if (!repo && positional.isEmpty() && !parser.isSet(exportOpt)) {
+            // Plain `yadiff` outside a repository: an empty window, ready for File > New comparison.
+            repo = GitRepo::forPaths(cwd);
+            cmp.empty = true;
+        } else if (!repo) {
             return fail(error.isEmpty() ? QStringLiteral("not a git repository: %1").arg(cwd) : error);
+        }
 
         // Classify arguments: leading ones that resolve as revisions are revisions,
         // the rest (and everything after "--") are paths.

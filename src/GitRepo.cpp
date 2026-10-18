@@ -448,6 +448,8 @@ bool matchesAnyGlob(const QString &path, const QStringList &globs)
 
 QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) const
 {
+    if (cmp.empty)
+        return {};
     QVector<FileChange> result = listChangesCore(cmp, error);
     if (error && !error->isEmpty())
         return result;

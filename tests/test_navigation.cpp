@@ -1379,6 +1379,25 @@ private slots:
         QVERIFY(buttons.contains(QStringLiteral("Open release page")));
         QVERIFY(!Settings::autoUpdate());
     }
+    void emptyWindowOutsideARepository()
+    {
+        // Plain `yadiff` outside a repository opens a window with nothing to compare.
+        QTemporaryDir tmp;
+        Comparison cmp;
+        cmp.empty = true;
+        MainWindow w(GitRepo::forPaths(tmp.path()), cmp);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        QCOMPARE(w.findChild<FileList *>()->visibleCount(), 0);
+        QVERIFY(!w.findChild<DiffPane *>()->hasDiff());
+        QCOMPARE(w.windowTitle(), QStringLiteral("yadiff"));
+        bool hint = false;
+        for (QLabel *l : w.findChildren<QLabel *>())
+            hint = hint || (l->isVisible() && l->text().contains(QStringLiteral("New comparison")));
+        QVERIFY(hint);
+        action(w, QStringLiteral("Refresh list"))->trigger(); // still nothing, and no git error
+        QCOMPARE(w.findChild<FileList *>()->visibleCount(), 0);
+    }
 };
 
 QTEST_MAIN(TestNavigation)
