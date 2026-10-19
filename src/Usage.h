@@ -21,8 +21,13 @@ inline QString yadiffUsageText()
         "  yadiff --ado-login [ORG]    sign in to Azure DevOps (token saved in the system keyring)\n"
         "  yadiff --no-index A B       two directories or two files, in or outside a repository\n"
         "                             (automatic when A and B are outside the current repository)\n"
+        "  yadiff --patch FILE         a patch file, on top of the files it applies to when they're there\n"
+        "  yadiff --session FILE       a session saved with File > Save session\n"
         "  yadiff --register-difftool  make yadiff a git difftool (git difftool -t yadiff, git difftool -d)\n"
+        "  yadiff --add-file-manager-menu   \"Compare with yadiff\" in Dolphin / Explorer\n"
         "  yadiff ... --export FILE    write an HTML report instead of opening a window\n\n"
         "Options: -C DIR (run in DIR), -a/--all (all changes vs HEAD), --wait (stay attached),\n"
-        "--algorithm NAME, --inline, --side-by-side, --unregister-difftool, --ado-logout ORG.");
+        "--algorithm NAME, --title TEXT, --inline, --side-by-side, --unregister-difftool, --ado-logout ORG,\n"
+        "--select-left PATH and --compare-to-left PATH (used by the file manager menu),\n"
+        "--remove-file-manager-menu.");
 }

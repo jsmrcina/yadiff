@@ -131,7 +131,7 @@ double similarity(const QString &x, const QString &y)
 
 const QRegularExpression &hunkRe()
 {
-    static const QRegularExpression re(QStringLiteral(R"(^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@)"));
+    static const QRegularExpression re(QStringLiteral(R"(^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@)"));
     return re;
 }
 
@@ -150,8 +150,22 @@ FileDiff parseUnified(const QString &diffText, bool detectMoves)
         if (line.startsWith(QLatin1String("@@"))) {
             const auto m = hunkRe().match(line);
             if (m.hasMatch()) {
-                oldNo = m.captured(1).toInt();
-                newNo = m.captured(2).toInt();
+                // With no lines on a side, the start is the line before the change.
+                const int nextOld = m.captured(1).toInt() + (m.capturedLength(2) && m.captured(2).toInt() == 0 ? 1 : 0);
+                const int nextNew = m.captured(3).toInt() + (m.capturedLength(4) && m.captured(4).toInt() == 0 ? 1 : 0);
+                // Lines between hunks (a diff with little context, such as a patch) aren't
+                // there: a gap line says so.
+                const int skipped = d.lines.isEmpty() ? std::max(nextOld, nextNew) - 1
+                                                      : std::max(nextOld - oldNo, nextNew - newNo);
+                if (skipped > 0) {
+                    DiffLine gap;
+                    gap.gap = true;
+                    gap.text = skipped == 1 ? QStringLiteral("\u22EF 1 line not shown")
+                                            : QStringLiteral("\u22EF %1 lines not shown").arg(skipped);
+                    d.lines.push_back(gap);
+                }
+                oldNo = nextOld;
+                newNo = nextNew;
                 inHunk = true;
             }
             continue;

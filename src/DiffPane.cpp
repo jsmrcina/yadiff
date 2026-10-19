@@ -235,6 +235,12 @@ Row DiffPane::makeRow(int i) const
     const FileDiff &d = m_file.diff;
     const DiffLine &l = d.lines[i];
     Row r;
+    if (l.gap) { // lines the diff doesn't have: like a fold that can't open
+        r.fold = true;
+        r.text = QStringLiteral("\u2002\u2002") + QString(l.text).replace(u' ', u'\u2002');
+        r.tooltip = tr("These lines aren't in the patch");
+        return r;
+    }
     r.kind = l.kind;
     r.oldNo = l.oldNo;
     r.newNo = l.newNo;

@@ -21,6 +21,8 @@ struct Request {
     bool noIndex = false;
     QString ghpr, ado;        // pull request links
     QString algorithm;
+    QString title;            // shown instead of the default description
+    QString patch;            // a patch file to show (Comparison::Mode::Patch)
     bool allowEmpty = false;  // no arguments outside a repository: an empty comparison
     QJsonObject handed;       // a pull request already resolved (by the parent process)
     std::function<void(const QString &)> progress;
@@ -36,7 +38,10 @@ struct Result {
 std::optional<Result> resolve(const Request &req, QString *error);
 
 // Parses the arguments File > New comparison builds (-C DIR, revisions, --no-index A B,
-// -ghpr URL, -ado URL, -a, --algorithm NAME, --).
+// -ghpr URL, -ado URL, -a, --algorithm NAME, --title TEXT, --patch FILE, --).
 std::optional<Request> fromArguments(const QStringList &args, const QString &cwd, QString *error);
+// The other way round: arguments that fromArguments() turns back into `req` (for recent
+// comparisons and sessions).
+QStringList toArguments(const Request &req);
 
 } // namespace ComparisonArgs

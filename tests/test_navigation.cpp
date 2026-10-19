@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "NewComparisonDialog.h"
 #include "SearchBar.h"
+#include "Session.h"
 #include "Settings.h"
 #include "Theme.h"
 
@@ -1622,6 +1623,79 @@ private slots:
         QVERIFY(!ComparisonArgs::resolve(*req, &error));
         QVERIFY(error.contains(QStringLiteral("nosuchrev")));
         QVERIFY(!ComparisonArgs::fromArguments({QStringLiteral("--bogus")}, QDir::tempPath(), &error));
+
+        // toArguments() gives fromArguments() back the same request.
+        ComparisonArgs::Request q;
+        q.cwd = d;
+        q.positional = {QStringLiteral("HEAD"), QStringLiteral("f.txt")};
+        q.forcedPaths = 1;
+        q.title = QStringLiteral("T");
+        q.algorithm = QStringLiteral("heckel");
+        const auto back = ComparisonArgs::fromArguments(ComparisonArgs::toArguments(q), QDir::tempPath(), &error);
+        QVERIFY(back);
+        QCOMPARE(back->positional, q.positional);
+        QCOMPARE(back->forcedPaths, 1);
+        QCOMPARE(back->title, QStringLiteral("T"));
+        QCOMPARE(back->algorithm, QStringLiteral("heckel"));
+        QCOMPARE(back->cwd, d);
+    }
+
+    void dropsRecentsSessionsAndPatches()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        write(d + QStringLiteral("/a.txt"), "one\ntwo\n");
+        write(d + QStringLiteral("/b.txt"), "one\nTWO\n");
+        write(d + QStringLiteral("/fix.patch"), "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2\n");
+        Settings::clearRecentComparisons();
+        Comparison empty;
+        empty.empty = true;
+        auto open = [&](const QStringList &dropped) {
+            auto w = std::make_unique<MainWindow>(GitRepo::forPaths(d), empty);
+            w->show();
+            w->openDropped(dropped);
+            return w;
+        };
+        // Two files dropped on an empty window are compared right there.
+        auto w = open({d + QStringLiteral("/a.txt"), d + QStringLiteral("/b.txt")});
+        auto *pane = w->findChild<DiffPane *>();
+        QVERIFY(pane->hasDiff());
+        QCOMPARE(pane->changeCount(), 1);
+        QVERIFY(!Settings::recentComparisons().isEmpty());
+        QVERIFY(Settings::recentComparisons().first().arguments.contains(QStringLiteral("--no-index")));
+
+        // One at a time works too.
+        w = open({d + QStringLiteral("/a.txt")});
+        QVERIFY(!w->findChild<DiffPane *>()->hasDiff());
+        w->openDropped({d + QStringLiteral("/b.txt")});
+        QCOMPARE(w->findChild<DiffPane *>()->changeCount(), 1);
+
+        // A patch: it fits a.txt, so the whole file shows with the change.
+        w = open({d + QStringLiteral("/fix.patch")});
+        pane = w->findChild<DiffPane *>();
+        QVERIFY(pane->hasDiff());
+        QCOMPARE(pane->changeCount(), 1);
+        QVERIFY(w->windowTitle().contains(QStringLiteral("fix.patch")));
+        QVERIFY(action(*w, QStringLiteral("Apply patch\u2026"))->isEnabled());
+
+        // A session reopens its comparison with its options and view.
+        Session s;
+        s.arguments = {QStringLiteral("-C"), d, QStringLiteral("--no-index"), d + QStringLiteral("/a.txt"),
+                       d + QStringLiteral("/b.txt")};
+        s.title = QStringLiteral("Saved one");
+        s.sideBySide = 0;
+        s.hasOptions = true;
+        s.options.ignoreCase = true;
+        QString error;
+        QVERIFY(s.write(d + QStringLiteral("/s.yadiff"), &error));
+        w = open({d + QStringLiteral("/s.yadiff")});
+        pane = w->findChild<DiffPane *>();
+        QCOMPARE(w->windowTitle(), QStringLiteral("Saved one"));
+        QCOMPARE(pane->mode(), DiffPane::Mode::Inline);
+        QCOMPARE(pane->changeCount(), 0); // two vs TWO: equal when ignoring case
+        QVERIFY(action(*w, QStringLiteral("Ignore case"))->isChecked());
+        Settings::setSideBySide(true);
+        Settings::clearRecentComparisons();
     }
 };
 

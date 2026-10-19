@@ -20,8 +20,17 @@
 #include "ComparisonArgs.h"
 #include "Updater.h"
 #include "Usage.h"
+#include "Scratch.h"
+#include "Session.h"
+#include "ShellMenu.h"
 
 #include <QActionGroup>
+#include <QAbstractScrollArea>
+#include <QDragEnterEvent>
+#include <QGridLayout>
+#include <QJsonDocument>
+#include <QMimeData>
+#include <QPlainTextEdit>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -307,6 +316,12 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
         resize(1400, 900);
     splitter->restoreState(s.value(QStringLiteral("window/splitter")).toByteArray());
 
+    // Files and folders dropped anywhere on the window open a comparison.
+    setAcceptDrops(true);
+    for (QAbstractScrollArea *w : findChildren<QAbstractScrollArea *>())
+        w->viewport()->installEventFilter(this);
+
+    rememberRecent();
     reload();
 
     // Automatic updates: at most one check a day, a little after start-up.
@@ -381,6 +396,20 @@ void MainWindow::createActions()
                                        this, &MainWindow::openHistory);
     m_historyAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     m_historyAct->setToolTip(tr("Pick commits from the history to compare (Ctrl+L)"));
+    m_recentMenu = fileMenu->addMenu(tr("&Recent comparisons"));
+    connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
+    fileMenu->addAction(tr("Compare &text\u2026"), this, &MainWindow::compareText)
+        ->setStatusTip(tr("Paste or type two texts and compare them"));
+    fileMenu->addAction(tr("Open &patch\u2026"), this, &MainWindow::openPatch)
+        ->setStatusTip(tr("Show a .patch or .diff file, on top of the files it applies to when they are there"));
+    m_applyPatchAct = fileMenu->addAction(tr("&Apply patch\u2026"), this, &MainWindow::applyPatch);
+    m_applyPatchAct->setStatusTip(tr("Apply the patch shown to the files it was made for (git apply)"));
+    fileMenu->addAction(tr("Save as patc&h\u2026"), this, &MainWindow::saveAsPatch)
+        ->setStatusTip(tr("Write the whole comparison as a patch file that git apply takes"));
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("Open sessi&on\u2026"), this, &MainWindow::openSession);
+    fileMenu->addAction(tr("Sa&ve session\u2026"), this, &MainWindow::saveSession)
+        ->setStatusTip(tr("Save this comparison, the file shown, the view and the diff options to reopen later"));
     fileMenu->addAction(tr("Change window &title…"), this, &MainWindow::changeWindowTitle);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("Edit &globbing ignore patterns…"), this, &MainWindow::editIgnorePatterns);
@@ -456,6 +485,8 @@ void MainWindow::createActions()
     selectAll->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     editMenu->addAction(tr("Copy &left file path"), this, [this] { copyFilePath(false); });
     editMenu->addAction(tr("Copy ri&ght file path"), this, [this] { copyFilePath(true); });
+    editMenu->addAction(tr("Compare clipboard with left file"), this, [this] { compareClipboard(false); });
+    editMenu->addAction(tr("Compare clipboard with right file"), this, [this] { compareClipboard(true); });
     editMenu->addSeparator();
     QAction *findAct = editMenu->addAction(tr("&Find…"), this, [this] {
         if (m_pane->hasSelection() && m_search->isHidden())
@@ -891,6 +922,20 @@ void MainWindow::createActions()
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&Register as git difftool…"), this, &MainWindow::registerDifftool);
     helpMenu->addAction(tr("U&nregister as git difftool"), this, &MainWindow::unregisterDifftool);
+    helpMenu->addAction(tr("Add to the &file manager's menu"), this, [this] {
+        QString summary, error;
+        if (ShellMenu::install(Difftool::preferredExecutable(), &summary, &error))
+            QMessageBox::information(this, tr("File manager menu"), summary);
+        else
+            QMessageBox::warning(this, tr("File manager menu"), error);
+    });
+    helpMenu->addAction(tr("Remove from the file manager's menu"), this, [this] {
+        QString summary, error;
+        if (ShellMenu::uninstall(&summary, &error))
+            QMessageBox::information(this, tr("File manager menu"), summary);
+        else
+            QMessageBox::warning(this, tr("File manager menu"), error);
+    });
     helpMenu->addSeparator();
     QAction *autoUpdate = helpMenu->addAction(tr("&Automatically install updates"));
     autoUpdate->setCheckable(true);
@@ -1037,6 +1082,7 @@ void MainWindow::updateModeUi()
     m_unstageAct->setEnabled(workingTree);
     // Revert writes the right side: the working tree (unless swapped) or a compared folder.
     m_revertAct->setEnabled((workingTree && !m_cmp.reversed) || m_cmp.mode == Comparison::Mode::Paths);
+    m_applyPatchAct->setEnabled(m_cmp.mode == Comparison::Mode::Patch);
     syncOptionControls();
     updateCommitBar();
 }
@@ -1326,6 +1372,10 @@ void MainWindow::reload(std::function<void()> afterFile)
         keepGroup = m_changes[cur].group;
         keepChange = m_pane->currentChange();
     }
+    if (!m_selectOnLoad.isEmpty()) { // a session's file
+        keepPath = std::exchange(m_selectOnLoad, QString());
+        keepChange = -1;
+    }
 
     struct ListResult {
         QVector<FileChange> changes;
@@ -1491,7 +1541,10 @@ void MainWindow::showFile(int index)
     const bool wasEditing = m_pane->isEditing() && index == m_shownIndex;
 
     QString left, right;
-    if (m_cmp.mode == Comparison::Mode::Paths) {
+    if (m_cmp.mode == Comparison::Mode::Patch) {
+        left = tr("Before the patch");
+        right = tr("After the patch");
+    } else if (m_cmp.mode == Comparison::Mode::Paths) {
         left = homeShortened(m_cmp.pathsAreFiles ? QFileInfo(m_cmp.leftPath).absolutePath() : m_cmp.leftPath);
         right = homeShortened(m_cmp.pathsAreFiles ? QFileInfo(m_cmp.rightPath).absolutePath() : m_cmp.rightPath);
     } else if (m_cmp.mode == Comparison::Mode::Revisions) {
@@ -2658,17 +2711,22 @@ void MainWindow::openInGitk()
 void MainWindow::newComparison()
 {
     NewComparisonDialog dlg(m_repo.isRepository() && !m_repo.isBare() ? m_repo.root() : QString(), this);
-    if (dlg.exec() != QDialog::Accepted)
-        return;
+    if (dlg.exec() == QDialog::Accepted)
+        openArguments(dlg.arguments());
+}
+
+void MainWindow::openArguments(const QStringList &args, const std::optional<Session> &session, const QString &sessionFile)
+{
     if (!m_cmp.empty) {
         // A new window (its own process), so this comparison stays as it is.
-        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), dlg.arguments()))
+        const QStringList childArgs = sessionFile.isEmpty() ? args : QStringList{QStringLiteral("--session"), sessionFile};
+        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), childArgs))
             QMessageBox::warning(this, tr("New comparison"), tr("Could not start yadiff."));
         return;
     }
     // An empty window has nothing to keep: show the comparison right here.
     QString error;
-    auto req = ComparisonArgs::fromArguments(dlg.arguments(), m_repo.root(), &error);
+    auto req = ComparisonArgs::fromArguments(args, m_repo.root(), &error);
     std::optional<ComparisonArgs::Result> resolved;
     if (req) {
         req->progress = [this](const QString &msg) {
@@ -2684,7 +2742,388 @@ void MainWindow::newComparison()
         QMessageBox::warning(this, tr("New comparison"), error);
         return;
     }
+    if (!resolved->handed.isEmpty())
+        qputenv("YADIFF_PR_RESOLVED", QJsonDocument(resolved->handed).toJson(QJsonDocument::Compact));
     setComparison(std::move(resolved->repo), resolved->cmp);
+    if (session)
+        applySession(*session);
+}
+
+// ---- Recent comparisons and sessions -------------------------------------------
+
+QStringList MainWindow::comparisonArguments() const
+{
+    // Arguments that open this comparison again (from any directory).
+    const Comparison &c = m_cmp;
+    QStringList a{QStringLiteral("-C"), c.mode == Comparison::Mode::Patch ? c.patchBase : m_repo.root()};
+    if (c.prNumber > 0 && c.prHost == QLatin1String("github"))
+        return a << QStringLiteral("-ghpr")
+                 << QStringLiteral("https://github.com/%1/%2/pull/%3").arg(c.prOwner, c.prRepo).arg(c.prNumber);
+    if (c.prNumber > 0 && c.prHost == QLatin1String("ado") && !c.prWebUrl.isEmpty())
+        return a << QStringLiteral("-ado") << c.prWebUrl;
+    switch (c.mode) {
+    case Comparison::Mode::Patch:
+        a << QStringLiteral("--patch") << c.patchPath;
+        break;
+    case Comparison::Mode::Paths:
+        a << QStringLiteral("--no-index") << c.leftPath << c.rightPath;
+        break;
+    case Comparison::Mode::Revisions:
+        a << c.rev1;
+        if (!c.rev2.isEmpty())
+            a << c.rev2;
+        break;
+    case Comparison::Mode::WorkingTree:
+        if (c.allChanges)
+            a << QStringLiteral("-a");
+        break;
+    }
+    if (!c.title.isEmpty() && c.mode != Comparison::Mode::Patch)
+        a = a.mid(0, 2) + QStringList{QStringLiteral("--title"), c.title} + a.mid(2); // options before the paths
+    if (!c.paths.isEmpty() && c.mode != Comparison::Mode::Paths) {
+        a << QStringLiteral("--");
+        for (const QString &p : c.paths)
+            a << QDir(m_repo.root()).filePath(p);
+    }
+    return a;
+}
+
+void MainWindow::rememberRecent()
+{
+    if (m_cmp.empty || m_steppingCommits)
+        return;
+    // git difftool's temporary copies (straight in the temp folder, or a git-difftool.*
+    // folder there) are gone once it finishes.
+    auto difftoolTemp = [](const QString &p) {
+        return QFileInfo(p).absolutePath() == QDir::tempPath() || p.contains(QLatin1String("/git-difftool."));
+    };
+    if (m_cmp.mode == Comparison::Mode::Paths && (difftoolTemp(m_cmp.leftPath) || difftoolTemp(m_cmp.rightPath)))
+        return;
+    QString where = m_cmp.mode == Comparison::Mode::Paths   ? QString()
+                    : m_cmp.mode == Comparison::Mode::Patch ? homeShortened(m_cmp.patchBase)
+                                                            : QDir(m_repo.root()).dirName();
+    const QString label = where.isEmpty() ? describeComparison() : QStringLiteral("%1 \u2014 %2").arg(where, describeComparison());
+    Settings::addRecentComparison(comparisonArguments(), label);
+}
+
+void MainWindow::rebuildRecentMenu()
+{
+    m_recentMenu->clear();
+    const QVector<Settings::RecentComparison> recent = Settings::recentComparisons();
+    for (const Settings::RecentComparison &r : recent) {
+        QAction *a = m_recentMenu->addAction(r.label, this, [this, args = r.arguments] { openArguments(args); });
+        a->setToolTip(QStringLiteral("yadiff ") + r.arguments.join(u' '));
+        a->setStatusTip(a->toolTip());
+    }
+    m_recentMenu->setToolTipsVisible(true);
+    if (recent.isEmpty())
+        m_recentMenu->addAction(tr("(none yet)"))->setEnabled(false);
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction(tr("Clear the list"), this, [] { Settings::clearRecentComparisons(); })->setEnabled(!recent.isEmpty());
+}
+
+void MainWindow::saveSession()
+{
+    if (m_cmp.empty)
+        return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save session"), QDir::homePath() + QStringLiteral("/comparison.yadiff"),
+                                                      tr("yadiff sessions (*.yadiff)"));
+    if (path.isEmpty())
+        return;
+    Session session;
+    session.arguments = comparisonArguments();
+    session.title = m_customTitle;
+    if (m_shownIndex >= 0 && m_shownIndex < m_changes.size())
+        session.currentFile = m_changes[m_shownIndex].path;
+    session.sideBySide = m_pane->mode() == DiffPane::Mode::SideBySide ? 1 : 0;
+    session.hasOptions = true;
+    session.options = m_cmp.options;
+    QString error;
+    if (!session.write(path, &error))
+        QMessageBox::warning(this, tr("Save session"), error);
+    else
+        statusBar()->showMessage(tr("Saved %1").arg(path), 4000);
+}
+
+void MainWindow::openSession()
+{
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open session"), QDir::homePath(), tr("yadiff sessions (*.yadiff)"));
+    if (!path.isEmpty())
+        openSessionFile(path);
+}
+
+void MainWindow::openSessionFile(const QString &path)
+{
+    QString error;
+    const std::optional<Session> session = Session::read(path, &error);
+    if (!session) {
+        QMessageBox::warning(this, tr("Open session"), error);
+        return;
+    }
+    openArguments(session->arguments, session, QFileInfo(path).absoluteFilePath());
+}
+
+void MainWindow::applySession(const Session &session)
+{
+    if (!session.title.isEmpty()) {
+        m_customTitle = session.title;
+        updateTitle();
+    }
+    if (session.sideBySide >= 0)
+        setSideBySide(session.sideBySide == 1);
+    m_selectOnLoad = session.currentFile;
+    if (session.hasOptions) {
+        // The session's options for this window only; the saved defaults stay.
+        m_cmp.options = session.options;
+        syncOptionControls();
+        m_diffCache.clear();
+    }
+    reload();
+}
+
+// ---- Text, clipboard and patches ------------------------------------------------
+
+void MainWindow::compareText()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Compare text"));
+    dlg.resize(1000, 600);
+    auto *left = new QPlainTextEdit;
+    auto *right = new QPlainTextEdit;
+    for (QPlainTextEdit *e : {left, right}) {
+        e->setFont(Settings::font());
+        e->setLineWrapMode(QPlainTextEdit::NoWrap);
+    }
+    auto *name = new QLineEdit(QStringLiteral("text.txt"));
+    name->setToolTip(tr("The name's extension sets the syntax highlighting and comment syntax"));
+    auto paste = [](QPlainTextEdit *e) { e->setPlainText(QApplication::clipboard()->text()); };
+    auto *grid = new QGridLayout;
+    auto *pasteLeft = new QPushButton(tr("Paste"));
+    auto *pasteRight = new QPushButton(tr("Paste"));
+    connect(pasteLeft, &QPushButton::clicked, &dlg, [=] { paste(left); });
+    connect(pasteRight, &QPushButton::clicked, &dlg, [=] { paste(right); });
+    grid->addWidget(new QLabel(tr("Left")), 0, 0);
+    grid->addWidget(pasteLeft, 0, 1, Qt::AlignRight);
+    grid->addWidget(new QLabel(tr("Right")), 0, 2);
+    grid->addWidget(pasteRight, 0, 3, Qt::AlignRight);
+    grid->addWidget(left, 1, 0, 1, 2);
+    grid->addWidget(right, 1, 2, 1, 2);
+    auto *nameRow = new QHBoxLayout;
+    nameRow->addWidget(new QLabel(tr("File name:")));
+    nameRow->addWidget(name, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Compare"));
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    auto *layout = new QVBoxLayout(&dlg);
+    layout->addLayout(grid, 1);
+    layout->addLayout(nameRow);
+    layout->addWidget(buttons);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    const QString fileName = QFileInfo(name->text().trimmed()).fileName().isEmpty() ? QStringLiteral("text.txt")
+                                                                                    : QFileInfo(name->text().trimmed()).fileName();
+    compareTexts(left->toPlainText().toUtf8(), right->toPlainText().toUtf8(), fileName, tr("Text comparison"));
+}
+
+void MainWindow::compareTexts(const QByteArray &left, const QByteArray &right, const QString &fileName, const QString &title)
+{
+    // Each side is its own scratch folder so both files can keep the same name.
+    const QString l = Scratch::write(Scratch::newFolder(), fileName, left);
+    const QString r = Scratch::write(Scratch::newFolder(), fileName, right);
+    if (l.isEmpty() || r.isEmpty()) {
+        QMessageBox::warning(this, title, tr("Could not write the texts to yadiff's cache folder."));
+        return;
+    }
+    openArguments({QStringLiteral("-C"), QFileInfo(l).absolutePath(), QStringLiteral("--title"), title,
+                   QStringLiteral("--no-index"), l, r});
+}
+
+void MainWindow::compareClipboard(bool newSide)
+{
+    if (m_shownIndex < 0 || m_shownIndex >= m_changes.size()) {
+        statusBar()->showMessage(tr("Open a file first"), 3000);
+        return;
+    }
+    const FileChange &fc = m_changes[m_shownIndex];
+    const QString clip = QApplication::clipboard()->text();
+    if (clip.isEmpty()) {
+        statusBar()->showMessage(tr("The clipboard has no text"), 3000);
+        return;
+    }
+    const QString name = QFileInfo(newSide ? fc.path : fc.oldPath).fileName();
+    QString file = m_repo.diskPath(fc, m_cmp, newSide);
+    if (file.isEmpty()) {
+        // A side from a commit: compare against a copy of it.
+        const auto content = m_repo.fileContent(fc, m_cmp, newSide);
+        if (!content) {
+            statusBar()->showMessage(tr("That side of the file doesn't exist"), 3000);
+            return;
+        }
+        file = Scratch::write(Scratch::newFolder(), name, *content);
+    }
+    const QString clipFile = Scratch::write(Scratch::newFolder(), name, clip.toUtf8());
+    if (file.isEmpty() || clipFile.isEmpty())
+        return;
+    openArguments({QStringLiteral("-C"), QFileInfo(clipFile).absolutePath(), QStringLiteral("--title"),
+                   tr("%1 \u2194 clipboard").arg(name), QStringLiteral("--no-index"), file, clipFile});
+}
+
+void MainWindow::openPatch()
+{
+    const QString start = m_repo.isRepository() ? m_repo.root() : QDir::homePath();
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open patch"), start,
+                                                      tr("Patches (*.patch *.diff);;All files (*)"));
+    if (!path.isEmpty())
+        openPatchFile(path);
+}
+
+void MainWindow::openPatchFile(const QString &path)
+{
+    // The patch applies to the repository it's in, else to this window's repository.
+    QString base = QFileInfo(path).absolutePath();
+    if (const auto here = GitRepo::open(base, nullptr))
+        base = here->root();
+    else if (m_repo.isRepository() && !m_repo.isBare())
+        base = m_repo.root();
+    openArguments({QStringLiteral("-C"), base, QStringLiteral("--patch"), QFileInfo(path).absoluteFilePath()});
+}
+
+void MainWindow::applyPatch()
+{
+    if (m_cmp.mode != Comparison::Mode::Patch)
+        return;
+    QMessageBox box(QMessageBox::Question, tr("Apply patch"),
+                    tr("Apply %1 to the files in %2?").arg(QFileInfo(m_cmp.patchPath).fileName(), homeShortened(m_cmp.patchBase)),
+                    QMessageBox::Cancel, this);
+    QPushButton *work = box.addButton(tr("Apply"), QMessageBox::AcceptRole);
+    QPushButton *index = m_repo.isRepository() ? box.addButton(tr("Apply and stage"), QMessageBox::AcceptRole) : nullptr;
+    QPushButton *reverse = box.addButton(tr("Reverse (undo it)"), QMessageBox::AcceptRole);
+    box.setDefaultButton(work);
+    box.exec();
+    QStringList extra;
+    if (box.clickedButton() == index)
+        extra << QStringLiteral("--index");
+    else if (box.clickedButton() == reverse)
+        extra << QStringLiteral("-R");
+    else if (box.clickedButton() != work)
+        return;
+    // git apply works on plain folders too; --check first so nothing is half applied.
+    QProcess p;
+    p.setWorkingDirectory(m_cmp.patchBase);
+    const QStringList args = QStringList{QStringLiteral("apply")} + extra;
+    p.start(QStringLiteral("git"), args + QStringList{QStringLiteral("--check"), m_cmp.patchPath});
+    p.waitForFinished(60000);
+    if (p.exitCode() == 0) {
+        p.start(QStringLiteral("git"), args + QStringList{m_cmp.patchPath});
+        p.waitForFinished(60000);
+    }
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        QMessageBox::warning(this, tr("Apply patch"),
+                             tr("git apply failed; nothing was changed:\n\n%1").arg(QString::fromUtf8(p.readAllStandardError())));
+        return;
+    }
+    m_diffCache.clear();
+    reload();
+    statusBar()->showMessage(tr("Applied %1").arg(QFileInfo(m_cmp.patchPath).fileName()), 5000);
+}
+
+void MainWindow::saveAsPatch()
+{
+    if (m_cmp.empty)
+        return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save as patch"), QDir::homePath() + QStringLiteral("/changes.patch"),
+                                                      tr("Patches (*.patch *.diff)"));
+    if (path.isEmpty())
+        return;
+    QString error;
+    const auto patch = m_repo.patch(m_cmp, &error);
+    QFile f(path);
+    if (!patch || !f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(*patch) != patch->size()) {
+        QMessageBox::warning(this, tr("Save as patch"), patch ? f.errorString() : error);
+        return;
+    }
+    statusBar()->showMessage(tr("Wrote %1").arg(path), 4000);
+}
+
+// ---- Drag and drop -----------------------------------------------------------------
+
+namespace {
+QStringList localPaths(const QMimeData *mime)
+{
+    QStringList out;
+    if (mime && mime->hasUrls())
+        for (const QUrl &u : mime->urls())
+            if (u.isLocalFile())
+                out << QDir::cleanPath(u.toLocalFile());
+    return out;
+}
+} // namespace
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (!localPaths(event->mimeData()).isEmpty())
+        event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    const QStringList paths = localPaths(event->mimeData());
+    if (paths.isEmpty())
+        return;
+    event->acceptProposedAction();
+    openDropped(paths);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    // The text views would take a drop of files as text; the window handles it instead.
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        auto *e = static_cast<QDragMoveEvent *>(event);
+        if (!localPaths(e->mimeData()).isEmpty()) {
+            e->acceptProposedAction();
+            return true;
+        }
+    } else if (event->type() == QEvent::Drop) {
+        auto *e = static_cast<QDropEvent *>(event);
+        const QStringList paths = localPaths(e->mimeData());
+        if (!paths.isEmpty()) {
+            e->acceptProposedAction();
+            openDropped(paths);
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::openDropped(const QStringList &paths)
+{
+    auto open2 = [this](const QString &a, const QString &b) {
+        if (QFileInfo(a).isDir() != QFileInfo(b).isDir()) {
+            QMessageBox::warning(this, tr("Compare"), tr("Drop two files or two folders (not one of each)."));
+            return;
+        }
+        openArguments({QStringLiteral("-C"), QFileInfo(a).absolutePath(), QStringLiteral("--no-index"), a, b});
+    };
+    if (paths.size() >= 2) {
+        m_droppedLeft.clear();
+        open2(paths[0], paths[1]);
+        return;
+    }
+    const QString p = paths.first();
+    const QString suffix = QFileInfo(p).suffix().toLower();
+    if (suffix == QLatin1String("yadiff")) {
+        openSessionFile(p);
+    } else if (suffix == QLatin1String("patch") || suffix == QLatin1String("diff")) {
+        openPatchFile(p);
+    } else if (m_droppedLeft.isEmpty() || m_droppedLeft == p) {
+        m_droppedLeft = p;
+        statusBar()->showMessage(tr("Left side: %1 \u2014 drop another file or folder to compare it with").arg(homeShortened(p)));
+    } else {
+        const QString left = std::exchange(m_droppedLeft, QString());
+        statusBar()->clearMessage();
+        open2(left, p);
+    }
 }
 
 void MainWindow::changeWindowTitle()
@@ -3105,5 +3544,6 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_customTitle.clear();
     updateModeUi();
     updateTitle();
+    rememberRecent();
     reload();
 }

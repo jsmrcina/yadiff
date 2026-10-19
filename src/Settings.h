@@ -86,6 +86,15 @@ void setZoomPercent(int percent);
 QString editorCommand();
 void setEditorCommand(const QString &cmd);
 
+// Comparisons opened recently (newest first), for File > Recent comparisons.
+struct RecentComparison {
+    QStringList arguments; // as ComparisonArgs::fromArguments() reads them
+    QString label;
+};
+QVector<RecentComparison> recentComparisons();
+void addRecentComparison(const QStringList &arguments, const QString &label);
+void clearRecentComparisons();
+
 // Regular expressions for "unimportant text" (used while diff/ignoreUnimportant is on).
 QStringList unimportantPatterns();
 void setUnimportantPatterns(const QStringList &patterns);

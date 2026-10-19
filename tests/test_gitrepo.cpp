@@ -597,6 +597,67 @@ private slots:
         QVERIFY(fd.lines[r].anchored && fd.lines[s].anchored);
     }
 
+    void patchComparison()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        write(d + QStringLiteral("/f.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n");
+        write(d + QStringLiteral("/p.diff"), "--- a/f.txt\n+++ b/f.txt\n@@ -3,3 +3,3 @@\n 3\n-4\n+four\n 5\n"
+                                             "--- a/missing.txt\n+++ b/missing.txt\n@@ -10,2 +10,2 @@\n x\n-y\n+z\n");
+        GitRepo repo = GitRepo::forPaths(d);
+        Comparison cmp;
+        cmp.mode = Comparison::Mode::Patch;
+        cmp.patchPath = d + QStringLiteral("/p.diff");
+        cmp.patchBase = d;
+        QString error;
+        const QVector<FileChange> changes = repo.listChanges(cmp, &error);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        QCOMPARE(changes.size(), 2);
+        // f.txt fits: the whole file, with the change at line 4.
+        FileDiff full = repo.loadDiff(changes[0], cmp, &error);
+        QCOMPARE(full.lines.size(), 9);
+        QCOMPARE(full.chunks.size(), 1);
+        QCOMPARE(repo.fileContent(changes[0], cmp, true).value_or(QByteArray()), QByteArray("1\n2\n3\nfour\n5\n6\n7\n8\n"));
+        // missing.txt isn't there: just the hunk, after a gap.
+        FileDiff part = repo.loadDiff(changes[1], cmp, &error);
+        QVERIFY(part.lines[0].gap);
+        QCOMPARE(part.lines[1].oldNo, 10);
+        QVERIFY(repo.blame(changes[0], cmp, false).isEmpty());
+    }
+
+    void savesComparisonsAsPatches()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "a\nb\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/f.txt"), "a\nB\n");
+        write(d + QStringLiteral("/new.txt"), "new\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        const auto patch = repo->patch(Comparison(), &error);
+        QVERIFY2(patch, qPrintable(error));
+        QVERIFY(patch->contains("+B"));
+        QVERIFY(patch->contains("+++ b/new.txt"));
+        // It applies in reverse to the working tree (undoing exactly these changes).
+        write(d + QStringLiteral("/p.patch"), *patch);
+        git(d, {QStringLiteral("apply"), QStringLiteral("--check"), QStringLiteral("-R"), QStringLiteral("p.patch")});
+
+        // Two folders: paths relative to the folders.
+        QTemporaryDir l, r;
+        write(l.path() + QStringLiteral("/x.txt"), "1\n");
+        write(r.path() + QStringLiteral("/x.txt"), "2\n");
+        Comparison paths;
+        paths.mode = Comparison::Mode::Paths;
+        paths.leftPath = l.path();
+        paths.rightPath = r.path();
+        const auto p2 = GitRepo::forPaths(l.path()).patch(paths, &error);
+        QVERIFY2(p2, qPrintable(error));
+        QVERIFY2(p2->contains("--- a/x.txt\n+++ b/x.txt"), p2->constData());
+    }
+
     void stagesSingleLines()
     {
         QTemporaryDir tmp;

@@ -86,7 +86,9 @@ QString algorithmDescription(DiffAlgorithm a);  // one-line explanation
 struct Comparison {
     // Paths: two directories or two files compared directly (git diff --no-index),
     // inside or outside any repository.
-    enum class Mode { WorkingTree, Revisions, Paths };
+    // Patch: the files of a patch file, applied to the files under patchBase when they
+    // fit (full files), or just the patch's hunks.
+    enum class Mode { WorkingTree, Revisions, Paths, Patch };
     Mode mode = Mode::WorkingTree;
 
     // Revisions mode: resolved object ids. rev2 empty means "working tree".
@@ -105,6 +107,9 @@ struct Comparison {
     // Paths mode: absolute paths of the two sides; both files or both directories.
     QString leftPath, rightPath;
     bool pathsAreFiles = false;
+
+    // Patch mode: the patch file, and the directory its paths are relative to.
+    QString patchPath, patchBase;
 
     // Pull request being reviewed (prNumber 0 when none). prHost is "github" or "ado".
     // GitHub: prOwner/prRepo. Azure DevOps: prCollectionUrl/prProject/prRepo.
@@ -199,6 +204,9 @@ public:
     // no history: an untracked file, a directory comparison, ...).
     QVector<BlameLine> blame(const FileChange &change, const Comparison &cmp, bool newSide) const;
 
+    // The whole comparison as a patch that `git apply` takes (binary files included).
+    std::optional<QByteArray> patch(const Comparison &cmp, QString *error) const;
+
     // The last commit that touched `path` (repository-relative), empty when unknown.
     QString lastCommit(const QString &path) const;
 
@@ -228,6 +236,9 @@ private:
                                                   qint64 maxBytes) const;
     FileDiff loadPathDiff(const FileChange &change, const Comparison &cmp, QString *error) const;
     FileDiff loadDiffInProcess(const FileChange &change, const Comparison &cmp, QString *error) const;
+    QVector<FileChange> listPatchChanges(const Comparison &cmp, QString *error) const;
+    FileDiff loadPatchDiff(const FileChange &change, const Comparison &cmp, QString *error) const;
+    std::optional<QByteArray> patchContent(const FileChange &change, const Comparison &cmp, bool newSide) const;
     QString m_root;
     bool m_bare = false;
     bool m_noRepo = false;

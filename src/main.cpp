@@ -8,6 +8,9 @@
 #include "MainWindow.h"
 #include "Report.h"
 #include "ReviewStore.h"
+#include "Scratch.h"
+#include "Session.h"
+#include "ShellMenu.h"
 #include "Settings.h"
 #include "Theme.h"
 #include "Updater.h"
@@ -92,8 +95,26 @@ int main(int argc, char *argv[])
                                          QStringLiteral("Register yadiff as the default git difftool and exit."));
     const QCommandLineOption unregisterOpt(QStringLiteral("unregister-difftool"),
                                            QStringLiteral("Remove yadiff's git difftool registration and exit."));
+    const QCommandLineOption titleOpt(QStringLiteral("title"), QStringLiteral("Window title for the comparison."),
+                                      QStringLiteral("text"));
+    const QCommandLineOption patchOpt(QStringLiteral("patch"),
+                                      QStringLiteral("Show a patch file (.patch, .diff), on the files it applies to."),
+                                      QStringLiteral("file"));
+    const QCommandLineOption sessionOpt(QStringLiteral("session"), QStringLiteral("Open a saved session (.yadiff file)."),
+                                        QStringLiteral("file"));
+    const QCommandLineOption selectLeftOpt(QStringLiteral("select-left"),
+                                           QStringLiteral("Remember <path> as the left side for --compare-to-left, and exit."),
+                                           QStringLiteral("path"));
+    const QCommandLineOption compareLeftOpt(QStringLiteral("compare-to-left"),
+                                            QStringLiteral("Compare the remembered left side with <path>."),
+                                            QStringLiteral("path"));
+    const QCommandLineOption shellMenuOpt(QStringLiteral("add-file-manager-menu"),
+                                          QStringLiteral("Add yadiff to the file manager's right-click menu and exit."));
+    const QCommandLineOption noShellMenuOpt(QStringLiteral("remove-file-manager-menu"),
+                                            QStringLiteral("Remove yadiff from the file manager's right-click menu and exit."));
     parser.addOptions({dirOpt, waitOpt, allOpt, prOpt, adoOpt, adoLoginOpt, adoLogoutOpt, algoOpt, inlineOpt, sideOpt,
-                       noIndexOpt, registerOpt, unregisterOpt, exportOpt});
+                       noIndexOpt, registerOpt, unregisterOpt, exportOpt, titleOpt, patchOpt, sessionOpt, selectLeftOpt,
+                       compareLeftOpt, shellMenuOpt, noShellMenuOpt});
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("Revisions and/or paths (see above)."),
                                  QStringLiteral("[REV [REV]] [[--] PATH...]"));
     parser.process(app);
@@ -115,6 +136,22 @@ int main(int argc, char *argv[])
         std::fprintf(stdout, "%s", qPrintable(summary));
         return 0;
     }
+
+    if (parser.isSet(shellMenuOpt) || parser.isSet(noShellMenuOpt)) {
+        QString summary, menuError;
+        const bool ok = parser.isSet(shellMenuOpt) ? ShellMenu::install(Difftool::preferredExecutable(), &summary, &menuError)
+                                                   : ShellMenu::uninstall(&summary, &menuError);
+        if (!ok)
+            return fail(menuError);
+        std::fprintf(stdout, "%s\n", qPrintable(summary));
+        return 0;
+    }
+    if (parser.isSet(selectLeftOpt)) {
+        // From the file manager: nothing to show yet, just remember the path.
+        ShellMenu::setSelectedLeft(QDir(QDir::currentPath()).absoluteFilePath(parser.value(selectLeftOpt)));
+        return 0;
+    }
+    Scratch::cleanUp();
 
     if (parser.isSet(adoLoginOpt) || parser.isSet(adoLogoutOpt)) {
         // The organisation comes from the -ado link, or a URL argument.
@@ -164,7 +201,38 @@ int main(int argc, char *argv[])
     req.ghpr = parser.value(prOpt);
     req.ado = parser.value(adoOpt);
     req.algorithm = parser.value(algoOpt);
+    req.title = parser.value(titleOpt);
+    req.patch = parser.value(patchOpt);
     req.allowEmpty = !parser.isSet(exportOpt);
+    std::optional<Session> session;
+    if (parser.isSet(sessionOpt)) {
+        session = Session::read(QDir(cwd).absoluteFilePath(parser.value(sessionOpt)), &error);
+        if (!session)
+            return fail(error);
+        auto fromSession = ComparisonArgs::fromArguments(session->arguments, cwd, &error);
+        if (!fromSession)
+            return fail(error);
+        req.positional = fromSession->positional;
+        req.forcedPaths = fromSession->forcedPaths;
+        req.cwd = fromSession->cwd;
+        req.all = fromSession->all;
+        req.noIndex = fromSession->noIndex;
+        req.ghpr = fromSession->ghpr;
+        req.ado = fromSession->ado;
+        req.algorithm = fromSession->algorithm;
+        req.title = fromSession->title;
+        req.patch = fromSession->patch;
+    }
+    if (parser.isSet(compareLeftOpt)) {
+        // From the file manager, so there is no terminal: report problems in a dialog.
+        g_gui = true;
+        const QString left = ShellMenu::selectedLeft();
+        if (left.isEmpty() || !QFileInfo::exists(left))
+            return fail(QStringLiteral("Choose \"Select as left side for yadiff\" on a file or folder first."));
+        req.positional = {left, QDir(cwd).absoluteFilePath(parser.value(compareLeftOpt))};
+        req.forcedPaths = 0;
+        req.noIndex = true;
+    }
     // The parent process resolves a PR and hands the result to the detached child.
     req.handed = QJsonDocument::fromJson(qgetenv("YADIFF_PR_RESOLVED")).object();
     req.progress = [](const QString &msg) { std::fprintf(stderr, "yadiff: %s\n", qPrintable(msg)); };
@@ -235,6 +303,8 @@ int main(int argc, char *argv[])
 
     MainWindow w(std::move(*repo), cmp);
     w.show();
+    if (session)
+        w.applySession(*session);
     if (const QString grab = qEnvironmentVariable("YADIFF_GRAB"); !grab.isEmpty()) {
         w.resize(1300, 700);
         QApplication::processEvents();

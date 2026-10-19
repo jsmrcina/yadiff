@@ -6,6 +6,7 @@
 #include "GitRepo.h"
 #include "Updater.h"
 #include "ReviewStore.h"
+#include "Session.h"
 
 #include <QFutureWatcher>
 #include <QHash>
@@ -22,6 +23,8 @@ class QAction;
 class QPushButton;
 class QActionGroup;
 class QComboBox;
+class QDragEnterEvent;
+class QDropEvent;
 class QLabel;
 class QLineEdit;
 class QMenu;
@@ -46,8 +49,19 @@ public:
     // Developer aid: render every file in both view modes to <prefix>-NN-<mode>.png.
     void grabAll(const QString &prefix);
 
+    // Opens these arguments (as ComparisonArgs::fromArguments() reads them): here when the
+    // window is empty, otherwise in a new window. A session is applied once it's shown.
+    void openArguments(const QStringList &args, const std::optional<Session> &session = {},
+                       const QString &sessionFile = {});
+    void applySession(const Session &session);
+    // Dropped files: two are compared, one waits for a second (or is a patch or session).
+    void openDropped(const QStringList &paths);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     // Runs `job` on a worker thread and `done` back on the UI thread. With
@@ -119,6 +133,19 @@ private:
     void copyCommitHash();
     void openInGitk();
     void newComparison();
+    QStringList comparisonArguments() const;
+    void rememberRecent();
+    void rebuildRecentMenu();
+    void saveSession();
+    void openSession();
+    void openSessionFile(const QString &path);
+    void compareText();
+    void compareTexts(const QByteArray &left, const QByteArray &right, const QString &fileName, const QString &title);
+    void compareClipboard(bool newSide);
+    void openPatch();
+    void openPatchFile(const QString &path);
+    void applyPatch();
+    void saveAsPatch();
     void changeWindowTitle();
     void editIgnorePatterns();
     void editUnimportantText();
@@ -258,6 +285,10 @@ private:
     bool m_steppingCommits = false;
     Comparison m_rangeCmp;
     QAction *m_nextCommitAct = nullptr, *m_prevCommitAct = nullptr;
+    QMenu *m_recentMenu = nullptr;
+    QAction *m_applyPatchAct = nullptr;
+    QString m_selectOnLoad;  // a file to show once the list loads (from a session)
+    QString m_droppedLeft;   // a dropped file waiting for the one to compare it with
     QAction *m_stageLinesAct = nullptr;
     QAction *m_unstageLinesAct = nullptr;
     QAction *m_discardLinesAct = nullptr;

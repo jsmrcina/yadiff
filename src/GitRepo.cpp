@@ -3,6 +3,7 @@
 
 #include "Comments.h"
 #include "FileFilter.h"
+#include "PatchFile.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -471,7 +472,7 @@ QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) 
     QVector<FileChange> result = listChangesCore(cmp, error);
     if (error && !error->isEmpty())
         return result;
-    if (cmp.includeIdentical)
+    if (cmp.includeIdentical && cmp.mode != Comparison::Mode::Patch)
         appendIdentical(result, cmp);
     if (cmp.useIgnoreGlobs && !cmp.ignoreGlobs.isEmpty()) {
         result.erase(std::remove_if(result.begin(), result.end(),
@@ -487,6 +488,8 @@ QVector<FileChange> GitRepo::listChangesCore(const Comparison &cmp, QString *err
 {
     if (cmp.mode == Comparison::Mode::Paths)
         return listPathChanges(cmp, error);
+    if (cmp.mode == Comparison::Mode::Patch)
+        return listPatchChanges(cmp, error);
 
     QByteArray out;
     // With whitespace ignored, git leaves whitespace-only files out of --name-status.
@@ -675,6 +678,8 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
     }
     if (cmp.mode == Comparison::Mode::Paths)
         return loadPathDiff(fc, cmp, error);
+    if (cmp.mode == Comparison::Mode::Patch)
+        return loadPatchDiff(fc, cmp, error);
     if (fc.status != u'?' && (cmp.options.inProcess() || !fc.anchors.isEmpty()))
         return loadDiffInProcess(fc, cmp, error);
     if (fc.status == u'?') {
@@ -776,7 +781,11 @@ QByteArray GitRepo::fingerprint(const FileChange &displayed, const Comparison &d
     };
 
     QByteArray oldSide, newSide;
-    if (cmp.mode == Comparison::Mode::Paths) {
+    if (cmp.mode == Comparison::Mode::Patch) {
+        oldSide = patchContent(fc, cmp, false).value_or("-");
+        newSide = QCryptographicHash::hash(patchContent(fc, cmp, true).value_or("-"), QCryptographicHash::Sha1).toHex();
+        oldSide = QCryptographicHash::hash(oldSide, QCryptographicHash::Sha1).toHex();
+    } else if (cmp.mode == Comparison::Mode::Paths) {
         const QString l = cmp.pathsAreFiles ? cmp.leftPath : cmp.leftPath + u'/' + fc.oldPath;
         const QString r = cmp.pathsAreFiles ? cmp.rightPath : cmp.rightPath + u'/' + fc.path;
         auto hashFile = [](const QString &p) -> QByteArray {
@@ -834,6 +843,94 @@ FileDiff GitRepo::loadPathDiff(const FileChange &fc, const Comparison &cmp, QStr
         d.message = QStringLiteral("No differences with the current whitespace options");
     else if (d.lines.isEmpty())
         d.message = QStringLiteral("No content differences");
+    return d;
+}
+
+namespace {
+std::optional<PatchFile::File> patchFileFor(const FileChange &fc, const Comparison &cmp)
+{
+    QFile f(cmp.patchPath);
+    if (!f.open(QIODevice::ReadOnly))
+        return std::nullopt;
+    for (const PatchFile::File &pf : PatchFile::parse(QString::fromUtf8(f.readAll())))
+        if (pf.path() == fc.path)
+            return pf;
+    return std::nullopt;
+}
+} // namespace
+
+QVector<FileChange> GitRepo::listPatchChanges(const Comparison &cmp, QString *error) const
+{
+    QFile f(cmp.patchPath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = QStringLiteral("%1: %2").arg(cmp.patchPath, f.errorString());
+        return {};
+    }
+    QVector<FileChange> out;
+    for (const PatchFile::File &pf : PatchFile::parse(QString::fromUtf8(f.readAll()))) {
+        FileChange fc;
+        fc.path = pf.path();
+        fc.oldPath = pf.oldPath.isEmpty() ? fc.path : pf.oldPath;
+        fc.status = pf.status;
+        fc.added = pf.binary ? -1 : pf.added;
+        fc.removed = pf.binary ? -1 : pf.removed;
+        out << fc;
+    }
+    if (out.isEmpty() && error)
+        *error = QStringLiteral("%1 has no file changes in it").arg(cmp.patchPath);
+    return out;
+}
+
+std::optional<QByteArray> GitRepo::patchContent(const FileChange &fc, const Comparison &cmp, bool newSide) const
+{
+    // The file the patch was made from, under patchBase, and the patch applied to it.
+    const std::optional<PatchFile::File> pf = patchFileFor(fc, cmp);
+    if (!pf || pf->binary || (newSide && pf->status == u'D') || (!newSide && pf->status == u'A'))
+        return std::nullopt;
+    QByteArray base;
+    if (pf->status != u'A') {
+        QFile f(QDir(cmp.patchBase).filePath(pf->oldPath));
+        if (!f.open(QIODevice::ReadOnly))
+            return std::nullopt;
+        base = f.readAll();
+    }
+    const QStringList baseLines = LineDiff::splitLines(QString::fromUtf8(base));
+    const auto applied = PatchFile::apply(baseLines, *pf);
+    if (!applied)
+        return std::nullopt;
+    if (!newSide)
+        return base;
+    QString out = applied->join(u'\n');
+    if (!applied->isEmpty())
+        out += u'\n';
+    return out.toUtf8();
+}
+
+FileDiff GitRepo::loadPatchDiff(const FileChange &fc, const Comparison &cmp, QString *error) const
+{
+    const std::optional<PatchFile::File> pf = patchFileFor(fc, cmp);
+    FileDiff d;
+    if (!pf) {
+        if (error)
+            *error = QStringLiteral("%1 is no longer in the patch").arg(fc.path);
+        return d;
+    }
+    if (pf->binary) {
+        d.binary = true;
+        d.message = QStringLiteral("Binary change (the patch can't be shown)");
+        return d;
+    }
+    // When the patch fits the files it was made from, show whole files; otherwise its hunks.
+    const bool fits = (pf->status == u'A' || patchContent(fc, cmp, false)) && (pf->status == u'D' || patchContent(fc, cmp, true));
+    if (fits) {
+        d = loadDiffInProcess(fc, cmp, error);
+        if (!d.lines.isEmpty() || !d.message.isEmpty())
+            return d;
+    }
+    d = DiffModel::parseUnified(pf->text, cmp.options.detectMoves);
+    if (d.lines.isEmpty())
+        d.message = QStringLiteral("No content changes in the patch (mode or name only)");
     return d;
 }
 
@@ -1094,6 +1191,8 @@ std::optional<QByteArray> GitRepo::fileContentPhysical(const FileChange &fc, con
             return std::nullopt;
         return f.readAll();
     };
+    if (cmp.mode == Comparison::Mode::Patch)
+        return patchContent(fc, cmp, newSide);
     if (cmp.mode == Comparison::Mode::Paths) {
         if (cmp.pathsAreFiles)
             return readFile(newSide ? cmp.rightPath : cmp.leftPath);
@@ -1197,6 +1296,74 @@ bool GitRepo::unstage(const QVector<FileChange> &changes, QString *error) const
         return run(QStringList{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")} + paths, nullptr, error);
     return run(QStringList{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--")} + paths,
                nullptr, error);
+}
+
+std::optional<QByteArray> GitRepo::patch(const Comparison &cmp, QString *error) const
+{
+    const QStringList base{QStringLiteral("diff"), QStringLiteral("--no-color"), QStringLiteral("--no-ext-diff"),
+                           QStringLiteral("-M"), QStringLiteral("--binary")};
+    QByteArray out;
+    if (cmp.mode == Comparison::Mode::Patch) {
+        QFile f(cmp.patchPath);
+        if (!f.open(QIODevice::ReadOnly)) {
+            if (error)
+                *error = f.errorString();
+            return std::nullopt;
+        }
+        return f.readAll();
+    }
+    if (cmp.mode == Comparison::Mode::Paths) {
+        if (!runDiff(base + QStringList{QStringLiteral("--no-index"), QStringLiteral("--"), cmp.leftPath, cmp.rightPath}, &out,
+                     error))
+            return std::nullopt;
+        // git names the sides by their full paths: make them relative to the compared folders.
+        auto side = [&](const QString &p) {
+            QString s = QDir::fromNativeSeparators(p);
+            while (s.startsWith(u'/'))
+                s.remove(0, 1);
+            return s.toUtf8();
+        };
+        const QByteArray l = side(cmp.leftPath), r = side(cmp.rightPath);
+        QList<QByteArray> lines = out.split('\n');
+        for (QByteArray &line : lines) {
+            if (!line.startsWith("diff --git ") && !line.startsWith("--- ") && !line.startsWith("+++ "))
+                continue;
+            if (cmp.pathsAreFiles) {
+                line.replace("a/" + l, "a/" + QFileInfo(cmp.leftPath).fileName().toUtf8());
+                line.replace("b/" + r, "b/" + QFileInfo(cmp.rightPath).fileName().toUtf8());
+            } else {
+                line.replace("a/" + l + '/', "a/");
+                line.replace("b/" + r + '/', "b/");
+            }
+        }
+        return lines.join('\n');
+    }
+    QStringList args = base;
+    if (cmp.reversed)
+        args << QStringLiteral("-R");
+    if (cmp.mode == Comparison::Mode::Revisions) {
+        args << cmp.rev1;
+        if (!cmp.rev2.isEmpty())
+            args << cmp.rev2;
+    } else {
+        args << headOrEmptyTree(); // staged and unstaged together: the working tree against HEAD
+    }
+    if (!run(args + pathspecs(cmp), &out, error))
+        return std::nullopt;
+    if (cmp.mode == Comparison::Mode::WorkingTree && !cmp.reversed) {
+        // Untracked files too, as new files.
+        Comparison c = cmp;
+        c.includeIdentical = false;
+        for (const FileChange &fc : listChanges(c, nullptr)) {
+            if (fc.status != u'?')
+                continue;
+            QByteArray one;
+            if (runDiff(base + QStringList{QStringLiteral("--no-index"), QStringLiteral("--"), QStringLiteral("/dev/null"), fc.path},
+                        &one, nullptr))
+                out += one;
+        }
+    }
+    return out;
 }
 
 QVector<GitRepo::LineOp> GitRepo::lineOps(const FileChange &fc, const Comparison &cmp) const
@@ -1452,7 +1619,7 @@ QVector<BlameLine> parseBlame(const QByteArray &out)
 
 QVector<BlameLine> GitRepo::blame(const FileChange &displayed, const Comparison &displayedCmp, bool displayedNewSide) const
 {
-    if (m_noRepo || displayedCmp.mode == Comparison::Mode::Paths)
+    if (m_noRepo || displayedCmp.mode == Comparison::Mode::Paths || displayedCmp.mode == Comparison::Mode::Patch)
         return {};
     const FileChange fc = physicalChange(displayed, displayedCmp);
     const Comparison cmp = physicalComparison(displayedCmp);

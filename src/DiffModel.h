@@ -27,6 +27,8 @@ struct DiffLine {
     // (a comment, unimportant text). Shown greyed; not part of any chunk.
     bool unimportant = false;
     bool anchored = false;  // manually aligned with the other side (see FileChange::anchors)
+    // Stands for lines a partial diff (a patch's hunks) leaves out; text says how many.
+    bool gap = false;
     QVector<Span> highlights;
 };
 

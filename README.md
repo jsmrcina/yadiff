@@ -119,6 +119,29 @@ path looks like a revision.
   rows stay aligned when one side wraps more than the other.
 - **Reload automatically when files change on disk** is in the Preferences menu and off by default.
   yadiff checks every 2 seconds and keeps your place. It won't reload over unsaved edits.
+- **Compare text.** File → Compare text opens two boxes to paste or type into; the file name you
+  give sets the syntax. Edit → Compare clipboard with left (or right) file compares the clipboard
+  with the file on screen. The texts are saved under `~/.cache/yadiff/scratch` (removed after a
+  week), so both sides can be edited like files.
+- **Patch files.** `yadiff --patch FILE`, File → Open patch, or dropping a `.patch` / `.diff` on the
+  window shows a patch from `git diff`, `git format-patch` or `diff -u`. When the files it was
+  made from are there (in the repository the patch is in, or the current one), each file shows in
+  full with the patch applied, even if the file has moved on a little; otherwise just the patch's
+  hunks show, with the lines in between marked as not shown. File → Apply patch runs `git apply`
+  (optionally also staging, or in reverse) after checking that it applies cleanly. File → Save as
+  patch writes any comparison as a patch that `git apply` takes, binary files and untracked files
+  included.
+- **Recent comparisons and sessions.** File → Recent comparisons reopens the last 20 comparisons.
+  File → Save session writes a `.yadiff` file with the comparison, the file shown, the view and the
+  diff options; open it with File → Open session, `yadiff --session FILE`, or by dropping it on the
+  window. A session's options apply to that window only.
+- **Drag and drop.** Drop two files or two folders on the window to compare them, or one, then a
+  second. In the empty window the comparison opens in place; otherwise in a new window.
+- **File manager menu.** Help → Add to the file manager's menu (or `yadiff --add-file-manager-menu`)
+  adds "Compare with yadiff" to Dolphin's right-click menu for two selected items, and "Select as
+  left side for yadiff" / "Compare with left side (yadiff)" for one at a time. On Windows, Explorer
+  gets the left-side pair for files and folders (under "Show more options" on Windows 11). Help →
+  Remove from the file manager's menu takes it out again.
 - **Directory and file comparison** works outside Git too, using `git diff --no-index`. Every diff
   option applies. Both sides can be edited, and changes can be applied in either direction.
 - **File filter** sits above the file list (Ctrl+P). Terms are separated by spaces. Text matches
@@ -206,6 +229,8 @@ computed by yadiff.
   - New comparison: a repository, two revisions, two folders, two files, or a PR link. It opens
     in a new window, except in the empty window plain `yadiff` opens outside a repository, which
     shows it in place.
+  - Recent comparisons, Compare text, Open patch, Apply patch, Save as patch, Open session and
+    Save session.
   - Compare commits, Change window title, and Export HTML report.
   - Globbing ignore patterns (`.gitignore` syntax), which can be turned off.
   - Stage, unstage or revert the selected files. Revert asks first and moves deleted files to the
@@ -218,7 +243,8 @@ computed by yadiff.
 - **Edit:**
   - Copy, which keeps syntax colours and diff backgrounds. Copy without markup, Copy as Markdown,
     and Copy for code review, which gives the path and line range, then the code.
-  - Select all, plus copying the left or right file's path.
+  - Select all, copying the left or right file's path, and comparing the clipboard with either
+    file.
   - Find (F3), Find next (F8) and Find previous (F7). Highlight clicked word, and Go to line
     (Ctrl+G).
   - Set editor, and Edit left or right file in it. `{file}` and `{line}` are filled in; a commit's
@@ -243,7 +269,8 @@ computed by yadiff.
 - **Marking:** see above.
 - **Review:** for pull requests only.
 - **Help:**
-  - Register and Unregister as git difftool.
+  - Register and Unregister as git difftool, and add yadiff to (or remove it from) the file
+    manager's menu.
   - Automatically install updates, and Check for update now (see Updates below).
   - Usage, which is the command-line summary, and About.
 
@@ -349,16 +376,17 @@ ctest --test-dir build --output-on-failure
 
 - `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
   yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel. It also
-  covers comment stripping, unimportant lines, and alignment around manual anchors.
+  covers comment stripping, unimportant lines, alignment around manual anchors, and reading and
+  applying patch files.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
-  applying a change to a file, line-ending preservation, and difftool registration. That last one
-  uses a temporary git config.
+  applying a change to a file, line-ending preservation, sessions, the file manager menu, and
+  difftool registration. That last one uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
   options (including ignore case and leading/trailing whitespace with every algorithm, comments,
   unimportant text and manual alignment), review
-  fingerprints, line counts, directory and file comparison, `/dev/null` sides, blame, and staging,
-  unstaging and discarding single lines.
+  fingerprints, line counts, directory and file comparison, `/dev/null` sides, blame, staging,
+  unstaging and discarding single lines, patch comparisons, and saving comparisons as patches.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
@@ -371,7 +399,8 @@ ctest --test-dir build --output-on-failure
   a change to disk, wrap alignment, auto-reload, the commit picker, and that no two actions share a
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
-  ignoring comments, manual alignment, staging the current change and stepping through commits.
+  ignoring comments, manual alignment, staging the current change, stepping through commits, and
+  dropped files, patches, sessions and recent comparisons.
   The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
@@ -388,6 +417,9 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/DiffModel.*` | Unified-diff parser, chunks, move detection, line pairing, word highlights |
 | `src/LineDiff.*` | yadiff's own line diff: Myers LCS, Heckel, diffs of normalised lines, manual anchors |
 | `src/Comments.*` | Comment syntax by file type, and stripping comments for Ignore comments |
+| `src/PatchFile.*` | Reading unified diffs and patch files, and applying them |
+| `src/Session.*`, `src/Scratch.*` | Saved sessions; scratch files for pasted text and the clipboard |
+| `src/ShellMenu.*` | Dolphin service menu / Explorer verbs, and the remembered left side |
 | `src/GitRepo.*` | Runs `git`, lists changed files, loads one file's diff, fingerprints file versions |
 | `src/GitHubPr.*` | Parses PR links, resolves them with `gh`, fetches them |
 | `src/DiffFormat.*` | Unified-diff text and coloured HTML for copying |

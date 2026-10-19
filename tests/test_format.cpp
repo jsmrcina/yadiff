@@ -6,6 +6,8 @@
 #include "Report.h"
 #include "ReviewStore.h"
 #include "Search.h"
+#include "Session.h"
+#include "ShellMenu.h"
 #include "TextFile.h"
 
 #include <QFile>
@@ -326,6 +328,59 @@ private slots:
         QCOMPARE(r.lines[1].text, QStringLiteral("b"));
         QCOMPARE(r.lines[2].kind, LineKind::Removed);
         QCOMPARE(r.chunks.size(), 1);
+    }
+
+    void sessionsRoundTrip()
+    {
+        QTemporaryDir tmp;
+        Session s;
+        s.arguments = {QStringLiteral("-C"), QStringLiteral("/x y"), QStringLiteral("main"), QStringLiteral("--"),
+                       QStringLiteral("src")};
+        s.title = QStringLiteral("Review");
+        s.currentFile = QStringLiteral("src/a.cpp");
+        s.sideBySide = 0;
+        s.hasOptions = true;
+        s.options.algorithm = DiffAlgorithm::Heckel;
+        s.options.ignoreComments = true;
+        s.options.unimportantPatterns = {QStringLiteral("\\d+")};
+        QString error;
+        const QString path = tmp.filePath(QStringLiteral("s.yadiff"));
+        QVERIFY(s.write(path, &error));
+        const auto back = Session::read(path, &error);
+        QVERIFY2(back, qPrintable(error));
+        QCOMPARE(back->arguments, s.arguments);
+        QCOMPARE(back->title, s.title);
+        QCOMPARE(back->currentFile, s.currentFile);
+        QCOMPARE(back->sideBySide, 0);
+        QCOMPARE(back->options.algorithm, DiffAlgorithm::Heckel);
+        QVERIFY(back->options.ignoreComments);
+        QCOMPARE(back->options.unimportantPatterns, s.options.unimportantPatterns);
+        QFile junk(tmp.filePath(QStringLiteral("junk.yadiff")));
+        QVERIFY(junk.open(QIODevice::WriteOnly));
+        junk.write("{}");
+        junk.close();
+        QVERIFY(!Session::read(junk.fileName(), &error));
+    }
+
+    void fileManagerMenu()
+    {
+#ifndef Q_OS_WIN
+        QTemporaryDir tmp;
+        qputenv("XDG_DATA_HOME", tmp.path().toUtf8());
+        QString summary, error;
+        QVERIFY(!ShellMenu::isInstalled());
+        QVERIFY2(ShellMenu::install(QStringLiteral("/opt/my apps/yadiff"), &summary, &error), qPrintable(error));
+        QVERIFY(ShellMenu::isInstalled());
+        QFile pair(tmp.path() + QStringLiteral("/kio/servicemenus/yadiff-compare.desktop"));
+        QVERIFY(pair.permissions() & QFile::ExeOwner); // Plasma 6 needs this
+        QVERIFY(pair.open(QIODevice::ReadOnly));
+        const QByteArray text = pair.readAll();
+        QVERIFY(text.contains("Exec=\"/opt/my apps/yadiff\" --no-index %F"));
+        QVERIFY(text.contains("X-KDE-MinNumberOfUrls=2"));
+        QVERIFY(ShellMenu::uninstall(&summary, &error));
+        QVERIFY(!ShellMenu::isInstalled());
+        qunsetenv("XDG_DATA_HOME");
+#endif
     }
 };
 

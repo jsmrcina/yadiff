@@ -5,6 +5,9 @@
 #include <QApplication>
 #include <QFontDatabase>
 #include <QPalette>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSettings>
 #include <QStyleHints>
 
@@ -205,6 +208,39 @@ int zoomPercent() { return std::clamp(QSettings().value(QStringLiteral("view/zoo
 void setZoomPercent(int percent) { QSettings().setValue(QStringLiteral("view/zoom"), std::clamp(percent, 30, 400)); }
 QString editorCommand() { return QSettings().value(QStringLiteral("edit/editorCommand")).toString(); }
 void setEditorCommand(const QString &cmd) { QSettings().setValue(QStringLiteral("edit/editorCommand"), cmd); }
+
+QVector<RecentComparison> recentComparisons()
+{
+    QVector<RecentComparison> out;
+    const QJsonArray list = QJsonDocument::fromJson(QSettings().value(QStringLiteral("recent/comparisons")).toByteArray()).array();
+    for (const QJsonValue &v : list) {
+        const QJsonObject o = v.toObject();
+        RecentComparison r;
+        for (const QJsonValue &a : o.value(QStringLiteral("arguments")).toArray())
+            r.arguments << a.toString();
+        r.label = o.value(QStringLiteral("label")).toString();
+        if (!r.arguments.isEmpty())
+            out << r;
+    }
+    return out;
+}
+
+void addRecentComparison(const QStringList &arguments, const QString &label)
+{
+    QVector<RecentComparison> list = recentComparisons();
+    list.removeIf([&](const RecentComparison &r) { return r.arguments == arguments; });
+    list.prepend({arguments, label});
+    QJsonArray out;
+    for (qsizetype i = 0; i < list.size() && i < 20; ++i)
+        out.append(QJsonObject{{QStringLiteral("arguments"), QJsonArray::fromStringList(list[i].arguments)},
+                               {QStringLiteral("label"), list[i].label}});
+    QSettings().setValue(QStringLiteral("recent/comparisons"), QJsonDocument(out).toJson(QJsonDocument::Compact));
+}
+
+void clearRecentComparisons()
+{
+    QSettings().remove(QStringLiteral("recent/comparisons"));
+}
 
 QStringList unimportantPatterns()
 {

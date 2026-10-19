@@ -96,6 +96,18 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
         return p == QLatin1String("/dev/null") || p.compare(QLatin1String("nul"), Qt::CaseInsensitive) == 0;
     };
     bool pathsMode = false;
+    if (!req.patch.isEmpty()) {
+        // A patch file: its paths are relative to the repository it is in, or to cwd.
+        const QString patch = QDir(cwd).absoluteFilePath(req.patch);
+        if (!QFileInfo(patch).isFile())
+            return failed(QStringLiteral("no such patch file: %1").arg(req.patch));
+        auto here = GitRepo::open(cwd, nullptr);
+        cmp.mode = Comparison::Mode::Patch;
+        cmp.patchPath = QDir::cleanPath(patch);
+        cmp.patchBase = here ? here->root() : QDir::cleanPath(cwd);
+        cmp.title = req.title.isEmpty() ? QStringLiteral("patch %1").arg(QFileInfo(patch).fileName()) : req.title;
+        return Result{here ? std::move(*here) : GitRepo::forPaths(cwd), cmp, {}};
+    }
     if (positional.size() == 2 && forcedPaths == 0 && req.ghpr.isEmpty() && req.ado.isEmpty()) {
         const QFileInfo a(QDir(cwd).absoluteFilePath(positional[0]));
         const QFileInfo b(QDir(cwd).absoluteFilePath(positional[1]));
@@ -302,6 +314,8 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
         // `yadiff foo.txt`: the file's current state against HEAD.
         cmp.allChanges = true;
     }
+    if (!req.title.isEmpty())
+        cmp.title = req.title;
 
     return Result{std::move(*repo), cmp, handed};
 }
@@ -343,6 +357,12 @@ std::optional<Request> fromArguments(const QStringList &args, const QString &cwd
         } else if (a == QLatin1String("--algorithm")) {
             if (const auto v = value())
                 req.algorithm = *v;
+        } else if (a == QLatin1String("--title")) {
+            if (const auto v = value())
+                req.title = *v;
+        } else if (a == QLatin1String("--patch")) {
+            if (const auto v = value())
+                req.patch = *v;
         } else if (a.startsWith(u'-') && a.size() > 1) {
             if (error)
                 *error = QStringLiteral("unsupported option '%1'").arg(a);
@@ -352,6 +372,30 @@ std::optional<Request> fromArguments(const QStringList &args, const QString &cwd
         }
     }
     return req;
+}
+
+QStringList toArguments(const Request &req)
+{
+    QStringList args{QStringLiteral("-C"), req.cwd};
+    if (req.all)
+        args << QStringLiteral("-a");
+    if (req.noIndex)
+        args << QStringLiteral("--no-index");
+    if (!req.ghpr.isEmpty())
+        args << QStringLiteral("-ghpr") << req.ghpr;
+    if (!req.ado.isEmpty())
+        args << QStringLiteral("-ado") << req.ado;
+    if (!req.algorithm.isEmpty())
+        args << QStringLiteral("--algorithm") << req.algorithm;
+    if (!req.title.isEmpty())
+        args << QStringLiteral("--title") << req.title;
+    if (!req.patch.isEmpty())
+        args << QStringLiteral("--patch") << req.patch;
+    const qsizetype unforced = req.positional.size() - req.forcedPaths;
+    args += req.positional.mid(0, unforced);
+    if (req.forcedPaths > 0)
+        args << QStringLiteral("--") << req.positional.mid(unforced);
+    return args;
 }
 
 } // namespace ComparisonArgs

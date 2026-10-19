@@ -1,6 +1,7 @@
 #include "Comments.h"
 #include "DiffModel.h"
 #include "LineDiff.h"
+#include "PatchFile.h"
 
 #include <QRandomGenerator>
 
@@ -200,6 +201,55 @@ private slots:
         QVERIFY(d.lines[0].oldText.isNull());
         QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb\n")).size(), 2);
         QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb")).size(), 2);
+    }
+
+    void readsAndAppliesPatches()
+    {
+        const QString patch = QStringLiteral(
+            "From abc Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n f | 2 +-\n\n"
+            "diff --git a/f.txt b/f.txt\nindex 1..2 100644\n--- a/f.txt\n+++ b/f.txt\n"
+            "@@ -2,3 +2,3 @@\n b\n-c\n+C\n d\n@@ -9,2 +9,3 @@\n i\n j\n+k\n"
+            "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\n"
+            "diff --git a/old name b/new name\nsimilarity index 100%\nrename from old name\nrename to new name\n"
+            "-- \n2.40.0\n");
+        const QVector<PatchFile::File> files = PatchFile::parse(patch);
+        QCOMPARE(files.size(), 3);
+        QCOMPARE(files[0].path(), QStringLiteral("f.txt"));
+        QCOMPARE(files[0].status, QChar(u'M'));
+        QCOMPARE(files[0].hunks.size(), 2);
+        QCOMPARE(files[0].added, 2);
+        QCOMPARE(files[0].removed, 1);
+        QCOMPARE(files[1].status, QChar(u'A'));
+        QVERIFY(files[1].oldPath.isEmpty());
+        QCOMPARE(files[2].status, QChar(u'R'));
+        QCOMPARE(files[2].oldPath, QStringLiteral("old name"));
+        QCOMPARE(files[2].newPath, QStringLiteral("new name"));
+
+        // Applies where it says, and two lines further down when the file grew at the top.
+        QStringList base;
+        for (char c = 'a'; c <= 'j'; ++c)
+            base << QString(QChar(c));
+        auto applied = PatchFile::apply(base, files[0]);
+        QVERIFY(applied);
+        QCOMPARE(applied->value(2), QStringLiteral("C"));
+        QCOMPARE(applied->last(), QStringLiteral("k"));
+        applied = PatchFile::apply(QStringList{QStringLiteral("0"), QStringLiteral("00")} + base, files[0]);
+        QVERIFY(applied);
+        QCOMPARE(applied->value(4), QStringLiteral("C"));
+        QVERIFY(!PatchFile::apply({QStringLiteral("x")}, files[0]));
+        QCOMPARE(*PatchFile::apply({}, files[1]), QStringList{QStringLiteral("hello")});
+
+        // A plain diff -u, and the gaps between hunks when shown as they are.
+        const auto plain = PatchFile::parse(QStringLiteral("--- f.txt\t2024-01-01\n+++ f.txt\t2024-01-02\n@@ -1 +1 @@\n-a\n+b\n"));
+        QCOMPARE(plain.size(), 1);
+        QCOMPARE(plain[0].path(), QStringLiteral("f.txt"));
+        const FileDiff d = DiffModel::parseUnified(files[0].text);
+        QVERIFY(d.lines[0].gap); // line 1 isn't in the patch
+        int gaps = 0;
+        for (const DiffLine &l : d.lines)
+            gaps += l.gap;
+        QCOMPARE(gaps, 2);
+        QCOMPARE(d.chunks.size(), 2);
     }
 
     void stripsComments()
