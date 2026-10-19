@@ -25,6 +25,8 @@ struct Row {
     int newNo = 0;
     int lineIndex = -1;     // index into FileDiff::lines, -1 for filler and fold rows
     bool moved = false;
+    bool unimportant = false; // differs only in ignored ways (DiffLine::unimportant)
+    bool anchored = false;    // manually aligned with the other side
     bool moveStart = false; // first row of a moved block
     bool moveEnd = false;   // last row of a moved block
     QString moveLabel;      // short annotation drawn on the first row of a moved block
@@ -35,6 +37,7 @@ struct Row {
 
 struct ViewPalette {
     QColor added, removed, moved;
+    QColor unimportant;
     QColor addedEmph, removedEmph, movedEmph;
     QBrush filler;
     QColor fold;

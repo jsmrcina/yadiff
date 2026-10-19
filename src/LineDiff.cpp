@@ -238,7 +238,42 @@ QStringList splitLines(const QString &content)
     return lines;
 }
 
-FileDiff build(const QStringList &oldLines, const QStringList &newLines, const Alignment &alignment, bool detectMoves)
+Alignment alignAround(const QStringList &oldNorm, const QStringList &newNorm, const Alignment &anchors,
+                      const std::function<Alignment(const QStringList &, const QStringList &)> &align,
+                      Alignment *kept)
+{
+    Alignment sorted = anchors;
+    std::sort(sorted.begin(), sorted.end());
+    Alignment use;
+    for (const Match &a : std::as_const(sorted)) {
+        if (a.first < 0 || a.second < 0 || a.first >= oldNorm.size() || a.second >= newNorm.size())
+            continue;
+        if (!use.isEmpty() && (a.first <= use.last().first || a.second <= use.last().second))
+            continue; // crosses (or shares a line with) an earlier anchor
+        use.push_back(a);
+    }
+    if (kept)
+        *kept = use;
+    Alignment out;
+    int po = 0, pn = 0;
+    auto segment = [&](int oEnd, int nEnd) {
+        const Alignment part = align(oldNorm.mid(po, oEnd - po), newNorm.mid(pn, nEnd - pn));
+        for (const Match &m : part)
+            out.push_back({m.first + po, m.second + pn});
+    };
+    for (const Match &a : std::as_const(use)) {
+        segment(a.first, a.second);
+        if (oldNorm[a.first] == newNorm[a.second])
+            out.push_back(a);
+        po = a.first + 1;
+        pn = a.second + 1;
+    }
+    segment(int(oldNorm.size()), int(newNorm.size()));
+    return out;
+}
+
+FileDiff build(const QStringList &oldLines, const QStringList &newLines, const Alignment &alignment, bool detectMoves,
+               const Alignment &anchors)
 {
     auto display = [](const QString &l) { return l.endsWith(u'\r') ? l.chopped(1) : l; };
     FileDiff d;
@@ -267,11 +302,33 @@ FileDiff build(const QStringList &oldLines, const QStringList &newLines, const A
         dl.oldNo = ++oi;
         dl.newNo = ++ni;
         dl.text = display(newLines[mt.second]);
-        if (const QString old = display(oldLines[mt.first]); old != dl.text)
+        if (const QString old = display(oldLines[mt.first]); old != dl.text) {
             dl.oldText = old;
+            dl.unimportant = true;
+        }
         d.lines.push_back(std::move(dl));
     }
     emitUntil(int(oldLines.size()), int(newLines.size()));
+    if (!anchors.isEmpty()) {
+        QHash<int, int> oldRow, newRow; // line number -> index in d.lines
+        for (int i = 0; i < d.lines.size(); ++i) {
+            if (d.lines[i].kind != LineKind::Added)
+                oldRow.insert(d.lines[i].oldNo, i);
+            if (d.lines[i].kind != LineKind::Removed)
+                newRow.insert(d.lines[i].newNo, i);
+        }
+        for (const Match &a : anchors) {
+            const int r = oldRow.value(a.first + 1, -1);
+            const int s = newRow.value(a.second + 1, -1);
+            if (r < 0 || s < 0)
+                continue;
+            d.lines[r].anchored = d.lines[s].anchored = true;
+            if (r != s) { // not equal: show them as an edit, on one row
+                d.lines[r].pair = s;
+                d.lines[s].pair = r;
+            }
+        }
+    }
     DiffModel::finalize(d, detectMoves);
     return d;
 }

@@ -1319,6 +1319,53 @@ private slots:
         action(w, QStringLiteral("Git blame"))->setChecked(false);
         QCOMPARE(right->viewport()->geometry().left(), plainGutter);
     }
+    void unimportantTextAndManualAlignment()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.cpp"), "int a; // one\nint b;\nint c;\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("first")});
+        write(d + QStringLiteral("/f.cpp"), "int a; // two\nint x;\nint b;\nint c;\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        MainWindow w(std::move(*repo), cmp);
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *pane = w.findChild<DiffPane *>();
+        QVERIFY(pane->hasDiff());
+        QCOMPARE(pane->changeCount(), 1); // git: lines 1-2 (one chunk)
+
+        action(w, QStringLiteral("Ignore comments"))->trigger();
+        QCOMPARE(pane->changeCount(), 1); // only "int x;" is left
+        QVERIFY(pane->diff().lines[0].unimportant);
+        CodeView *right = nullptr;
+        for (CodeView *v : pane->findChildren<CodeView *>())
+            if (v->numbers() == CodeView::Numbers::New)
+                right = v;
+        QVERIFY(right->rows()[0].unimportant);
+        action(w, QStringLiteral("Ignore comments"))->trigger();
+
+        // Line up old "int b;" (2) with new "int x;" (2): they show as an edit on one row.
+        QMetaObject::invokeMethod(pane, "alignRequested", Q_ARG(int, 2), Q_ARG(int, 2));
+        int pairs = 0;
+        for (const DiffLine &l : pane->diff().lines)
+            pairs += l.anchored;
+        QCOMPARE(pairs, 2);
+        int row = -1;
+        for (int r = 0; r < right->rows().size(); ++r)
+            if (right->rows()[r].newNo == 2)
+                row = r;
+        QVERIFY(right->rows()[row].anchored);
+        QMetaObject::invokeMethod(pane, "clearAlignmentsRequested");
+        for (const DiffLine &l : pane->diff().lines)
+            QVERIFY(!l.anchored);
+        Settings::setDiffOptions(DiffOptions());
+    }
     void checkForUpdateAsksFirst()
     {
         // A fake GitHub API with a newer release.

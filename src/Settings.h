@@ -86,6 +86,9 @@ void setZoomPercent(int percent);
 QString editorCommand();
 void setEditorCommand(const QString &cmd);
 
+// Regular expressions for "unimportant text" (used while diff/ignoreUnimportant is on).
+QStringList unimportantPatterns();
+void setUnimportantPatterns(const QStringList &patterns);
 DiffOptions diffOptions();
 void setDiffOptions(const DiffOptions &o);
 

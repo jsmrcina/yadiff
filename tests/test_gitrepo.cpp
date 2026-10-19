@@ -528,6 +528,74 @@ private slots:
         QCOMPARE(rev.lines[0].kind, LineKind::Removed);
         QCOMPARE(rev.lines[0].text, QStringLiteral("ALPHA"));
     }
+
+    void commentsUnimportantTextAndAnchors()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/a.cpp"), "int a; // old\nint b;\n// built 2024-01-01 10:00\nint c;\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/a.cpp"),
+              "int a; // new comment\nint b;\n// built 2025-06-30 18:45\n// an added comment\nint c;\nint d;\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        const FileChange fc = repo->listChanges(cmp, &error).value(0);
+        auto counted = [](const FileDiff &fd) {
+            int n = 0;
+            for (const DiffLine &l : fd.lines)
+                n += l.kind != LineKind::Equal && !l.unimportant;
+            return n;
+        };
+        FileDiff fd = repo->loadDiff(fc, cmp, &error);
+        QCOMPARE(counted(fd), 6); // 2 removed + 4 added
+
+        for (DiffAlgorithm algo : {DiffAlgorithm::Patience, DiffAlgorithm::MyersLcs}) {
+            cmp.options = DiffOptions();
+            cmp.options.algorithm = algo;
+            cmp.options.ignoreComments = true;
+            fd = repo->loadDiff(fc, cmp, &error);
+            QVERIFY2(error.isEmpty(), qPrintable(error));
+            QCOMPARE(counted(fd), 1); // only "int d;"
+            QCOMPARE(fd.chunks.size(), 1);
+            QCOMPARE(fd.lines[0].kind, LineKind::Equal); // the comment changed: equal, greyed
+            QVERIFY(fd.lines[0].unimportant);
+            QCOMPARE(fd.lines[0].oldText, QStringLiteral("int a; // old"));
+            bool addedComment = false;
+            for (const DiffLine &l : fd.lines)
+                addedComment |= l.kind == LineKind::Added && l.unimportant && l.text.contains(QStringLiteral("added"));
+            QVERIFY(addedComment);
+        }
+
+        // Unimportant text: only the timestamps ignored.
+        cmp.options = DiffOptions();
+        cmp.options.unimportantPatterns = {QStringLiteral("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}"), QStringLiteral("([")};
+        fd = repo->loadDiff(fc, cmp, &error); // the invalid pattern is skipped
+        QCOMPARE(counted(fd), 4); // int a's comment (2) + the added comment + int d
+        bool stamp = false;
+        for (const DiffLine &l : fd.lines)
+            stamp |= l.kind == LineKind::Equal && l.unimportant && l.oldText.contains(QStringLiteral("2024"));
+        QVERIFY(stamp);
+
+        // Manual alignment: line 4 "int c;" lined up with the added comment (new line 4).
+        cmp.options = DiffOptions();
+        FileChange anchored = fc;
+        anchored.anchors = {{4, 4}};
+        fd = repo->loadDiff(anchored, cmp, &error);
+        int r = -1, s = -1;
+        for (int i = 0; i < fd.lines.size(); ++i) {
+            if (fd.lines[i].kind == LineKind::Removed && fd.lines[i].oldNo == 4)
+                r = i;
+            if (fd.lines[i].kind == LineKind::Added && fd.lines[i].newNo == 4)
+                s = i;
+        }
+        QVERIFY(r >= 0 && s >= 0);
+        QCOMPARE(fd.lines[r].pair, s);
+        QVERIFY(fd.lines[r].anchored && fd.lines[s].anchored);
+    }
 };
 
 QTEST_APPLESS_MAIN(TestGitRepo)

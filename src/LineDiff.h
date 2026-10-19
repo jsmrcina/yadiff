@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QVector>
 
+#include <functional>
 #include <utility>
 
 // yadiff's own line diff, used for the in-process algorithms and whenever lines are
@@ -37,8 +38,18 @@ Alignment fromUnifiedZero(const QString &diff, int n, int m);
 QStringList splitLines(const QString &content);
 
 // Builds the full-file diff from the original lines and an alignment. Equal lines
-// whose original text differs keep the old side's text in `oldText`.
+// whose original text differs keep the old side's text in `oldText` (and are
+// unimportant). `anchors` are manually aligned lines: the ones not in `alignment`
+// are shown side by side as an edit.
 FileDiff build(const QStringList &oldLines, const QStringList &newLines, const Alignment &alignment,
-               bool detectMoves);
+               bool detectMoves, const Alignment &anchors = {});
+
+// Alignment with manual anchors: `align` aligns each stretch between two anchors
+// (given the normalised lines of that stretch), and anchors whose lines are equal
+// join the result. Anchors that cross or are out of range are dropped; the ones
+// kept are returned in `kept`.
+Alignment alignAround(const QStringList &oldNorm, const QStringList &newNorm, const Alignment &anchors,
+                      const std::function<Alignment(const QStringList &, const QStringList &)> &align,
+                      Alignment *kept);
 
 } // namespace LineDiff

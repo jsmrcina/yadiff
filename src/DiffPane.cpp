@@ -206,6 +206,12 @@ ViewPalette DiffPane::makePalette() const
     p.added = c.added;
     p.removed = c.removed;
     p.moved = c.moved;
+    {
+        // Unimportant differences: a faint grey, whatever the colour theme.
+        const QColor text = palette().color(QPalette::Text), bg = palette().color(QPalette::Base);
+        p.unimportant = QColor((text.red() + 9 * bg.red()) / 10, (text.green() + 9 * bg.green()) / 10,
+                               (text.blue() + 9 * bg.blue()) / 10);
+    }
     p.addedEmph = Settings::emphasis(c.added);
     p.removedEmph = Settings::emphasis(c.removed);
     p.movedEmph = Settings::emphasis(c.moved);
@@ -235,6 +241,13 @@ Row DiffPane::makeRow(int i) const
     r.lineIndex = i;
     r.text = l.text;
     r.highlights = l.highlights;
+    r.unimportant = l.unimportant;
+    r.anchored = l.anchored;
+    if (r.anchored)
+        r.tooltip = tr("Aligned by hand (right-click → Remove manual alignment)");
+    else if (r.unimportant)
+        r.tooltip = l.kind == LineKind::Equal ? tr("Differs only in ways the current options ignore")
+                                              : tr("Doesn't count as a change: only ignored text (comments, unimportant text or blank)");
     if (l.moveId >= 0) {
         const MoveBlock &mb = d.moves[l.moveId];
         const int ownFirst = l.kind == LineKind::Removed ? mb.removedFirst : mb.addedFirst;
@@ -272,6 +285,8 @@ void DiffPane::setFile(const FileView &file)
 {
     if (isEditing())
         m_right->setEditing(false);
+    if (file.paths.newPath != m_file.paths.newPath || file.paths.oldPath != m_file.paths.oldPath)
+        m_alignPending = {}; // a pending alignment belongs to one file
     m_file = file;
     m_hasDiff = true;
     m_expanded.clear();
@@ -733,6 +748,12 @@ void DiffPane::rebuild()
         return {s + head - 1, s + head, hidden};
     };
 
+    // Chunks are the runs of changed lines that have a line that counts.
+    QSet<int> chunkStarts;
+    for (const Chunk &c : d.chunks)
+        chunkStarts.insert(c.first);
+    auto startsChunk = [&](int line) { return chunkStarts.contains(line); };
+
     if (m_mode == Mode::Inline) {
         QVector<Row> rows;
         rows.reserve(n);
@@ -758,6 +779,7 @@ void DiffPane::rebuild()
                 continue;
             }
             const int start = int(rows.size());
+            const bool isChunk = startsChunk(i); // runs of only unimportant lines aren't changes
             while (i < n && d.lines[i].kind != LineKind::Equal) {
                 m_inlineRowOfLine[i] = int(rows.size());
                 rows.push_back(makeRow(i));
@@ -765,7 +787,8 @@ void DiffPane::rebuild()
                     rows.push_back(makeCommentRow(m_file.threads[t]));
                 ++i;
             }
-            m_inlineChunkRows.push_back({start, int(rows.size()) - 1});
+            if (isChunk)
+                m_inlineChunkRows.push_back({start, int(rows.size()) - 1});
         }
         m_inline->setRows(rows, pal, font, tab);
         m_stack->setCurrentIndex(0);
@@ -815,6 +838,7 @@ void DiffPane::rebuild()
                 continue;
             }
             QVector<int> removed, added;
+            const bool isChunk = startsChunk(i);
             while (i < n && d.lines[i].kind != LineKind::Equal) {
                 (d.lines[i].kind == LineKind::Removed ? removed : added).push_back(i);
                 ++i;
@@ -856,7 +880,8 @@ void DiffPane::rebuild()
                 a = ai + 1;
             }
             emitRows(r, removed.size(), a, added.size());
-            m_sideChunkRows.push_back({startRow, int(left.size()) - 1});
+            if (isChunk)
+                m_sideChunkRows.push_back({startRow, int(left.size()) - 1});
         }
         m_left->setRows(left, pal, font, tab);
         m_right->setRows(right, pal, font, tab);
@@ -1221,6 +1246,55 @@ int DiffPane::chunkAtRow(CodeView *view, int row) const
     return -1;
 }
 
+void DiffPane::addAlignmentActions(QMenu &menu, CodeView *view, int row)
+{
+    // Manual alignment: pick a line on one side, then the line it should line up with.
+    if (isEditing() || m_file.diff.lines.isEmpty())
+        return;
+    menu.addSeparator();
+    const Row *r = row >= 0 && row < view->rows().size() ? &view->rows()[row] : nullptr;
+    bool leftSide = view == m_left;
+    int no = 0;
+    if (r && r->lineIndex >= 0) {
+        if (view == m_inline) {
+            if (r->kind != LineKind::Equal) {
+                leftSide = r->kind == LineKind::Removed;
+                no = leftSide ? r->oldNo : r->newNo;
+            }
+        } else {
+            no = leftSide ? r->oldNo : r->newNo;
+        }
+    }
+    const QString sideName = leftSide ? tr("left") : tr("right");
+    if (m_alignPending.line > 0 && m_alignPending.left != leftSide && no > 0) {
+        const int oldLine = leftSide ? no : m_alignPending.line;
+        const int newLine = leftSide ? m_alignPending.line : no;
+        menu.addAction(tr("A&lign with %1 line %2").arg(m_alignPending.left ? tr("left") : tr("right"))
+                           .arg(m_alignPending.line),
+                       this, [this, oldLine, newLine] {
+                           m_alignPending = {};
+                           emit alignRequested(oldLine, newLine);
+                       });
+    } else {
+        QAction *start = menu.addAction(tr("A&lign this line with…"), this, [this, leftSide, no, sideName] {
+            m_alignPending = {leftSide, no};
+            emit hint(tr("Right-click the line on the other side that %1 line %2 should line up with, and choose "
+                         "Align.")
+                          .arg(sideName)
+                          .arg(no));
+        });
+        start->setEnabled(no > 0);
+        start->setStatusTip(tr("Line this line up with a line on the other side, and compare the rest around it"));
+    }
+    if (m_alignPending.line > 0)
+        menu.addAction(tr("Cancel alignment"), this, [this] { m_alignPending = {}; });
+    bool anchored = false;
+    for (const DiffLine &l : m_file.diff.lines)
+        anchored |= l.anchored;
+    if (anchored)
+        menu.addAction(tr("Remove &manual alignment"), this, [this] { emit clearAlignmentsRequested(); });
+}
+
 void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
 {
     if (!m_hasDiff)
@@ -1262,6 +1336,8 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
                                     [this, chunk] { emit copyChangeRequested(chunk, false); });
     toOld->setEnabled(chunk >= 0 && canCopyTo(false));
     toOld->setStatusTip(tr("Replace the old side of this change with the new side, on disk"));
+
+    addAlignmentActions(menu, view, row);
 
     if (m_file.reviewEnabled) {
         menu.addSeparator();

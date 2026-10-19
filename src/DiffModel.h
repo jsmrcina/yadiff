@@ -22,10 +22,16 @@ struct DiffLine {
     int moveId = -1;        // index into FileDiff::moves when part of a moved block
     int partner = -1;       // index of the matching line on the other side of a move
     int pair = -1;          // index of the similar line on the other side of an edit
+    // The difference doesn't count: an equal line whose sides differ only in ignored
+    // ways, or an added/removed line that is blank once ignored text is taken out
+    // (a comment, unimportant text). Shown greyed; not part of any chunk.
+    bool unimportant = false;
+    bool anchored = false;  // manually aligned with the other side (see FileChange::anchors)
     QVector<Span> highlights;
 };
 
-// A run of consecutive non-equal lines: indices into FileDiff::lines, inclusive.
+// A run of consecutive non-equal lines with at least one that counts (not unimportant):
+// indices into FileDiff::lines, inclusive.
 struct Chunk {
     int first = 0;
     int last = 0;

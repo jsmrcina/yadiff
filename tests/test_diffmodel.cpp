@@ -1,3 +1,4 @@
+#include "Comments.h"
 #include "DiffModel.h"
 #include "LineDiff.h"
 
@@ -199,6 +200,81 @@ private slots:
         QVERIFY(d.lines[0].oldText.isNull());
         QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb\n")).size(), 2);
         QCOMPARE(LineDiff::splitLines(QStringLiteral("a\nb")).size(), 2);
+    }
+
+    void stripsComments()
+    {
+        const Comments::Syntax c = Comments::forFile(QStringLiteral("src/x.cpp"));
+        QVERIFY(c.isValid());
+        const QStringList in{QStringLiteral("int a = 1; // one"), QStringLiteral("s = \"http://x\"; /* start"),
+                             QStringLiteral("still comment"), QStringLiteral("end */ b = '/'; // c"),
+                             QStringLiteral("q = \"esc \\\" // not\"; x")};
+        const QStringList out = Comments::strip(in, c);
+        QCOMPARE(out[0], QStringLiteral("int a = 1; "));
+        QCOMPARE(out[1], QStringLiteral("s = \"http://x\"; "));
+        QCOMPARE(out[2], QString());
+        QCOMPARE(out[3], QStringLiteral(" b = '/'; "));
+        QCOMPARE(out[4], in[4]); // the // is inside a string with an escaped quote
+        QCOMPARE(Comments::strip({QStringLiteral("x = 1  # set x")}, Comments::forFile(QStringLiteral("a.py")))[0],
+                 QStringLiteral("x = 1  "));
+        QCOMPARE(Comments::strip({QStringLiteral("<a/><!-- c -->")}, Comments::forFile(QStringLiteral("a.xml")))[0],
+                 QStringLiteral("<a/>"));
+        QCOMPARE(Comments::strip({QStringLiteral("set(X 1) # c")}, Comments::forFile(QStringLiteral("CMakeLists.txt")))[0],
+                 QStringLiteral("set(X 1) "));
+        QVERIFY(!Comments::forFile(QStringLiteral("notes.unknownext")).isValid());
+    }
+
+    void unimportantLinesAreNotChunks()
+    {
+        FileDiff d;
+        auto add = [&](LineKind k, bool unimportant) {
+            DiffLine l;
+            l.kind = k;
+            l.text = QStringLiteral("x");
+            l.unimportant = unimportant;
+            d.lines.push_back(l);
+        };
+        add(LineKind::Added, true);
+        add(LineKind::Equal, false);
+        add(LineKind::Removed, true);
+        add(LineKind::Added, false);
+        DiffModel::computeChunks(d);
+        QCOMPARE(d.chunks.size(), 1); // the first run is only unimportant
+        QCOMPARE(d.chunks[0].first, 2);
+        QCOMPARE(d.chunks[0].last, 3);
+    }
+
+    void alignsAroundAnchors()
+    {
+        const QStringList o{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d")};
+        const QStringList n{QStringLiteral("x"), QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c2"),
+                            QStringLiteral("d")};
+        auto lcs = [](const QStringList &a, const QStringList &b) {
+            const auto [ia, ib] = LineDiff::lineIds(a, b);
+            return LineDiff::myers(ia, ib);
+        };
+        // Force old "a" (0) onto new "x" (0), and c (2) onto c2 (3); a crossing anchor is dropped.
+        LineDiff::Alignment kept;
+        const LineDiff::Alignment al = LineDiff::alignAround(o, n, {{2, 3}, {0, 0}, {1, 0}}, lcs, &kept);
+        QCOMPARE(kept, (LineDiff::Alignment{{0, 0}, {2, 3}}));
+        // a~x and c~c2 differ, so only b and d match: b is old 1, which the lcs puts at new 1 or 2.
+        QCOMPARE(al.size(), 2);
+        QCOMPARE(al.last(), (LineDiff::Match{3, 4}));
+        const FileDiff d = LineDiff::build(o, n, al, false, kept);
+        int anchored = 0;
+        for (const DiffLine &l : d.lines)
+            anchored += l.anchored;
+        QCOMPARE(anchored, 4);
+        // The forced pairs point at each other, so side by side puts them on one row.
+        for (int i = 0; i < d.lines.size(); ++i)
+            if (d.lines[i].anchored) {
+                QVERIFY(d.lines[i].pair >= 0);
+                QCOMPARE(d.lines[d.lines[i].pair].pair, i);
+            }
+
+        // An equal anchor just joins the alignment.
+        const LineDiff::Alignment al2 = LineDiff::alignAround(o, o, {{1, 1}}, lcs, &kept);
+        QCOMPARE(al2.size(), 4);
     }
 };
 

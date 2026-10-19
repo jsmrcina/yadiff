@@ -50,6 +50,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
@@ -246,6 +247,22 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     });
     connect(m_pane, &DiffPane::copyChangeRequested, this, &MainWindow::copyChange);
     connect(m_pane, &DiffPane::blameCommitRequested, this, &MainWindow::openBlameCommit);
+    connect(m_pane, &DiffPane::hint, this, [this](const QString &text) { statusBar()->showMessage(text, 10000); });
+    connect(m_pane, &DiffPane::alignRequested, this, [this](int oldLine, int newLine) {
+        if (m_shownIndex < 0 || m_shownIndex >= m_changes.size() || !maybeKeepEdits())
+            return;
+        auto &anchors = m_anchors[scrollKey(m_changes[m_shownIndex])];
+        anchors.removeIf([&](const std::pair<int, int> &a) { return a.first == oldLine || a.second == newLine; });
+        anchors.push_back({oldLine, newLine});
+        reloadCurrentFile();
+        statusBar()->showMessage(tr("Aligned left line %1 with right line %2").arg(oldLine).arg(newLine), 4000);
+    });
+    connect(m_pane, &DiffPane::clearAlignmentsRequested, this, [this] {
+        if (m_shownIndex < 0 || m_shownIndex >= m_changes.size() || !maybeKeepEdits())
+            return;
+        m_anchors.remove(scrollKey(m_changes[m_shownIndex]));
+        reloadCurrentFile();
+    });
     connect(m_pane, &DiffPane::showLargeRequested, this, [this] {
         const int index = m_shownIndex;
         m_showLarge.insert(index);
@@ -737,6 +754,22 @@ void MainWindow::createActions()
                               &DiffOptions::ignoreCrAtEol);
     m_ignoreCaseAct = addToggle(optionsMenu, tr("Ignore c&ase"), tr("Treat upper and lower case letters as equal"),
                                 &DiffOptions::ignoreCase);
+    m_ignoreCommentsAct = addToggle(optionsMenu, tr("Ignore c&omments"),
+                                    tr("Comments don't count as changes (the comment syntax comes from the file type)"),
+                                    &DiffOptions::ignoreComments);
+    m_ignoreUnimportantAct = optionsMenu->addAction(tr("Ignore &unimportant text"));
+    m_ignoreUnimportantAct->setCheckable(true);
+    m_ignoreUnimportantAct->setStatusTip(tr("Text matching your unimportant-text rules doesn't count as a change"));
+    connect(m_ignoreUnimportantAct, &QAction::triggered, this, [this](bool on) {
+        if (on && Settings::unimportantPatterns().isEmpty()) {
+            editUnimportantText(); // nothing to ignore yet: ask for the rules first
+            return;
+        }
+        DiffOptions o = m_cmp.options;
+        o.unimportantPatterns = on ? Settings::unimportantPatterns() : QStringList();
+        setDiffOptions(o);
+    });
+    optionsMenu->addAction(tr("Unimportant text &rules\u2026"), this, &MainWindow::editUnimportantText);
     QMenu *algoMenu = optionsMenu->addMenu(tr("Diff &algorithm"));
     m_algoGroup = new QActionGroup(this);
     for (DiffAlgorithm a : allAlgorithms()) {
@@ -1039,6 +1072,8 @@ void MainWindow::syncOptionControls()
     m_ignoreCrAct->setChecked(o.ignoreCrAtEol);
     m_ignoreTrimAct->setChecked(o.ignoreTrim);
     m_ignoreCaseAct->setChecked(o.ignoreCase);
+    m_ignoreCommentsAct->setChecked(o.ignoreComments);
+    m_ignoreUnimportantAct->setChecked(!o.unimportantPatterns.isEmpty());
     m_detectMovesAct->setChecked(o.detectMoves);
     m_allChangesAct->setChecked(m_cmp.allChanges);
     if (m_scopeCombo)
@@ -1264,7 +1299,8 @@ void MainWindow::showFile(int index)
             then = [this, state] { m_pane->restoreScroll(state); };
         }
     }
-    const FileChange fc = m_changes[index];
+    FileChange fc = m_changes[index];
+    fc.anchors = m_anchors.value(scrollKey(fc));
     const bool wasEditing = m_pane->isEditing() && index == m_shownIndex;
 
     QString left, right;
@@ -1301,7 +1337,7 @@ void MainWindow::showFile(int index)
     else
         title += QStringLiteral("  (%1)").arg(statusDescription(fc.status).toLower());
     // yadiff's own comparisons can differ from git's counts: those come from the diff.
-    const bool countsFromDiff = m_cmp.options.inProcess() && fc.status != u'?';
+    const bool countsFromDiff = (m_cmp.options.inProcess() || !fc.anchors.isEmpty()) && fc.status != u'?';
     if (fc.added >= 0 && !countsFromDiff)
         title += QStringLiteral("  +%1 −%2").arg(fc.added).arg(fc.removed);
 
@@ -1367,8 +1403,8 @@ void MainWindow::showFile(int index)
             if (countsFromDiff && !r.diff.binary) {
                 int added = 0, removed = 0;
                 for (const DiffLine &l : r.diff.lines) {
-                    added += l.kind == LineKind::Added;
-                    removed += l.kind == LineKind::Removed;
+                    added += l.kind == LineKind::Added && !l.unimportant;
+                    removed += l.kind == LineKind::Removed && !l.unimportant;
                 }
                 view.title += QStringLiteral("  +%1 −%2").arg(added).arg(removed);
             }
@@ -2480,6 +2516,41 @@ void MainWindow::editIgnorePatterns()
         reload();
 }
 
+void MainWindow::editUnimportantText()
+{
+    QString text = Settings::unimportantPatterns().join(u'\n');
+    for (;;) {
+        bool ok = false;
+        text = QInputDialog::getMultiLineText(
+            this, tr("Unimportant text"),
+            tr("Text matching any of these regular expressions doesn't count as a change, one per line.\n"
+               "Lines that differ only in such text show as unchanged (greyed). For example:\n"
+               "  \\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2})?    dates and times\n"
+               "  \\$(Id|Revision|Date):[^$]*\\$    version-control keywords\n"
+               "  [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}    GUIDs"),
+            text, &ok);
+        if (!ok)
+            return;
+        QStringList patterns, bad;
+        for (const QString &line : text.split(u'\n')) {
+            if (line.trimmed().isEmpty())
+                continue;
+            if (const QRegularExpression re(line); !re.isValid())
+                bad << tr("%1: %2").arg(line, re.errorString());
+            patterns << line;
+        }
+        if (!bad.isEmpty()) {
+            QMessageBox::warning(this, tr("Unimportant text"), tr("Not a valid regular expression:\n\n%1").arg(bad.join(u'\n')));
+            continue;
+        }
+        Settings::setUnimportantPatterns(patterns);
+        DiffOptions o = m_cmp.options;
+        o.unimportantPatterns = patterns; // editing the rules turns them on (or off, when there are none)
+        setDiffOptions(o);
+        return;
+    }
+}
+
 void MainWindow::showUsage()
 {
     QMessageBox box(QMessageBox::Information, tr("yadiff usage"), tr("Command line"), QMessageBox::Close, this);
@@ -2823,6 +2894,7 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_showLarge.clear();
     m_comments.clear();
     m_scrollMemory.clear();
+    m_anchors.clear();
     m_lastSignature.clear();
     m_shownIndex = -1;
     m_customTitle.clear();

@@ -14,6 +14,7 @@ class ImageDiffView;
 class OverviewBar;
 class QPushButton;
 class QLabel;
+class QMenu;
 class QStackedWidget;
 class QTimer;
 
@@ -142,6 +143,10 @@ signals:
     void searchResultsChanged(int count, int current);
     void showLargeRequested();
     void blameCommitRequested(const QString &hash);
+    // Manual alignment: line `oldLine` of the old side should line up with `newLine`.
+    void alignRequested(int oldLine, int newLine);
+    void clearAlignmentsRequested();
+    void hint(const QString &text); // a short message for the status bar
     // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
     void replyRequested(qint64 threadId);
@@ -151,6 +156,7 @@ private:
     void showChange(int index);
     void jumpToMovePartner(CodeView *source, int row);
     void showContextMenu(CodeView *view, int row, const QPoint &globalPos);
+    void addAlignmentActions(QMenu &menu, CodeView *view, int row);
     int chunkAtRow(CodeView *view, int row) const;
     ViewPalette makePalette() const;
     Row makeRow(int lineIndex) const;
@@ -177,6 +183,10 @@ private:
     bool nearChange(int lineIndex) const;
 
     FileView m_file;
+    struct AlignStart {
+        bool left = true;
+        int line = 0; // 0: none pending
+    } m_alignPending;
     QString m_leftName, m_rightName;
     bool m_hasDiff = false;
     Mode m_mode = Mode::SideBySide;

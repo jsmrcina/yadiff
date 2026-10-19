@@ -1,6 +1,7 @@
 #include "GitRepo.h"
 #include "LineDiff.h"
 
+#include "Comments.h"
 #include "FileFilter.h"
 
 #include <QCryptographicHash>
@@ -250,7 +251,23 @@ const QVector<DiffAlgorithm> &allAlgorithms()
 
 bool DiffOptions::inProcess() const
 {
-    return algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel || ignoreCase || ignoreTrim;
+    return algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel || ignoreCase || ignoreTrim
+        || ignoreComments || !unimportantPatterns.isEmpty();
+}
+
+QStringList DiffOptions::normalizedLines(const QStringList &lines, const QString &fileName) const
+{
+    QStringList out = ignoreComments ? Comments::strip(lines, Comments::forFile(fileName)) : lines;
+    QVector<QRegularExpression> patterns;
+    for (const QString &p : unimportantPatterns)
+        if (QRegularExpression re(p); !p.isEmpty() && re.isValid())
+            patterns.push_back(re);
+    for (QString &l : out) {
+        for (const QRegularExpression &re : std::as_const(patterns))
+            l.remove(re);
+        l = normalized(l);
+    }
+    return out;
 }
 
 QString DiffOptions::normalized(QString l) const
@@ -657,7 +674,7 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
     }
     if (cmp.mode == Comparison::Mode::Paths)
         return loadPathDiff(fc, cmp, error);
-    if (fc.status != u'?' && cmp.options.inProcess())
+    if (fc.status != u'?' && (cmp.options.inProcess() || !fc.anchors.isEmpty()))
         return loadDiffInProcess(fc, cmp, error);
     if (fc.status == u'?') {
         QFile f(m_root + u'/' + fc.path);
@@ -795,7 +812,7 @@ FileDiff GitRepo::loadPathDiff(const FileChange &fc, const Comparison &cmp, QStr
         d.message = QStringLiteral("The files are identical");
         return d;
     }
-    if (cmp.options.inProcess())
+    if (cmp.options.inProcess() || !fc.anchors.isEmpty())
         return loadDiffInProcess(fc, cmp, error);
     QString left = cmp.pathsAreFiles ? cmp.leftPath : cmp.leftPath + u'/' + fc.oldPath;
     QString right = cmp.pathsAreFiles ? cmp.rightPath : cmp.rightPath + u'/' + fc.path;
@@ -838,19 +855,17 @@ FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp,
     const QStringList oldLines = LineDiff::splitLines(QString::fromUtf8(oldData.value_or(QByteArray())));
     const QStringList newLines = LineDiff::splitLines(QString::fromUtf8(newData.value_or(QByteArray())));
     const DiffOptions &o = cmp.options;
-    QStringList oldNorm, newNorm;
-    oldNorm.reserve(oldLines.size());
-    newNorm.reserve(newLines.size());
-    for (const QString &l : oldLines)
-        oldNorm << o.normalized(l);
-    for (const QString &l : newLines)
-        newNorm << o.normalized(l);
+    const QStringList oldNorm = o.normalizedLines(oldLines, fc.oldPath);
+    const QStringList newNorm = o.normalizedLines(newLines, fc.path);
 
-    LineDiff::Alignment alignment;
-    if (o.algorithm == DiffAlgorithm::MyersLcs || o.algorithm == DiffAlgorithm::Heckel) {
-        const auto [a, b] = LineDiff::lineIds(oldNorm, newNorm);
-        alignment = o.algorithm == DiffAlgorithm::Heckel ? LineDiff::heckel(a, b) : LineDiff::myers(a, b);
-    } else {
+    QString alignError;
+    auto align = [&](const QStringList &oldPart, const QStringList &newPart) -> LineDiff::Alignment {
+        if (oldPart.isEmpty() || newPart.isEmpty())
+            return {};
+        if (o.algorithm == DiffAlgorithm::MyersLcs || o.algorithm == DiffAlgorithm::Heckel) {
+            const auto [a, b] = LineDiff::lineIds(oldPart, newPart);
+            return o.algorithm == DiffAlgorithm::Heckel ? LineDiff::heckel(a, b) : LineDiff::myers(a, b);
+        }
         // One of git's algorithms, run on the normalised lines.
         QTemporaryDir tmp;
         auto save = [&tmp](const QString &name, const QStringList &lines) {
@@ -863,30 +878,50 @@ FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp,
             }
             return true;
         };
-        if (!tmp.isValid() || !save(QStringLiteral("old"), oldNorm) || !save(QStringLiteral("new"), newNorm)) {
-            if (error)
-                *error = QStringLiteral("Could not write temporary files");
-            return d;
+        if (!tmp.isValid() || !save(QStringLiteral("old"), oldPart) || !save(QStringLiteral("new"), newPart)) {
+            alignError = QStringLiteral("Could not write temporary files");
+            return {};
         }
         QByteArray out;
         if (!runDiff({QStringLiteral("diff"), QStringLiteral("--no-index"), QStringLiteral("--no-color"),
                       QStringLiteral("--no-ext-diff"), QStringLiteral("-U0"),
                       QStringLiteral("--diff-algorithm=") + algorithmName(o.algorithm), QStringLiteral("--"),
                       tmp.filePath(QStringLiteral("old")), tmp.filePath(QStringLiteral("new"))},
-                     &out, error))
-            return d;
-        alignment = LineDiff::fromUnifiedZero(QString::fromUtf8(out), int(oldLines.size()), int(newLines.size()));
+                     &out, &alignError))
+            return {};
+        return LineDiff::fromUnifiedZero(QString::fromUtf8(out), int(oldPart.size()), int(newPart.size()));
+    };
+
+    LineDiff::Alignment anchors;
+    for (const auto &[o1, n1] : fc.anchors)
+        anchors.push_back({o1 - 1, n1 - 1});
+    const LineDiff::Alignment alignment = LineDiff::alignAround(oldNorm, newNorm, anchors, align, &anchors);
+    if (!alignError.isEmpty()) {
+        if (error)
+            *error = alignError;
+        return d;
     }
 
-    d = LineDiff::build(oldLines, newLines, alignment, o.detectMoves);
-    bool onlyBlank = o.ignoreBlankLines;
-    for (int i = 0; onlyBlank && i < d.lines.size(); ++i)
-        if (d.lines[i].kind != LineKind::Equal
-            && !(d.lines[i].kind == LineKind::Removed ? oldNorm[d.lines[i].oldNo - 1] : newNorm[d.lines[i].newNo - 1])
-                    .trimmed()
-                    .isEmpty())
-            onlyBlank = false;
-    if (d.chunks.isEmpty() || onlyBlank) {
+    d = LineDiff::build(oldLines, newLines, alignment, false, anchors);
+    // Added and removed lines that are blank once ignored text is taken out don't count;
+    // blank lines themselves only with "ignore blank lines".
+    const bool removesText = o.ignoreComments || !o.unimportantPatterns.isEmpty() || o.ignoreBlankLines;
+    if (removesText) {
+        for (DiffLine &l : d.lines) {
+            if (l.kind == LineKind::Equal)
+                continue;
+            const QString &orig = l.kind == LineKind::Removed ? oldLines[l.oldNo - 1] : newLines[l.newNo - 1];
+            const QString &norm = l.kind == LineKind::Removed ? oldNorm[l.oldNo - 1] : newNorm[l.newNo - 1];
+            if (norm.trimmed().isEmpty() && (o.ignoreBlankLines || !orig.trimmed().isEmpty()))
+                l.unimportant = true;
+        }
+    }
+    for (DiffLine &l : d.lines) { // finalize again, keeping only the manual pairs
+        l.pair = l.anchored && l.kind != LineKind::Equal ? l.pair : -1;
+        l.highlights.clear();
+    }
+    DiffModel::finalize(d, o.detectMoves);
+    if (d.chunks.isEmpty() && fc.anchors.isEmpty()) {
         // Nothing differs under the options: like git, show nothing.
         d = FileDiff();
         if (fc.status == u'D' && oldLines.isEmpty())

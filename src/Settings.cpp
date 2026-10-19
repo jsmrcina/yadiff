@@ -206,6 +206,15 @@ void setZoomPercent(int percent) { QSettings().setValue(QStringLiteral("view/zoo
 QString editorCommand() { return QSettings().value(QStringLiteral("edit/editorCommand")).toString(); }
 void setEditorCommand(const QString &cmd) { QSettings().setValue(QStringLiteral("edit/editorCommand"), cmd); }
 
+QStringList unimportantPatterns()
+{
+    return QSettings().value(QStringLiteral("diff/unimportantPatterns")).toStringList();
+}
+void setUnimportantPatterns(const QStringList &patterns)
+{
+    QSettings().setValue(QStringLiteral("diff/unimportantPatterns"), patterns);
+}
+
 DiffOptions diffOptions()
 {
     QSettings s;
@@ -220,6 +229,9 @@ DiffOptions diffOptions()
     o.ignoreCrAtEol = s.value(QStringLiteral("diff/ignoreCrAtEol"), false).toBool();
     o.ignoreTrim = s.value(QStringLiteral("diff/ignoreTrim"), false).toBool();
     o.ignoreCase = s.value(QStringLiteral("diff/ignoreCase"), false).toBool();
+    o.ignoreComments = s.value(QStringLiteral("diff/ignoreComments"), false).toBool();
+    if (s.value(QStringLiteral("diff/ignoreUnimportant"), false).toBool())
+        o.unimportantPatterns = unimportantPatterns();
     o.detectMoves = s.value(QStringLiteral("diff/detectMoves"), true).toBool();
     return o;
 }
@@ -234,6 +246,8 @@ void setDiffOptions(const DiffOptions &o)
     s.setValue(QStringLiteral("diff/ignoreCrAtEol"), o.ignoreCrAtEol);
     s.setValue(QStringLiteral("diff/ignoreTrim"), o.ignoreTrim);
     s.setValue(QStringLiteral("diff/ignoreCase"), o.ignoreCase);
+    s.setValue(QStringLiteral("diff/ignoreComments"), o.ignoreComments);
+    s.setValue(QStringLiteral("diff/ignoreUnimportant"), !o.unimportantPatterns.isEmpty());
     s.setValue(QStringLiteral("diff/detectMoves"), o.detectMoves);
 }
 

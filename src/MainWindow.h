@@ -116,6 +116,7 @@ private:
     void newComparison();
     void changeWindowTitle();
     void editIgnorePatterns();
+    void editUnimportantText();
     void showUsage();
     void unregisterDifftool();
     // Edit menu.
@@ -247,5 +248,9 @@ private:
     QAction *m_ignoreCrAct = nullptr;
     QAction *m_ignoreTrimAct = nullptr;
     QAction *m_ignoreCaseAct = nullptr;
+    QAction *m_ignoreCommentsAct = nullptr;
+    QAction *m_ignoreUnimportantAct = nullptr;
+    // Manual alignment per file (scrollKey): (old line, new line) pairs.
+    QHash<QString, QVector<std::pair<int, int>>> m_anchors;
     QAction *m_detectMovesAct = nullptr;
 };

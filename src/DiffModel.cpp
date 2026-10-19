@@ -237,7 +237,11 @@ FileDiff reversed(const FileDiff &in)
         r.kind = l.kind == LineKind::Added ? LineKind::Removed : l.kind == LineKind::Removed ? LineKind::Added : LineKind::Equal;
         r.oldNo = l.newNo;
         r.newNo = l.oldNo;
-        r.text = l.text;
+        r.text = l.oldText.isNull() ? l.text : l.oldText;
+        if (!l.oldText.isNull())
+            r.oldText = l.text;
+        r.unimportant = l.unimportant;
+        r.anchored = l.anchored;
         d.lines.push_back(r);
     }
     finalize(d);
@@ -256,10 +260,12 @@ void computeChunks(FileDiff &d)
         }
         Chunk c;
         c.first = i;
+        bool counts = false;
         while (i < n && d.lines[i].kind != LineKind::Equal)
-            ++i;
+            counts |= !d.lines[i++].unimportant;
         c.last = i - 1;
-        d.chunks.push_back(c);
+        if (counts)
+            d.chunks.push_back(c);
     }
 }
 
@@ -280,7 +286,8 @@ void detectMoves(FileDiff &d, int minChars)
     QVector<QString> key(n);
     QHash<QString, QVector<int>> addedByKey;
     for (int i = 0; i < n; ++i) {
-        if (d.lines[i].kind == LineKind::Equal)
+        // Unimportant and manually aligned lines stay where they are.
+        if (d.lines[i].kind == LineKind::Equal || d.lines[i].unimportant || d.lines[i].pair >= 0)
             continue;
         key[i] = d.lines[i].text.trimmed();
         if (d.lines[i].kind == LineKind::Added && !key[i].isEmpty())
@@ -344,18 +351,27 @@ void computeIntraLine(FileDiff &d)
     for (const Chunk &c : std::as_const(d.chunks)) {
         QVector<int> removed, added;
         for (int i = c.first; i <= c.last; ++i) {
-            if (d.lines[i].moveId >= 0)
+            if (d.lines[i].moveId >= 0 || d.lines[i].unimportant)
                 continue;
             (d.lines[i].kind == LineKind::Removed ? removed : added).push_back(i);
         }
         // Pair each removed line with the most similar later added line, keeping
-        // pairs in order so side-by-side rows never cross.
+        // pairs in order so side-by-side rows never cross. Pairs set beforehand
+        // (manual alignment) stay, and the others are found between them.
         qsizetype nextAdded = 0;
         for (int r : std::as_const(removed)) {
+            if (const int preset = d.lines[r].pair; preset >= 0) {
+                intraLineDiff(d.lines[r], d.lines[preset]);
+                nextAdded = std::max(nextAdded, added.indexOf(preset) + 1);
+                continue;
+            }
+            qsizetype limit = std::min(added.size(), nextAdded + 64);
+            for (qsizetype k = nextAdded; k < limit; ++k)
+                if (d.lines[added[k]].pair >= 0)
+                    limit = k; // a preset pair further down: don't cross it
             qsizetype best = -1;
             double bestScore = 0.5; // minimum similarity to count as an edit of the same line
-            const qsizetype end = std::min(added.size(), nextAdded + 64);
-            for (qsizetype k = nextAdded; k < end; ++k) {
+            for (qsizetype k = nextAdded; k < limit; ++k) {
                 const double score = similarity(d.lines[r].text, d.lines[added[k]].text);
                 if (score > bestScore) {
                     bestScore = score;

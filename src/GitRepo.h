@@ -19,6 +19,9 @@ struct FileChange {
     int added = -1;     // line counts from git --numstat; -1 when unknown (binary)
     int removed = -1;
     bool blankOnly = false; // the only differences are blank lines
+    // Lines the user aligned by hand, as (old line, new line), 1-based. Set by the UI
+    // before loadDiff(); the diff is then computed around them.
+    QVector<std::pair<int, int>> anchors;
 };
 
 // One line of `git blame`.
@@ -50,6 +53,9 @@ struct DiffOptions {
     bool ignoreCrAtEol = false;
     bool ignoreTrim = false;          // leading and trailing whitespace (yadiff)
     bool ignoreCase = false;          // (yadiff)
+    bool ignoreComments = false;      // comments, found from the file type (yadiff)
+    // Text matching any of these regular expressions doesn't count (yadiff).
+    QStringList unimportantPatterns;
     bool detectMoves = true;
 
     QStringList gitArgs() const;
@@ -58,11 +64,17 @@ struct DiffOptions {
     {
         return ignoreSpaceChange || ignoreAllSpace || ignoreBlankLines || ignoreCrAtEol || ignoreTrim;
     }
-    bool ignoresSomething() const { return ignoresWhitespace() || ignoreCase; }
+    bool ignoresSomething() const
+    {
+        return ignoresWhitespace() || ignoreCase || ignoreComments || !unimportantPatterns.isEmpty();
+    }
     // True when yadiff compares the lines itself instead of using git's diff output.
     bool inProcess() const;
-    // A line as it is compared under these options.
+    // A line as it is compared under these options (whitespace and case only).
     QString normalized(QString line) const;
+    // Lines of the file `fileName` as they are compared: comments and unimportant text
+    // taken out, then normalized().
+    QStringList normalizedLines(const QStringList &lines, const QString &fileName) const;
 };
 
 QString algorithmName(DiffAlgorithm a);         // git's name: "histogram", ...

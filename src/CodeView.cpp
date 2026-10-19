@@ -148,6 +148,8 @@ QColor CodeView::rowColor(const Row &r) const
         return m_pal.comment;
     if (r.moved)
         return m_pal.moved;
+    if (r.unimportant)
+        return m_pal.unimportant;
     switch (r.kind) {
     case LineKind::Added: return m_pal.added;
     case LineKind::Removed: return m_pal.removed;
@@ -552,7 +554,11 @@ void CodeView::paintGutter(QPaintEvent *event)
                     drawNumber(r.newNo);
 
                 QString marker;
-                if (r.moved)
+                if (r.anchored)
+                    marker = QStringLiteral("\u2194"); // ↔ aligned by hand
+                else if (r.unimportant)
+                    marker = QStringLiteral("\u00B7"); // · ignored difference
+                else if (r.moved)
                     marker = QStringLiteral("⇄"); // ⇄
                 else if (r.kind == LineKind::Added)
                     marker = QStringLiteral("+");

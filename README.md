@@ -64,6 +64,18 @@ path looks like a revision.
   shows its own text. These two options don't change which files are listed. A file whose only
   differences are ignored says so when you open it. The Options menu can also turn move
   detection off.
+- **Comments and unimportant text.** Options → Ignore comments takes comments out before
+  comparing. The comment syntax comes from the file type: C-style, `#`, `--`, `;`, `%`, `'` and
+  `<!-- -->` languages, with string literals skipped. Options → Unimportant text rules takes a
+  list of regular expressions, such as dates, version-control keywords or GUIDs, and Ignore
+  unimportant text switches them on or off. Lines that differ only in ignored text show as
+  unchanged on a grey background, with each side's own text. Added or removed lines that are
+  nothing but ignored text (a new comment, for instance) are greyed with a · in the gutter.
+  Neither kind counts as a change for navigation or the +/− counts.
+- **Manual alignment.** When the diff lines up the wrong lines, right-click a line, choose Align
+  this line with…, then right-click the line on the other side it belongs with and choose Align.
+  yadiff compares the stretches above and below separately, so the two lines share a row (marked
+  ↔). Add as many alignment points as you like; Remove manual alignment clears them for the file.
 - **Syntax highlighting** comes from KDE's KSyntaxHighlighting, which covers about 460 languages.
   The language is detected from the file name. The toolbar's Syntax drop-down overrides it for
   files with the same extension, and "None" turns highlighting off. Builds without the library
@@ -210,7 +222,7 @@ computed by yadiff.
   - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
     no files. Identical files are listed only while that option is on.
   - Ignore all whitespace, extra whitespace, leading/trailing whitespace, blank lines, CR at end
-    of line, and case.
+    of line, case, comments, and unimportant text (with its rules).
   - Diff algorithm and move detection.
   - All changes in one list, and comparing unstaged changes against HEAD.
   - Automatic reload, and remembering scroll positions per file.
@@ -322,13 +334,15 @@ ctest --test-dir build --output-on-failure
 ```
 
 - `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
-  yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel.
+  yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel. It also
+  covers comment stripping, unimportant lines, and alignment around manual anchors.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
   applying a change to a file, line-ending preservation, and difftool registration. That last one
   uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
-  options (including ignore case and leading/trailing whitespace with every algorithm), review
+  options (including ignore case and leading/trailing whitespace with every algorithm, comments,
+  unimportant text and manual alignment), review
   fingerprints, line counts, directory and file comparison, `/dev/null` sides, and blame.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
@@ -341,7 +355,8 @@ ctest --test-dir build --output-on-failure
   It also covers folds, find in all three scopes, editing and saving (with highlighting on), applying
   a change to disk, wrap alignment, auto-reload, the commit picker, and that no two actions share a
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
-  the file filter, image diffs, review-thread placement, the large-diff notice, themes and blame. The other GUI
+  the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
+  ignoring comments and manual alignment. The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
 To look at the UI without a display, render every file in both modes to PNG:
@@ -355,7 +370,8 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | Path | What |
 |---|---|
 | `src/DiffModel.*` | Unified-diff parser, chunks, move detection, line pairing, word highlights |
-| `src/LineDiff.*` | yadiff's own line diff: Myers LCS, Heckel, and diffs of normalised lines |
+| `src/LineDiff.*` | yadiff's own line diff: Myers LCS, Heckel, diffs of normalised lines, manual anchors |
+| `src/Comments.*` | Comment syntax by file type, and stripping comments for Ignore comments |
 | `src/GitRepo.*` | Runs `git`, lists changed files, loads one file's diff, fingerprints file versions |
 | `src/GitHubPr.*` | Parses PR links, resolves them with `gh`, fetches them |
 | `src/DiffFormat.*` | Unified-diff text and coloured HTML for copying |
