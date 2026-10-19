@@ -53,7 +53,9 @@
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QPointer>
+#include <QProgressBar>
 #include <QProgressDialog>
+#include <QThread>
 #include <QUrl>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -244,6 +246,12 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     syncOptionControls();
     updateViewToggle();
 
+    m_busyBar = new QProgressBar;
+    m_busyBar->setMaximumWidth(260);
+    m_busyBar->setMaximumHeight(18);
+    m_busyBar->setTextVisible(true);
+    m_busyBar->hide();
+    statusBar()->addPermanentWidget(m_busyBar);
     m_summary = new QLabel;
     statusBar()->addPermanentWidget(m_summary);
 
@@ -676,6 +684,7 @@ void MainWindow::createActions()
     connect(hex, &QAction::toggled, this, [this](bool on) {
         Settings::setHexBinary(on);
         m_diffCache.clear();
+        startPrefetch();
         reloadCurrentFile();
     });
     QMenu *tabMenu = viewMenu->addMenu(tr("Ta&b width"));
@@ -1484,6 +1493,7 @@ void MainWindow::setDiffOptions(const DiffOptions &o)
         reload();
         statusBar()->showMessage(o.ignoresWhitespace() ? tr("Ignoring whitespace") : tr("Showing whitespace changes"), 3000);
     } else {
+        startPrefetch();
         reloadCurrentFile();
         statusBar()->showMessage(tr("Diff algorithm: %1").arg(algorithmLabel(o.algorithm)), 3000);
     }
@@ -1542,11 +1552,26 @@ void MainWindow::reload(std::function<void()> afterFile)
     const quint64 gen = ++m_listGen;
     m_listBusy = true;
     statusBar()->showMessage(tr("Loading changes…"));
+    // The old list's background loading stops; the new list starts its own.
+    ++m_prefetchGen;
+    m_prefetchQueue.clear();
+    m_prefetchInFlight.clear();
+    m_prefetchClaimed.clear();
+    m_prefetchDone = m_prefetchTotal = 0;
+    m_waitingFor = -1;
+    if (m_changes.isEmpty() && !m_cmp.empty) {
+        m_files->setPlaceholder(tr("Listing changed files…"));
+        m_pane->showMessage(QString(), tr("Listing changed files…"));
+    }
+    updateBusy();
     const QSet<QString> reviewKeys = m_reviews->keys();
+    // With background loading the line counts come from the diffs: counting them with git
+    // first reads every changed file, which in a large repository holds up the list.
+    const bool lineCounts = !prefetchable();
     runJob<ListResult>(
-        [repo = m_repo, cmp = m_cmp, reviewKeys] {
+        [repo = m_repo, cmp = m_cmp, reviewKeys, lineCounts] {
             ListResult r;
-            r.changes = repo.listChanges(cmp, &r.error);
+            r.changes = repo.listChanges(cmp, &r.error, lineCounts);
             for (int i = 0; i < r.changes.size(); ++i)
                 if (reviewKeys.contains(ReviewStore::pathKey(r.changes[i].path)))
                     r.fingerprints.insert(i, repo.fingerprint(r.changes[i], cmp));
@@ -1557,6 +1582,8 @@ void MainWindow::reload(std::function<void()> afterFile)
             if (gen != m_listGen)
                 return; // a newer reload superseded this one
             m_listBusy = false;
+            m_files->setPlaceholder({});
+            updateBusy();
             statusBar()->clearMessage();
             m_diffCache.clear();
             m_changes = r.changes;
@@ -1598,6 +1625,7 @@ void MainWindow::reload(std::function<void()> afterFile)
                 updateEditActions();
                 return;
             }
+            startPrefetch();
             // Prefer the same file and section; fall back to the same file in another section.
             int target = -1, fallback = -1;
             for (int i = 0; i < m_changes.size(); ++i) {
@@ -1623,6 +1651,224 @@ void MainWindow::reload(std::function<void()> afterFile)
         });
 }
 
+void MainWindow::updateBusy()
+{
+    if (m_resolving || m_listBusy) {
+        // Indeterminate: a moving bar, with what is happening beside it in the pane.
+        m_busyBar->setRange(0, 0);
+        m_busyBar->setFormat(m_resolving ? m_resolveStep : tr("Listing changed files…"));
+        m_busyBar->setToolTip(m_busyBar->format());
+    } else if (m_prefetchTotal > 0 && m_prefetchDone < m_prefetchTotal) {
+        m_busyBar->setRange(0, m_prefetchTotal);
+        m_busyBar->setValue(m_prefetchDone);
+        m_busyBar->setFormat(tr("Loading diffs %v of %m"));
+        m_busyBar->setToolTip(tr("Loading each file's diff in the background"));
+    } else {
+        m_busyBar->hide();
+        return;
+    }
+    m_busyBar->show();
+}
+
+bool MainWindow::prefetchable() const
+{
+    // Only comparisons of commits: their files can't change while they are shown.
+    return !m_cmp.empty && m_repo.isRepository() && m_cmp.mode == Comparison::Mode::Revisions && !m_cmp.rev2.isEmpty();
+}
+
+void MainWindow::startPrefetch()
+{
+    ++m_prefetchGen;
+    m_prefetchQueue.clear();
+    m_prefetchInFlight.clear();
+    m_prefetchClaimed.clear();
+    m_prefetchDone = m_prefetchTotal = 0;
+    m_waitingFor = -1;
+    m_files->clearLoadStates();
+    if (!prefetchable()) {
+        updateBusy();
+        return;
+    }
+    // In list order, so the files the user is likely to look at first come first.
+    constexpr int kMaxPrefetch = 300;
+    QVector<int> counted;
+    for (int idx : m_files->displayOrder(true)) {
+        const FileChange &fc = m_changes[idx];
+        if (m_diffCache.contains(idx) || isImagePath(fc.path) || isImagePath(fc.oldPath))
+            continue;
+        if (m_prefetchQueue.size() + m_prefetchClaimed.size() >= kMaxPrefetch)
+            break;
+        counted << idx;
+        if (m_fileBusy && idx == m_shownIndex) {
+            m_prefetchClaimed.insert(idx); // showFile is loading it already
+            m_files->setLoadState(idx, FileList::LoadState::Loading);
+            continue;
+        }
+        m_prefetchQueue << idx;
+        m_files->setLoadState(idx, FileList::LoadState::Queued);
+    }
+    m_prefetchTotal = int(m_prefetchQueue.size() + m_prefetchClaimed.size());
+
+    // Files past the limit (or images) still get line counts, from git.
+    bool uncounted = false;
+    for (int i = 0; i < m_changes.size(); ++i)
+        uncounted = uncounted || (m_changes[i].added < 0 && !counted.contains(i));
+    if (uncounted) {
+        const quint64 gen = m_prefetchGen;
+        runJob<QVector<FileChange>>([repo = m_repo, cmp = m_cmp] { return repo.listChanges(cmp, nullptr, true); },
+                                    [this, gen](QVector<FileChange> counts) {
+                                        if (gen != m_prefetchGen)
+                                            return;
+                                        for (const FileChange &c : counts)
+                                            for (int i = 0; i < m_changes.size(); ++i)
+                                                if (m_changes[i].added < 0 && m_changes[i].path == c.path && c.added >= 0) {
+                                                    m_changes[i].added = c.added;
+                                                    m_changes[i].removed = c.removed;
+                                                    m_changes[i].blankOnly = c.blankOnly;
+                                                    m_files->setStats(i, c.added, c.removed, c.blankOnly);
+                                                }
+                                        updateSummary();
+                                    });
+    }
+    pumpPrefetch();
+    updateBusy();
+    updateSummary();
+}
+
+void MainWindow::pumpPrefetch()
+{
+    // A few at a time: each is a git process, and in a virtualized repository each
+    // downloads its files, so a handful in parallel hides most of the waiting.
+    constexpr int kParallel = 4;
+    while (m_prefetchInFlight.size() < kParallel && !m_prefetchQueue.isEmpty()) {
+        const int idx = m_prefetchQueue.takeFirst();
+        if (m_diffCache.contains(idx)) { // showFile got there first
+            fileLoaded(idx, m_diffCache.value(idx), QString());
+            continue;
+        }
+        m_prefetchInFlight.insert(idx);
+        m_files->setLoadState(idx, FileList::LoadState::Loading);
+        FileChange fc = m_changes[idx];
+        fc.anchors = m_anchors.value(scrollKey(fc));
+        const quint64 gen = m_prefetchGen;
+        runJob<std::pair<FileDiff, QString>>(
+            [repo = m_repo, cmp = m_cmp, fc] {
+                QString error;
+                FileDiff d = repo.loadDiff(fc, cmp, &error);
+                return std::pair<FileDiff, QString>(std::move(d), error);
+            },
+            [this, gen, idx](std::pair<FileDiff, QString> r) {
+                if (gen != m_prefetchGen)
+                    return; // the comparison or its options changed meanwhile
+                m_prefetchInFlight.remove(idx);
+                fileLoaded(idx, r.first, r.second);
+                pumpPrefetch();
+            });
+    }
+    updateBusy();
+}
+
+void MainWindow::fileLoaded(int index, const FileDiff &diff, const QString &error)
+{
+    if (index < 0 || index >= m_changes.size())
+        return;
+    const bool ok = error.isEmpty();
+    if (ok) {
+        m_diffCache.insert(index, diff);
+        FileChange &fc = m_changes[index];
+        if (fc.added < 0 && !diff.binary && !diff.hexDump) {
+            // The line counts git would give, from the diff itself.
+            int added = 0, removed = 0;
+            bool blank = true;
+            for (const DiffLine &l : diff.lines) {
+                if (l.kind != LineKind::Added && l.kind != LineKind::Removed)
+                    continue;
+                (l.kind == LineKind::Added ? added : removed)++;
+                blank = blank && l.text.trimmed().isEmpty();
+            }
+            fc.added = added;
+            fc.removed = removed;
+            fc.blankOnly = fc.status == u'M' && blank && added + removed > 0;
+            m_files->setStats(index, added, removed, fc.blankOnly);
+        }
+    }
+    m_files->setLoadState(index, ok ? FileList::LoadState::Loaded : FileList::LoadState::Failed);
+    ++m_prefetchDone;
+    if (m_prefetchDone >= m_prefetchTotal)
+        updateSummary();
+    if (m_waitingFor == index) {
+        // The user picked this file while it was loading: show it now.
+        m_waitingFor = -1;
+        m_afterFileLoad = std::exchange(m_waitingThen, nullptr);
+        m_shownIndex = -1;
+        showFile(index);
+    }
+    updateBusy();
+}
+
+void MainWindow::openInBackground(ComparisonArgs::Request req, const std::optional<Session> &session)
+{
+    const QString link = req.ado.isEmpty() ? req.ghpr : req.ado;
+    m_resolving = true;
+    m_resolveStep = tr("Opening the pull request…");
+    // Nothing from the placeholder comparison may draw over the progress.
+    ++m_listGen;
+    ++m_fileGen;
+    m_cmp.title = link;
+    updateTitle();
+    m_files->setChanges({}, false);
+    m_files->setPlaceholder(tr("Opening the pull request…"));
+    m_pane->showMessage(link, m_resolveStep);
+    updateBusy();
+    qCInfo(lcApp).noquote() << "opening" << link << "in the background";
+
+    QPointer<MainWindow> self(this);
+    req.progress = [self, link](const QString &message) {
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, link, message] {
+                if (!self || !self->m_resolving)
+                    return;
+                self->m_resolveStep = message;
+                self->m_pane->showMessage(link, message);
+                self->updateBusy();
+            },
+            Qt::QueuedConnection);
+    };
+    // Sign-in is a dialog, so it happens on the UI thread while the worker waits.
+    req.signIn = [](const QUrl &collection, const QString &reason) -> std::optional<AdoAuth::Credential> {
+        if (QThread::currentThread() == qApp->thread())
+            return ComparisonArgs::signInWithDialog(collection, reason);
+        std::optional<AdoAuth::Credential> out;
+        QMetaObject::invokeMethod(
+            qApp, [&] { out = ComparisonArgs::signInWithDialog(collection, reason); }, Qt::BlockingQueuedConnection);
+        return out;
+    };
+    struct Opened {
+        std::optional<ComparisonArgs::Result> result;
+        QString error;
+    };
+    runJob<std::shared_ptr<Opened>>(
+        [req] {
+            auto o = std::make_shared<Opened>();
+            o->result = ComparisonArgs::resolve(req, &o->error);
+            return o;
+        },
+        [this, session, link](std::shared_ptr<Opened> o) {
+            m_resolving = false;
+            updateBusy();
+            if (!o->result) {
+                m_files->setPlaceholder({});
+                m_pane->showMessage(link, tr("Could not open the pull request:\n\n%1").arg(o->error));
+                QMessageBox::warning(this, tr("Open pull request"), o->error);
+                return;
+            }
+            setComparison(std::move(o->result->repo), o->result->cmp);
+            if (session)
+                applySession(*session);
+        });
+}
+
 void MainWindow::updateSummary()
 {
     QString text;
@@ -1639,8 +1885,11 @@ void MainWindow::updateSummary()
         added += std::max(0, fc.added);
         removed += std::max(0, fc.removed);
     }
+    // While diffs are still loading in the background their counts aren't known yet.
+    const bool counting = m_prefetchTotal > 0 && m_prefetchDone < m_prefetchTotal;
     if (!m_changes.isEmpty()) {
-        text += QStringLiteral("  ·  +%1 −%2").arg(added).arg(removed);
+        if (!counting)
+            text += QStringLiteral("  ·  +%1 −%2").arg(added).arg(removed);
         text += tr("  \u00b7  %1 of %2 marked").arg(m_files->markedCount()).arg(m_changes.size());
     }
     m_summary->setText(text);
@@ -1737,10 +1986,37 @@ void MainWindow::showFile(int index)
     if (fc.added >= 0 && !countsFromDiff)
         title += QStringLiteral("  +%1 −%2").arg(fc.added).arg(fc.removed);
 
+    const bool imageFile = isImagePath(fc.path) || isImagePath(fc.oldPath);
+    const bool cachedNow = m_diffCache.contains(index) && !imageFile;
+    if (!cachedNow && m_prefetchInFlight.contains(index)) {
+        // Loading in the background already: switch to it now, show it when it arrives.
+        m_shownIndex = index;
+        ++m_fileGen;
+        m_fileBusy = false;
+        m_waitingFor = index;
+        m_waitingThen = then;
+        m_pane->showMessage(title, tr("Loading…"));
+        updateEditActions();
+        updateTitle();
+        return;
+    }
+    m_waitingFor = -1;
+    if (!cachedNow && m_prefetchQueue.removeOne(index)) {
+        // Still waiting its turn: load it now, here, and count it as loaded.
+        m_prefetchClaimed.insert(index);
+        m_files->setLoadState(index, FileList::LoadState::Loading);
+    }
+    const int previous = m_shownIndex;
     m_shownIndex = index;
     const quint64 gen = ++m_fileGen;
     m_fileBusy = true;
     statusBar()->showMessage(tr("Loading %1…").arg(fc.path));
+    if (!cachedNow && index != previous)
+        // A slow load switches to the file at once, rather than leaving the last one up.
+        QTimer::singleShot(150, this, [this, gen, title] {
+            if (gen == m_fileGen && m_fileBusy)
+                m_pane->showMessage(title, tr("Loading…"));
+        });
 
     struct FileResult {
         FileDiff diff;
@@ -1796,7 +2072,10 @@ void MainWindow::showFile(int index)
             }
             return r;
         },
-        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large, countsFromDiff, tablePath](FileResult r) {
+        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large, countsFromDiff, tablePath,
+         prefetchGen = m_prefetchGen](FileResult r) {
+            if (prefetchGen == m_prefetchGen && m_prefetchClaimed.remove(index))
+                fileLoaded(index, r.diff, r.error); // counted in the background loading's progress
             if (gen != m_fileGen)
                 return; // the user moved on to another file
             m_fileBusy = false;
@@ -2921,6 +3200,10 @@ void MainWindow::openArguments(const QStringList &args, const std::optional<Sess
     // An empty window has nothing to keep: show the comparison right here.
     QString error;
     auto req = ComparisonArgs::fromArguments(args, m_repo.root(), &error);
+    if (req && (!req->ghpr.isEmpty() || !req->ado.isEmpty())) {
+        openInBackground(*req, session);
+        return;
+    }
     std::optional<ComparisonArgs::Result> resolved;
     if (req) {
         req->progress = [this](const QString &msg) {
@@ -2936,8 +3219,6 @@ void MainWindow::openArguments(const QStringList &args, const std::optional<Sess
         QMessageBox::warning(this, tr("New comparison"), error);
         return;
     }
-    if (!resolved->handed.isEmpty())
-        qputenv("YADIFF_PR_RESOLVED", QJsonDocument(resolved->handed).toJson(QJsonDocument::Compact));
     setComparison(std::move(resolved->repo), resolved->cmp);
     if (session)
         applySession(*session);

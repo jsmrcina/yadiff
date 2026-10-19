@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ComparisonArgs.h"
 #include "DiffPane.h"
 #include "FileFilter.h"
 #include "GitHubReview.h"
@@ -54,6 +55,9 @@ public:
     void openArguments(const QStringList &args, const std::optional<Session> &session = {},
                        const QString &sessionFile = {});
     void applySession(const Session &session);
+    // Resolves `req` (a pull request: fetching it, signing in) in the background while
+    // the window shows its progress, then shows it. Failures are reported in the window.
+    void openInBackground(ComparisonArgs::Request req, const std::optional<Session> &session = {});
     // Dropped files: two are compared, one waits for a second (or is a patch or session).
     void openDropped(const QStringList &paths);
 
@@ -115,6 +119,15 @@ private:
     void exportReport();
     void onReviewToggled(int index, bool reviewed);
     void updateSummary();
+    // The status bar's progress: opening a PR, listing files, or loading diffs (n of m).
+    void updateBusy();
+    // Background loading of every file's diff, for comparisons whose files can't change
+    // (revisions, PRs), so picking a file shows it at once. Restarts from scratch.
+    void startPrefetch();
+    void pumpPrefetch();
+    // A file's diff is in, from the background loading or from showFile.
+    void fileLoaded(int index, const FileDiff &diff, const QString &error);
+    bool prefetchable() const;
     void updateViewToggle();
     void updateTitle();
     void updateEditActions();
@@ -207,6 +220,16 @@ private:
     DiffPane *m_pane = nullptr;
     SearchBar *m_search = nullptr;
     QLabel *m_summary = nullptr;
+    class QProgressBar *m_busyBar = nullptr;
+    bool m_resolving = false;      // openInBackground() at work
+    QString m_resolveStep;         // its latest progress message
+    QVector<int> m_prefetchQueue;  // change indices still to load
+    QSet<int> m_prefetchInFlight;  // being loaded by the background loading
+    QSet<int> m_prefetchClaimed;   // counted in the progress, loaded by showFile
+    int m_prefetchDone = 0, m_prefetchTotal = 0;
+    quint64 m_prefetchGen = 0;
+    int m_waitingFor = -1;                // the shown file, waiting for its background load
+    std::function<void()> m_waitingThen;  // what showFile was to do once it was shown
     QTimer *m_searchTimer = nullptr;
     QTimer *m_pollTimer = nullptr;
     QByteArray m_lastSignature;

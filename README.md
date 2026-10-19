@@ -205,6 +205,21 @@ path looks like a revision.
   window, and switching files quickly only shows the last one. "All changes" searches show
   progress and can be stopped. Diffs over 100,000 lines ask before showing, and files over 30,000
   lines skip syntax highlighting.
+- **Opening slow comparisons.**
+  - **The window opens at once.** A pull request link is fetched in the window, which shows each
+    step (signing in, reading the PR, fetching) and a progress bar in the status bar. If Azure
+    DevOps needs a sign-in, the sign-in dialog appears over the window.
+  - **The file list appears as soon as git has the names.** For commits and pull requests, the
+    "+12 −3" line counts don't hold the list up. Counting them reads every changed file, which in
+    a large or virtualized repository can take far longer than listing the names.
+  - **Every file's diff then loads in the background,** four at a time, in list order.
+    - A file still waiting has a hollow dot, and one loading has a spinner. Both are greyed until
+      they arrive.
+    - A loaded file shows its line counts, and a red "!" marks one that failed.
+    - The status bar reads "Loading diffs 4 of 36".
+    - Picking a file switches to it at once and shows it the moment it's loaded. A loaded file
+      shows instantly.
+    - This covers up to 300 files. Files past that, and images, get their counts from git.
 - **Three-way merge.** File → Resolve conflict (Ctrl+Shift+R), or right-click a conflicted (U)
   file, opens the merge window: ours, the base and theirs side by side, and the editable result
   below. Changes made on one side only, or the same on both, are merged automatically; each
@@ -470,7 +485,7 @@ ctest --test-dir build --output-on-failure
   applying a change to a file, line-ending preservation, sessions, the file manager menu, and
   difftool and mergetool registration. That last one uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
-  files, a repository with no commits, revision mode, path filters, all-changes mode, diff
+  files, a repository with no commits, revision mode (with and without line counts), path filters, all-changes mode, diff
   options (including ignore case and leading/trailing whitespace with every algorithm, comments,
   unimportant text and manual alignment), review
   fingerprints, line counts, directory and file comparison, `/dev/null` sides, blame, staging,
@@ -478,7 +493,8 @@ ctest --test-dir build --output-on-failure
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
-  line, including that its log traces each step and never contains the token. The keyring is
+  line, including that its log traces each step and never contains the token, and opening the PR
+  in a window, which resolves it itself. The keyring is
   redirected to a temporary file there.
 - `test_log` covers secret scrubbing (URL passwords, auth headers, GitHub and Azure DevOps tokens,
   JWTs, query parameters and registered secrets), command-line quoting, levels, the file format,
@@ -493,7 +509,9 @@ ctest --test-dir build --output-on-failure
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
   ignoring comments, manual alignment, staging the current change, stepping through commits, and
   dropped files, patches, sessions, recent comparisons, the hex and table views, and the merge
-  window, including resolving a real `git merge` conflict.
+  window, including resolving a real `git merge` conflict. It also covers loading every diff in the
+  background, with counts from the diffs matching git's. That one test runs truly in the
+  background.
   The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 

@@ -31,6 +31,18 @@ public:
     QVector<int> selectedIndices() const;
     void selectIndices(const QVector<int> &indices);
 
+    // Background loading of each file's diff: waiting (a hollow dot), loading (a spinner),
+    // loaded (its line counts, once known) or failed (a red mark). Not-yet-loaded names
+    // are greyed.
+    enum class LoadState { None, Queued, Loading, Loaded, Failed };
+    void setLoadState(int index, LoadState state);
+    LoadState loadState(int index) const;
+    void clearLoadStates();
+    // Line counts that arrive after the list (from the loaded diff).
+    void setStats(int index, int added, int removed, bool blankOnly);
+    // While the list itself is loading: a single greyed row with `text` (empty removes it).
+    void setPlaceholder(const QString &text);
+
     // Search across all files: bold the files that contain matches (empty map clears).
     void setMatchCounts(const QHash<int, int> &counts);
     QVector<int> displayOrder(bool includeHidden = false) const; // change indices in list order
@@ -57,6 +69,7 @@ protected:
 
 private:
     QTreeWidgetItem *leafFor(int index) const;
+    void updateSpinner();
     void styleLeaf(QTreeWidgetItem *item);
     void applyFilter();
     void updateFolderNames();
@@ -68,4 +81,5 @@ private:
     QColor m_markColor;
     QString m_root;
     bool m_trimPrefix = false;
+    class QTimer *m_spinTimer = nullptr; // repaints while any file is loading
 };

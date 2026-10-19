@@ -7,6 +7,8 @@
 #include <QMap>
 #include <QPainter>
 #include <QStyle>
+#include <QTime>
+#include <QTimer>
 
 #include <algorithm>
 #include <functional>
@@ -19,6 +21,8 @@ constexpr int kMarkedRole = Qt::UserRole + 2;
 constexpr int kFolderRole = Qt::UserRole + 5; // folder items: repository-relative folder
 constexpr int kStatsRole = Qt::UserRole + 3;
 constexpr int kPathRole = Qt::UserRole + 4; // QPoint(added, removed); absent when unknown
+constexpr int kLoadRole = Qt::UserRole + 6;   // FileList::LoadState
+constexpr int kPlaceholderRole = Qt::UserRole + 7;
 
 // Draws the file name as usual, plus "+12 −3" in green and red at the right edge
 // when there is room for both (the name always wins when the pane is narrow).
@@ -28,6 +32,12 @@ public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
+        const auto load = FileList::LoadState(index.data(kLoadRole).toInt());
+        const bool pending = load == FileList::LoadState::Queued || load == FileList::LoadState::Loading;
+        if (pending || load == FileList::LoadState::Failed) {
+            paintLoadState(p, option, index, load);
+            return;
+        }
         const QVariant v = index.data(kStatsRole);
         if (!v.isValid()) {
             QStyledItemDelegate::paint(p, option, index);
@@ -63,6 +73,49 @@ public:
         p->drawText(r.adjusted(0, 0, -(fm.horizontalAdvance(minus) + gap), 0), Qt::AlignRight | Qt::AlignVCenter, plus);
         p->setPen(QColor(0xd1, 0x3b, 0x3b));
         p->drawText(r, Qt::AlignRight | Qt::AlignVCenter, minus);
+        p->restore();
+    }
+
+private:
+    // The name greyed, and the state at the right edge: a hollow dot (waiting), a turning
+    // arc (loading) or a red "!" (failed).
+    void paintLoadState(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index,
+                        FileList::LoadState load) const
+    {
+        const int mark = option.rect.height();
+        const bool selected = option.state & QStyle::State_Selected;
+        QStyleOptionViewItem opt = option;
+        opt.rect.setRight(opt.rect.right() - mark);
+        if (load != FileList::LoadState::Failed && !selected)
+            opt.palette.setColor(QPalette::Text, option.palette.color(QPalette::PlaceholderText));
+        QStyledItemDelegate::paint(p, opt, index);
+        QStyleOptionViewItem bg = option;
+        initStyleOption(&bg, index);
+        bg.rect = QRect(option.rect.right() - mark + 1, option.rect.top(), mark, option.rect.height());
+        bg.text.clear();
+        bg.icon = QIcon();
+        bg.widget->style()->drawControl(QStyle::CE_ItemViewItem, &bg, p, bg.widget);
+        const QRectF r = QRectF(bg.rect).adjusted(mark * 0.3, mark * 0.3, -mark * 0.3, -mark * 0.3);
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        // On a selected row the marks take the selection's text colour, to stay visible.
+        const QColor grey = selected ? option.palette.color(QPalette::HighlightedText)
+                                     : option.palette.color(QPalette::PlaceholderText);
+        if (load == FileList::LoadState::Queued) {
+            p->setPen(QPen(grey, 1.2));
+            p->drawEllipse(r.adjusted(r.width() * 0.2, r.height() * 0.2, -r.width() * 0.2, -r.height() * 0.2));
+        } else if (load == FileList::LoadState::Loading) {
+            const int angle = int((QTime::currentTime().msecsSinceStartOfDay() / 3) % 360);
+            p->setPen(QPen(selected ? option.palette.color(QPalette::HighlightedText) : option.palette.color(QPalette::Highlight),
+                           2.0, Qt::SolidLine, Qt::RoundCap));
+            p->drawArc(r, -angle * 16, 270 * 16);
+        } else {
+            QFont f = option.font;
+            f.setBold(true);
+            p->setFont(f);
+            p->setPen(QColor(0xd1, 0x3b, 0x3b));
+            p->drawText(bg.rect, Qt::AlignCenter, QStringLiteral("!"));
+        }
         p->restore();
     }
 };
@@ -233,6 +286,81 @@ void FileList::selectIndices(const QVector<int> &indices)
     }
     if (first && !first->isSelected())
         first->setSelected(true);
+}
+
+void FileList::setLoadState(int index, LoadState state)
+{
+    if (QTreeWidgetItem *item = leafFor(index)) {
+        item->setData(0, kLoadRole, int(state));
+        if (state == LoadState::Failed)
+            item->setToolTip(0, item->toolTip(0).section(tr("\nCould not load"), 0, 0) + tr("\nCould not load the diff"));
+    }
+    updateSpinner();
+}
+
+FileList::LoadState FileList::loadState(int index) const
+{
+    const QTreeWidgetItem *item = leafFor(index);
+    return item ? LoadState(item->data(0, kLoadRole).toInt()) : LoadState::None;
+}
+
+void FileList::clearLoadStates()
+{
+    for (QTreeWidgetItem *item : std::as_const(m_leaves))
+        item->setData(0, kLoadRole, int(LoadState::None));
+    updateSpinner();
+}
+
+void FileList::updateSpinner()
+{
+    bool loading = false;
+    for (const QTreeWidgetItem *item : std::as_const(m_leaves))
+        loading = loading || LoadState(item->data(0, kLoadRole).toInt()) == LoadState::Loading;
+    if (!m_spinTimer) {
+        m_spinTimer = new QTimer(this);
+        m_spinTimer->setInterval(50);
+        connect(m_spinTimer, &QTimer::timeout, viewport(), qOverload<>(&QWidget::update));
+    }
+    if (loading && !m_spinTimer->isActive())
+        m_spinTimer->start();
+    else if (!loading)
+        m_spinTimer->stop();
+}
+
+void FileList::setStats(int index, int added, int removed, bool blankOnly)
+{
+    if (index >= 0 && index < m_changes.size()) {
+        m_changes[index].added = added;
+        m_changes[index].removed = removed;
+        m_changes[index].blankOnly = blankOnly;
+    }
+    QTreeWidgetItem *item = leafFor(index);
+    if (!item || added < 0 || removed < 0)
+        return;
+    const FileChange &fc = m_changes[index];
+    if (fc.status != u'=')
+        item->setData(0, kStatsRole, QPoint(added, removed));
+    QString tip = item->toolTip(0).section(u'\n', 0, 1); // the path, and the status (with any rename)
+    tip += tr("\n%1 added, %2 removed lines").arg(added).arg(removed);
+    if (blankOnly)
+        tip += tr("\nOnly blank lines differ");
+    item->setToolTip(0, tip);
+}
+
+void FileList::setPlaceholder(const QString &text)
+{
+    for (int i = topLevelItemCount() - 1; i >= 0; --i)
+        if (topLevelItem(i)->data(0, kPlaceholderRole).toBool())
+            delete takeTopLevelItem(i);
+    if (text.isEmpty())
+        return;
+    auto *item = new QTreeWidgetItem(this);
+    item->setText(0, text);
+    item->setData(0, kPlaceholderRole, true);
+    item->setFlags(Qt::NoItemFlags);
+    QFont f = font();
+    f.setItalic(true);
+    item->setFont(0, f);
 }
 
 void FileList::setChanges(const QVector<FileChange> &changes, bool showGroups, const QVector<bool> &marked)

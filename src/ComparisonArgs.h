@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AdoAuth.h"
 #include "GitRepo.h"
 
 #include <QJsonObject>
@@ -24,14 +25,20 @@ struct Request {
     QString title;            // shown instead of the default description
     QString patch;            // a patch file to show (Comparison::Mode::Patch)
     bool allowEmpty = false;  // no arguments outside a repository: an empty comparison
-    QJsonObject handed;       // a pull request already resolved (by the parent process)
     std::function<void(const QString &)> progress;
+    // Azure DevOps sign-in when no credential works: returns the credential, or nullopt
+    // when the user cancels. Default: AdoLoginDialog, which needs the UI thread; a
+    // resolve on a worker thread passes one that asks the UI thread.
+    std::function<std::optional<AdoAuth::Credential>(const QUrl &collection, const QString &reason)> signIn;
 };
+
+// The default sign-in: AdoLoginDialog (UI thread only). A credential the user chose not
+// to save is put in this process's environment, so the window can still use it.
+std::optional<AdoAuth::Credential> signInWithDialog(const QUrl &collection, const QString &reason);
 
 struct Result {
     GitRepo repo;
     Comparison cmp;
-    QJsonObject handed; // the resolved pull request, if any
 };
 
 // Resolves `req`; may fetch a pull request and ask the user to sign in (Azure DevOps).

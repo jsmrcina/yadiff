@@ -60,6 +60,17 @@ bool isRange(const GitRepo &repo, const QString &arg)
 
 } // namespace
 
+std::optional<AdoAuth::Credential> signInWithDialog(const QUrl &collection, const QString &reason)
+{
+    AdoLoginDialog dlg(collection, reason);
+    if (dlg.exec() != QDialog::Accepted || !dlg.credential())
+        return std::nullopt;
+    const AdoAuth::Credential cred = *dlg.credential();
+    if (!dlg.remembered()) // let the window reach the PR without a keyring entry
+        qputenv(cred.kind == AdoAuth::Credential::Kind::Bearer ? "YADIFF_ADO_TOKEN" : "YADIFF_ADO_PAT", cred.secret.toUtf8());
+    return cred;
+}
+
 std::optional<Result> resolve(const Request &req, QString *errorOut)
 {
     auto failed = [errorOut](const QString &message) -> std::optional<Result> {
@@ -107,7 +118,7 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
         cmp.patchPath = QDir::cleanPath(patch);
         cmp.patchBase = here ? here->root() : QDir::cleanPath(cwd);
         cmp.title = req.title.isEmpty() ? QStringLiteral("patch %1").arg(QFileInfo(patch).fileName()) : req.title;
-        return Result{here ? std::move(*here) : GitRepo::forPaths(cwd), cmp, {}};
+        return Result{here ? std::move(*here) : GitRepo::forPaths(cwd), cmp};
     }
     if (positional.size() == 2 && forcedPaths == 0 && req.ghpr.isEmpty() && req.ado.isEmpty()) {
         const QFileInfo a(QDir(cwd).absoluteFilePath(positional[0]));
@@ -141,11 +152,7 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
     } else if (!req.ghpr.isEmpty() || !req.ado.isEmpty()) {
         const bool isAdo = !req.ado.isEmpty();
         const QString link = isAdo ? req.ado : req.ghpr;
-        // The parent process resolves the PR and hands the result to the detached child.
-        handed = req.handed;
-        if (!handed.isEmpty())
-            qCInfo(lcApp).noquote() << "using the pull request the starting process resolved:" << handed.value(QStringLiteral("title")).toString();
-        if (handed.isEmpty()) {
+        {
             auto progress = [&req](const QString &msg) {
                 if (req.progress)
                     req.progress(msg);
@@ -175,13 +182,10 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
                 for (int attempt = 0; attempt < 2 && !pr; ++attempt) {
                     if (!cred) {
                         qCInfo(lcAdo).noquote() << "asking the user to sign in:" << (attempt == 0 ? diag : error);
-                        AdoLoginDialog dlg(ref->collectionUrl, attempt == 0 ? diag : error);
-                        if (dlg.exec() != QDialog::Accepted || !dlg.credential())
+                        cred = req.signIn ? req.signIn(ref->collectionUrl, attempt == 0 ? diag : error)
+                                          : signInWithDialog(ref->collectionUrl, attempt == 0 ? diag : error);
+                        if (!cred)
                             return failed(attempt == 0 ? diag + QStringLiteral(" Sign-in was cancelled.") : error);
-                        cred = dlg.credential();
-                        if (!dlg.remembered()) // let the window reach the PR without a keyring entry
-                            qputenv(cred->kind == AdoAuth::Credential::Kind::Bearer ? "YADIFF_ADO_TOKEN" : "YADIFF_ADO_PAT",
-                                    cred->secret.toUtf8());
                     }
                     int status = 0;
                     pr = AdoPr::resolve(*ref, *cred, cwd, &error, &status, progress);
@@ -323,7 +327,7 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
     if (!req.title.isEmpty())
         cmp.title = req.title;
 
-    return Result{std::move(*repo), cmp, handed};
+    return Result{std::move(*repo), cmp};
 }
 
 std::optional<Request> fromArguments(const QStringList &args, const QString &cwd, QString *error)

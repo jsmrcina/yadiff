@@ -415,6 +415,28 @@ private slots:
         QVERIFY(!log.contains(kPat));
         QVERIFY(!log.contains(patHeader()));
         QVERIFY(!log.contains(patHeader().mid(6))); // the base64 credential alone
+
+        // Opening a window: the window resolves the PR itself (a render of its one file
+        // proves it got there), and the start-up process doesn't resolve it first.
+        QProcess window;
+        env.insert(QStringLiteral("YADIFF_GRAB"), tmp.filePath(QStringLiteral("shot")));
+        env.insert(QStringLiteral("YADIFF_NO_UPDATE_CHECK"), QStringLiteral("1"));
+        window.setProcessEnvironment(env);
+        window.setWorkingDirectory(tmp.path());
+        window.start(QStringLiteral(YADIFF_BINARY),
+                     {QStringLiteral("--wait"), QStringLiteral("-ado"),
+                      ado.base() + QStringLiteral("/org/My%20Project/_git/repo/pullrequest/7"), QStringLiteral("--log"),
+                      tmp.filePath(QStringLiteral("window.log"))});
+        QTRY_VERIFY_WITH_TIMEOUT(window.state() == QProcess::NotRunning, 60000);
+        QVERIFY2(window.exitCode() == 0, window.readAllStandardError().constData());
+        QVERIFY(QFile::exists(tmp.filePath(QStringLiteral("shot-00-side.png"))));
+        QFile windowLog(tmp.filePath(QStringLiteral("window.log")));
+        QVERIFY(windowLog.open(QIODevice::ReadOnly));
+        const QByteArray wlog = windowLog.readAll();
+        QVERIFY(wlog.contains("a pull request, opened in the window"));
+        QVERIFY(wlog.contains("in the background"));
+        QVERIFY(wlog.contains("PR 7 resolved"));
+        QVERIFY(wlog.contains("(without line counts)"));
     }
 
     void cleanupTestCase()

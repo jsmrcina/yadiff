@@ -170,7 +170,10 @@ public:
     QString headOrEmptyTree() const;
     bool hasHead() const;
 
-    QVector<FileChange> listChanges(const Comparison &cmp, QString *error) const;
+    // Without `lineCounts` the git commands that count added and removed lines are
+    // skipped (added/removed stay -1): they read every changed file, which in a large or
+    // virtualized repository can take far longer than listing the names.
+    QVector<FileChange> listChanges(const Comparison &cmp, QString *error, bool lineCounts = true) const;
     FileDiff loadDiff(const FileChange &change, const Comparison &cmp, QString *error) const;
 
     // Identity of the two file versions being compared (blob ids, or a content hash for
@@ -233,12 +236,12 @@ private:
     GitRepo(QString root, bool bare, bool noRepo = false) : m_root(std::move(root)), m_bare(bare), m_noRepo(noRepo) {}
     QStringList pathspecs(const Comparison &cmp) const;
     // The public operations without their logging.
-    QVector<FileChange> listChangesFiltered(const Comparison &cmp, QString *error) const;
+    QVector<FileChange> listChangesFiltered(const Comparison &cmp, QString *error, bool lineCounts) const;
     FileDiff loadDiffCore(const FileChange &change, const Comparison &cmp, QString *error) const;
     bool revertCore(const QVector<FileChange> &changes, const Comparison &cmp, QString *error) const;
     bool applyLinesCore(LineOp op, const FileChange &change, const Comparison &cmp, const QSet<int> &oldLines,
                         const QSet<int> &newLines, QString *error) const;
-    QVector<FileChange> listChangesCore(const Comparison &cmp, QString *error) const;
+    QVector<FileChange> listChangesCore(const Comparison &cmp, QString *error, bool lineCounts = true) const;
     QVector<FileChange> listPathChanges(const Comparison &cmp, QString *error) const;
     void appendIdentical(QVector<FileChange> &changes, const Comparison &cmp) const;
     QString diskPathPhysical(const FileChange &change, const Comparison &cmp, bool newSide) const;

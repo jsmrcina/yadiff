@@ -159,6 +159,12 @@ private slots:
         const auto revChanges = repo->listChanges(rc, &error);
         QCOMPARE(revChanges.size(), 2); // a.txt edited, untracked.txt added
         QVERIFY(find(revChanges, QStringLiteral("a.txt"), ChangeGroup::Revisions));
+        QVERIFY(find(revChanges, QStringLiteral("a.txt"), ChangeGroup::Revisions)->added >= 0);
+        // Without line counts: the same files, counts unknown (the window fills them in).
+        const auto names = repo->listChanges(rc, &error, false);
+        QCOMPARE(names.size(), 2);
+        for (const FileChange &fc : names)
+            QVERIFY(fc.added < 0 && fc.removed < 0);
         QVERIFY(!repo->resolveCommit(QStringLiteral("--output=x"), &error));
         QVERIFY(!repo->resolveCommit(QStringLiteral("does-not-exist"), &error));
     }

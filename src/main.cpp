@@ -355,17 +355,25 @@ int main(int argc, char *argv[])
         req.forcedPaths = 0;
         req.noIndex = true;
     }
-    // The parent process resolves a PR and hands the result to the detached child.
-    req.handed = QJsonDocument::fromJson(qgetenv("YADIFF_PR_RESOLVED")).object();
-    req.progress = [](const QString &msg) { std::fprintf(stderr, "yadiff: %s\n", qPrintable(msg)); };
-    auto resolved = ComparisonArgs::resolve(req, &error);
-    if (!resolved)
-        return fail(error);
-    qCInfo(lcApp).noquote() << "comparison:" << resolved->cmp.describe();
-    if (!resolved->handed.isEmpty())
-        qputenv("YADIFF_PR_RESOLVED", QJsonDocument(resolved->handed).toJson(QJsonDocument::Compact));
-    std::optional<GitRepo> repo = std::move(resolved->repo);
-    Comparison cmp = resolved->cmp;
+    // A pull request opens in the window, which shows its progress: fetching one can take
+    // a while (signing in, the API, git), and nothing should sit there with no window.
+    // A report (--export) has no window, so it resolves here.
+    const bool prInWindow = (!req.ghpr.isEmpty() || !req.ado.isEmpty()) && !parser.isSet(exportOpt);
+    std::optional<GitRepo> repo;
+    Comparison cmp;
+    if (prInWindow) {
+        repo = GitRepo::forPaths(cwd);
+        cmp.empty = true;
+        qCInfo(lcApp).noquote() << "comparison: a pull request, opened in the window";
+    } else {
+        req.progress = [](const QString &msg) { std::fprintf(stderr, "yadiff: %s\n", qPrintable(msg)); };
+        auto resolved = ComparisonArgs::resolve(req, &error);
+        if (!resolved)
+            return fail(error);
+        qCInfo(lcApp).noquote() << "comparison:" << resolved->cmp.describe();
+        repo = std::move(resolved->repo);
+        cmp = resolved->cmp;
+    }
 
     if (parser.isSet(exportOpt)) {
         // Headless report: same comparison, written straight to a file.
@@ -428,7 +436,9 @@ int main(int argc, char *argv[])
 
     MainWindow w(std::move(*repo), cmp);
     w.show();
-    if (session)
+    if (prInWindow)
+        w.openInBackground(req, session);
+    else if (session)
         w.applySession(*session);
     if (const QString grab = qEnvironmentVariable("YADIFF_GRAB"); !grab.isEmpty()) {
         w.resize(1300, 700);

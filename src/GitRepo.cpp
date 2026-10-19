@@ -522,16 +522,17 @@ bool matchesAnyGlob(const QString &path, const QStringList &globs)
 }
 } // namespace
 
-QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) const
+QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error, bool lineCounts) const
 {
     QElapsedTimer timer;
     timer.start();
     QString err;
-    const QVector<FileChange> result = listChangesFiltered(cmp, &err);
+    const QVector<FileChange> result = listChangesFiltered(cmp, &err, lineCounts);
     if (!err.isEmpty())
         qCWarning(lcGit).noquote() << "listing changes failed:" << err;
     else
-        qCInfo(lcGit).noquote() << "listed" << result.size() << "changed files in" << timer.elapsed() << "ms";
+        qCInfo(lcGit).noquote() << "listed" << result.size() << "changed files in" << timer.elapsed() << "ms"
+                                << (lineCounts ? "" : "(without line counts)");
     if (error && !err.isEmpty())
         *error = err;
     return result;
@@ -562,11 +563,11 @@ FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString 
     return d;
 }
 
-QVector<FileChange> GitRepo::listChangesFiltered(const Comparison &cmp, QString *error) const
+QVector<FileChange> GitRepo::listChangesFiltered(const Comparison &cmp, QString *error, bool lineCounts) const
 {
     if (cmp.empty)
         return {};
-    QVector<FileChange> result = listChangesCore(cmp, error);
+    QVector<FileChange> result = listChangesCore(cmp, error, lineCounts);
     if (error && !error->isEmpty())
         return result;
     if (cmp.includeIdentical && cmp.mode != Comparison::Mode::Patch)
@@ -581,7 +582,7 @@ QVector<FileChange> GitRepo::listChangesFiltered(const Comparison &cmp, QString 
     return result;
 }
 
-QVector<FileChange> GitRepo::listChangesCore(const Comparison &cmp, QString *error) const
+QVector<FileChange> GitRepo::listChangesCore(const Comparison &cmp, QString *error, bool lineCounts) const
 {
     if (cmp.mode == Comparison::Mode::Paths)
         return listPathChanges(cmp, error);
@@ -599,6 +600,8 @@ QVector<FileChange> GitRepo::listChangesCore(const Comparison &cmp, QString *err
 
     // Runs `numstat + extra` and copies the counts onto the matching changes.
     auto stats = [&](QVector<FileChange> &list, const QStringList &extra, ChangeGroup group, bool anyGroup) {
+        if (!lineCounts)
+            return;
         QByteArray statOut;
         if (run(numstat + extra + specs, &statOut, nullptr))
             applyStats(list, parseNumstat(statOut), group, anyGroup);

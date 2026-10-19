@@ -22,6 +22,7 @@
 #include <QFile>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QMimeData>
 #include <QTimer>
 #include <QRadioButton>
@@ -1495,6 +1496,70 @@ private slots:
         QVERIFY(!action(w3, QStringLiteral("Previous commit"))->isEnabled());
         QVERIFY(!action(w3, QStringLiteral("Next commit"))->isEnabled());
     }
+    void loadsEveryDiffInTheBackground()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        for (int i = 0; i < 9; ++i)
+            write(d + QStringLiteral("/f%1.txt").arg(i), "a\nb\nc\n");
+        write(d + QStringLiteral("/blank.txt"), "a\nb\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("one")});
+        for (int i = 0; i < 9; ++i)
+            write(d + QStringLiteral("/f%1.txt").arg(i), QByteArray("a\nB\nc\n") + QByteArray(i, 'x') + "\n");
+        write(d + QStringLiteral("/blank.txt"), "a\n\nb\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("two")});
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.mode = Comparison::Mode::Revisions;
+        cmp.rev1 = *repo->resolveCommit(QStringLiteral("HEAD~1"), &error);
+        cmp.rev2 = *repo->resolveCommit(QStringLiteral("HEAD"), &error);
+        cmp.rev1Name = QStringLiteral("HEAD~1");
+        cmp.rev2Name = QStringLiteral("HEAD");
+        const QVector<FileChange> fromGit = repo->listChanges(cmp, &error);
+
+        // Really in the background here, not the tests' synchronous mode.
+        qunsetenv("YADIFF_SYNCHRONOUS");
+        MainWindow w(std::move(*repo), cmp);
+        qputenv("YADIFF_SYNCHRONOUS", "1");
+        w.show();
+        auto *files = w.findChild<FileList *>();
+        auto *bar = w.findChild<QProgressBar *>();
+        QVERIFY(bar);
+        QTRY_VERIFY_WITH_TIMEOUT(!w.isBusy(), 30000);
+        QVERIFY(bar->isHidden()); // nothing left to load
+
+        // Every file is loaded, and its line counts (from the diff) match git's.
+        const QVector<int> order = files->displayOrder(true);
+        QCOMPARE(order.size(), 10);
+        for (int idx : order)
+            QCOMPARE(files->loadState(idx), FileList::LoadState::Loaded);
+        for (const FileChange &g : fromGit) {
+            bool found = false;
+            for (int idx : order) {
+                files->selectIndex(idx);
+                const QString tip = files->currentItem()->toolTip(0);
+                if (!tip.startsWith(g.path + u'\n'))
+                    continue;
+                found = true;
+                QVERIFY2(tip.contains(QStringLiteral("%1 added, %2 removed lines").arg(g.added).arg(g.removed)), qPrintable(tip));
+                QCOMPARE(tip.contains(QStringLiteral("Only blank lines differ")), g.blankOnly);
+            }
+            QVERIFY2(found, qPrintable(g.path));
+        }
+        QVERIFY(order.size() > 0);
+
+        // Loaded files show at once, from what was loaded.
+        files->selectIndex(order.last());
+        QTRY_VERIFY_WITH_TIMEOUT(!w.isBusy(), 10000);
+        QVERIFY(w.windowTitle().contains(QStringLiteral("HEAD")));
+        auto *pane = w.findChild<DiffPane *>();
+        QVERIFY(pane->currentChange() >= 0);
+    }
+
     void hexAndTables()
     {
         QTemporaryDir tmp;
