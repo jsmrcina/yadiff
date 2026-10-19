@@ -98,6 +98,17 @@ private slots:
             p.waitForFinished(30000);
             trace.done(p, p.readAllStandardOutput().size());
         }
+        {
+            // A command that never ends (it waits for input): wait() gives up at its timeout.
+            QProcess p;
+            Log::ProcessTrace trace(lcGit());
+            p.start(QStringLiteral("git"), {QStringLiteral("hash-object"), QStringLiteral("--stdin")});
+            QVERIFY(p.waitForStarted());
+            QVERIFY(!trace.wait(p, 300));
+            trace.done(p);
+            p.kill();
+            p.waitForFinished();
+        }
         Log::setLevel(Log::Level::Debug);
         qCDebug(lcDiff) << "now debug shows";
         Log::shutdown();
@@ -112,6 +123,7 @@ private slots:
         QVERIFY(log.contains(QStringLiteral("git rev-parse --verify no-such-ref-xyz -> FAILED: exit 128")));
         QVERIFY(log.contains(QStringLiteral("stderr: fatal: Needed a single revision")));
         QVERIFY(!log.contains(QStringLiteral("git --version")));
+        QVERIFY(log.contains(QStringLiteral("git hash-object --stdin -> FAILED: still running (timed out)")));
         QVERIFY(log.contains(QStringLiteral("DEBUG yadiff.diff   now debug shows")));
         // Back to quiet, as in the other tests.
         Log::init(QStringLiteral("off"));

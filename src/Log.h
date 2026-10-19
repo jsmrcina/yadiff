@@ -75,6 +75,9 @@ class ProcessTrace
 {
 public:
     explicit ProcessTrace(const QLoggingCategory &category);
+    // QProcess::waitForFinished that logs "still running after N s" (at 10 s, 30 s, 60 s,
+    // then every minute), so a command that hangs shows in the log before it ends.
+    bool wait(QProcess &p, int timeoutMs = -1);
     void done(const QProcess &p, qint64 outputBytes = -1, const QByteArray &errorOutput = {},
               std::optional<bool> ok = std::nullopt);
 

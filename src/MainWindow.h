@@ -88,6 +88,7 @@ private:
     QWidget *createFilePanel();
     QWidget *createCommitBar();
     void updateCommitBar();
+    void fillCommitBar(); // once the background job has the list
     void syncCommitBar();
     void stepCommit(int delta);
     void showCommitStep(int index); // -1: the whole range
@@ -196,7 +197,7 @@ private:
     // Background work.
     bool m_sync = false;
     int m_jobs = 0;
-    quint64 m_listGen = 0, m_fileGen = 0, m_searchGen = 0;
+    quint64 m_listGen = 0, m_fileGen = 0, m_searchGen = 0, m_commitGen = 0;
     bool m_listBusy = false, m_fileBusy = false, m_searchBusy = false, m_pollBusy = false;
     std::function<void()> m_afterFileLoad; // runs after the next file finishes loading
     std::shared_ptr<std::atomic_bool> m_searchCancel;

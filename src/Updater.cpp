@@ -42,7 +42,7 @@ bool runTool(const QString &program, const QStringList &args, QByteArray *out, Q
         return false;
     }
     p.closeWriteChannel();
-    if (!p.waitForFinished(timeoutMs)) {
+    if (!trace.wait(p, timeoutMs)) {
         trace.done(p);
         p.kill();
         p.waitForFinished(5000);

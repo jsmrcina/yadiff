@@ -1200,24 +1200,56 @@ void MainWindow::updateCommitBar()
     m_commitIndex = -1;
     m_commitRangeMode = false;
     m_rangeCmp = m_cmp;
+    m_commitCombo->clear();
+    m_commitBar->hide();
+    m_prevCommitAct->setEnabled(false);
+    m_nextCommitAct->setEnabled(false);
+    const quint64 gen = ++m_commitGen;
     const bool revisions = m_repo.isRepository() && m_cmp.mode == Comparison::Mode::Revisions && !m_cmp.rev2.isEmpty();
-    if (revisions) {
-        // A range of several commits steps through them; a single commit through its neighbours.
-        QByteArray parent;
-        const bool hasParent = m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
-                                           m_cmp.rev2 + QStringLiteral("^1")},
-                                          &parent, nullptr);
-        const bool single = hasParent ? QString::fromUtf8(parent.trimmed()) == m_cmp.rev1 : m_cmp.rev1 == m_repo.emptyTree();
-        if (single) {
-            m_commitList = m_repo.commitNeighbours(m_cmp.rev2, 300, &m_commitIndex);
-        } else if (m_repo.run({QStringLiteral("merge-base"), QStringLiteral("--is-ancestor"), m_cmp.rev1, m_cmp.rev2}, nullptr,
-                              nullptr)) {
-            m_commitList = m_repo.commitsInRange(m_cmp.rev1, m_cmp.rev2, 2000, m_cmp.paths);
-            m_commitRangeMode = true;
-            if (m_commitList.size() < 2)
-                m_commitList.clear();
-        }
-    }
+    if (!revisions)
+        return;
+    struct CommitSteps {
+        QVector<CommitInfo> list;
+        int index = -1;
+        bool range = false;
+    };
+    // In the background: in a large repository (or a virtualized one, where git may
+    // download commits) walking history can take minutes, and the window must not wait.
+    runJob<CommitSteps>(
+        [repo = m_repo, cmp = m_cmp] {
+            CommitSteps r;
+            // A range of several commits steps through them; a single commit through its
+            // neighbours. A pull request's neighbours are the target branch's history, which
+            // isn't what the review is about, so a one-commit PR gets no bar.
+            QByteArray parent;
+            const bool hasParent = repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+                                             cmp.rev2 + QStringLiteral("^1")},
+                                            &parent, nullptr);
+            const bool single = hasParent ? QString::fromUtf8(parent.trimmed()) == cmp.rev1 : cmp.rev1 == repo.emptyTree();
+            if (single) {
+                if (cmp.prNumber == 0)
+                    r.list = repo.commitNeighbours(cmp.rev2, 300, &r.index);
+            } else if (repo.run({QStringLiteral("merge-base"), QStringLiteral("--is-ancestor"), cmp.rev1, cmp.rev2}, nullptr,
+                                nullptr)) {
+                r.list = repo.commitsInRange(cmp.rev1, cmp.rev2, 2000, cmp.paths);
+                r.range = true;
+                if (r.list.size() < 2)
+                    r.list.clear();
+            }
+            return r;
+        },
+        [this, gen](CommitSteps r) {
+            if (gen != m_commitGen)
+                return; // the comparison changed meanwhile
+            m_commitList = r.list;
+            m_commitIndex = r.index;
+            m_commitRangeMode = r.range;
+            fillCommitBar();
+        });
+}
+
+void MainWindow::fillCommitBar()
+{
     m_commitCombo->clear();
     if (m_commitRangeMode && !m_commitList.isEmpty())
         m_commitCombo->addItem(tr("All %n commits", nullptr, int(m_commitList.size())), -1);
@@ -1247,7 +1279,15 @@ void MainWindow::syncCommitBar()
     const CommitInfo &c = m_commitList[m_commitIndex];
     m_commitInfo->setText(QStringLiteral("%1 · %2 · %3").arg(c.author, c.date, QString::number(m_commitIndex + 1) + u'/'
                                                                                 + QString::number(m_commitList.size())));
-    m_commitInfo->setToolTip(QStringLiteral("<pre>%1</pre>").arg(m_repo.commitMessage(c.oid).toHtmlEscaped()));
+    m_commitInfo->setToolTip(c.subject.toHtmlEscaped());
+    // The full message for the tooltip, without holding up the window.
+    const quint64 gen = m_commitGen;
+    const int index = m_commitIndex;
+    runJob<QString>([repo = m_repo, oid = c.oid] { return repo.commitMessage(oid); },
+                    [this, gen, index](QString message) {
+                        if (gen == m_commitGen && index == m_commitIndex && !message.isEmpty())
+                            m_commitInfo->setToolTip(QStringLiteral("<pre>%1</pre>").arg(message.toHtmlEscaped()));
+                    });
 }
 
 void MainWindow::stepCommit(int delta)

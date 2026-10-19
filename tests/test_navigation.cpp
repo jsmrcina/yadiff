@@ -1483,6 +1483,17 @@ private slots:
         next2->trigger();
         QVERIFY(w2.windowTitle().contains(QStringLiteral("three")));
         QVERIFY(!next2->isEnabled());
+
+        // A one-commit pull request has no neighbours to step through: those would be the
+        // target branch's history, which can take minutes to walk in a large repository.
+        auto repo3 = GitRepo::open(d, &error);
+        Comparison pr = one;
+        pr.prHost = QStringLiteral("ado");
+        pr.prNumber = 7;
+        MainWindow w3(std::move(*repo3), pr);
+        w3.show();
+        QVERIFY(!action(w3, QStringLiteral("Previous commit"))->isEnabled());
+        QVERIFY(!action(w3, QStringLiteral("Next commit"))->isEnabled());
     }
     void hexAndTables()
     {

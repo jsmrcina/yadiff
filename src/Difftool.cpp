@@ -20,7 +20,7 @@ bool git(const QStringList &args, QString *out, QString *error)
             *error = QStringLiteral("Could not start git.");
         return false;
     }
-    p.waitForFinished(-1);
+    trace.wait(p);
     const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     if (out)
         *out = QString::fromUtf8(stdOut).trimmed();

@@ -31,7 +31,7 @@ bool runProcess(const QString &program, const QStringList &args, const QString &
         return false;
     }
     p.closeWriteChannel();
-    p.waitForFinished(-1);
+    trace.wait(p);
     const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     trace.done(p, stdOut.size(), stdErr);
     if (out)

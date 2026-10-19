@@ -33,7 +33,7 @@ bool run(const QString &program, const QStringList &args, const QByteArray &inpu
     }
     p.write(input);
     p.closeWriteChannel();
-    if (!p.waitForFinished(timeoutMs)) {
+    if (!trace.wait(p, timeoutMs)) {
         trace.done(p);
         p.kill();
         return false;

@@ -466,6 +466,35 @@ ProcessTrace::ProcessTrace(const QLoggingCategory &category)
     m_timer.start();
 }
 
+bool ProcessTrace::wait(QProcess &p, int timeoutMs)
+{
+    QElapsedTimer waited;
+    waited.start();
+    qint64 nextReport = 10000;
+    for (;;) {
+        qint64 slice = nextReport - waited.elapsed();
+        if (timeoutMs >= 0)
+            slice = std::min<qint64>(slice, timeoutMs - waited.elapsed());
+        if (p.waitForFinished(int(std::max<qint64>(slice, 1))))
+            return true;
+        if (p.state() == QProcess::NotRunning)
+            return false; // failed to start, or already collected
+        if (timeoutMs >= 0 && waited.elapsed() >= timeoutMs)
+            return false;
+        if (waited.elapsed() >= nextReport) {
+            if (m_category.isInfoEnabled())
+                QMessageLogger(nullptr, 0, nullptr, m_category.categoryName()).info().noquote()
+                    << QStringLiteral("still running after %1 s: %2%3")
+                           .arg(m_timer.elapsed() / 1000)
+                           .arg(commandLine(p.program(), p.arguments()),
+                                p.workingDirectory().isEmpty()
+                                    ? QString()
+                                    : QStringLiteral("  [in %1]").arg(QDir::toNativeSeparators(p.workingDirectory())));
+            nextReport = nextReport < 30000 ? 30000 : nextReport < 60000 ? 60000 : nextReport + 60000;
+        }
+    }
+}
+
 void ProcessTrace::done(const QProcess &p, qint64 outputBytes, const QByteArray &errorOutput, std::optional<bool> ok)
 {
     if (!m_category.isInfoEnabled())

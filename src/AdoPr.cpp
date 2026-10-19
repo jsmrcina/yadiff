@@ -73,7 +73,7 @@ bool git(const QString &dir, const QStringList &args, const QProcessEnvironment 
         return false;
     }
     p.closeWriteChannel();
-    p.waitForFinished(-1);
+    trace.wait(p);
     const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     trace.done(p, stdOut.size(), stdErr);
     if (out)

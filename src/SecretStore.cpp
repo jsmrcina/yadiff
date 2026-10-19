@@ -52,7 +52,7 @@ bool secretTool(const QStringList &args, const QByteArray &input, QByteArray *ou
     p.write(input);
     p.closeWriteChannel();
     // The keyring may ask the user to unlock it, so allow time for that.
-    if (!p.waitForFinished(120000)) {
+    if (!trace.wait(p, 120000)) {
         trace.done(p);
         p.kill();
         if (error)

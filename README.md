@@ -119,8 +119,10 @@ path looks like a revision.
   request, gets a commit bar above the diff. Its drop-down lists every commit in the range, and the
   arrows (or Ctrl+Alt+PgDown and Ctrl+Alt+PgUp) step from the whole range to each commit in turn.
   A single commit, from the commit picker or blame, steps through its neighbours instead: older
-  commits along the first parent, and newer ones on the way to HEAD. Hover the author line for the
-  full commit message. While a pull request is on one commit, review comments are hidden.
+  commits along the first parent, and newer ones on the way to HEAD. A pull request with a single
+  commit has no bar, because its neighbours would be the target branch's history. The list is
+  built in the background, so a large repository never delays the window. Hover the author line
+  for the full commit message. While a pull request is on one commit, review comments are hidden.
 - **Stage, unstage or discard single changes and lines.** Right-click a change in a working-tree
   comparison for Stage this change, or select some lines (on either side, side by side) for Stage
   selected lines. Staged files offer Unstage instead, and Discard reverts the lines in the working

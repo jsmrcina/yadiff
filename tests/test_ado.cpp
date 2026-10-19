@@ -409,7 +409,8 @@ private slots:
             qInfo().noquote() << log;
         for (const char *expected : {"yadiff.auth", "personal access token from YADIFF_ADO_PAT", "GET http://127.0.0.1",
                                      "/pullRequests/7?api-version=7.1 -> HTTP 200", "resolving PR 7", "using yadiff's cache",
-                                     "git init --bare", "PR 7 resolved: merge base", "YADIFF_ADO_PAT (set)", "Authorization"})
+                                     "git init --bare", "with the YADIFF_ADO_PAT credential", "git fetch --no-tags",
+                                     "PR 7 resolved: merge base", "YADIFF_ADO_PAT (set)", "Authorization"})
             QVERIFY2(log.contains(expected), expected);
         QVERIFY(!log.contains(kPat));
         QVERIFY(!log.contains(patHeader()));

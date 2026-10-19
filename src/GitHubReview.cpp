@@ -27,7 +27,7 @@ bool gh(const QStringList &args, const QByteArray &input, QByteArray *out, QStri
     if (!input.isEmpty())
         p.write(input);
     p.closeWriteChannel();
-    p.waitForFinished(-1);
+    trace.wait(p);
     const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     trace.done(p, stdOut.size(), stdErr);
     if (out)

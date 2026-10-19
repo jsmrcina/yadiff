@@ -35,11 +35,14 @@ QProcessEnvironment gitEnvironment()
 }
 
 bool runGit(const QString &workDir, const QStringList &args, QByteArray *out, QString *error,
-            const QByteArray &input = {}, bool allowExitOne = false)
+            const QByteArray &input = {}, bool allowExitOne = false, bool noLazyFetch = false)
 {
     QProcess p;
     p.setWorkingDirectory(workDir);
-    p.setProcessEnvironment(gitEnvironment());
+    QProcessEnvironment env = gitEnvironment();
+    if (noLazyFetch)
+        env.insert(QStringLiteral("GIT_NO_LAZY_FETCH"), QStringLiteral("1")); // git 2.45+; older ones ignore it
+    p.setProcessEnvironment(env);
     QStringList full{QStringLiteral("-c"), QStringLiteral("core.quotepath=false"), QStringLiteral("-c"),
                      QStringLiteral("color.ui=false")};
     full += args;
@@ -54,7 +57,7 @@ bool runGit(const QString &workDir, const QStringList &args, QByteArray *out, QS
     if (!input.isEmpty())
         p.write(input);
     p.closeWriteChannel();
-    p.waitForFinished(-1);
+    trace.wait(p);
     const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     if (out)
         *out = stdOut;
@@ -408,7 +411,11 @@ QStringList GitRepo::pathspecs(const Comparison &cmp) const
 
 bool GitRepo::hasCommit(const QString &oid) const
 {
-    return run({QStringLiteral("cat-file"), QStringLiteral("-e"), oid + QStringLiteral("^{commit}")}, nullptr, nullptr);
+    // Only what is here already. In a partial clone a missing commit would otherwise be
+    // fetched on the spot, with the user's credentials rather than the PR's, along with
+    // its whole history (millions of objects in a large repository).
+    return runGit(m_root, {QStringLiteral("cat-file"), QStringLiteral("-e"), oid + QStringLiteral("^{commit}")}, nullptr,
+                  nullptr, {}, false, true);
 }
 
 bool GitRepo::knowsPath(const QString &path) const
