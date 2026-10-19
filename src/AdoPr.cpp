@@ -6,9 +6,11 @@
 
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -425,19 +427,74 @@ std::optional<GitHubReview::Comment> reply(const Ref &ref, const AdoAuth::Creden
     return commentFrom(QJsonDocument::fromJson(r.body).object(), threadId, {}, ref.webUrl);
 }
 
+namespace {
+
+// Who the credential belongs to: one call per organisation and credential, not per vote.
+std::optional<QString> myId(const Ref &ref, const AdoAuth::Credential &cred, QString *error)
+{
+    static QMutex mutex;
+    static QHash<QString, QString> ids;
+    const QString key = AdoAuth::organizationUrl(ref.collectionUrl).toString() + u'\n' + cred.source;
+    {
+        QMutexLocker lock(&mutex);
+        if (const auto it = ids.constFind(key); it != ids.constEnd())
+            return *it;
+    }
+    const auto id = AdoAuth::userId(ref.collectionUrl, cred, error);
+    if (id) {
+        QMutexLocker lock(&mutex);
+        ids.insert(key, *id);
+    }
+    return id;
+}
+
+} // namespace
+
+int parseVote(const QByteArray &reviewersJson, const QString &userId)
+{
+    for (const QJsonValue &v : QJsonDocument::fromJson(reviewersJson).object().value(QStringLiteral("value")).toArray()) {
+        const QJsonObject r = v.toObject();
+        if (r.value(QStringLiteral("id")).toString().compare(userId, Qt::CaseInsensitive) == 0)
+            return r.value(QStringLiteral("vote")).toInt();
+    }
+    return 0;
+}
+
+std::optional<int> myVote(const Ref &ref, const AdoAuth::Credential &cred, QString *error)
+{
+    const auto me = myId(ref, cred, error);
+    if (!me)
+        return std::nullopt;
+    const Http::Response r = call("GET", apiUrl(ref, QStringLiteral("/reviewers")), cred, {}, error);
+    if (!r.error.isEmpty())
+        return std::nullopt;
+    const int vote = parseVote(r.body, *me);
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << ": your vote is" << vote;
+    return vote;
+}
+
+bool setVote(const Ref &ref, const AdoAuth::Credential &cred, int vote, QString *error)
+{
+    const auto me = myId(ref, cred, error);
+    if (!me)
+        return false;
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << ": voting" << vote;
+    const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("vote"), vote}}).toJson(QJsonDocument::Compact);
+    return call("PUT", apiUrl(ref, QStringLiteral("/reviewers/%1").arg(*me)), cred, payload, error).error.isEmpty();
+}
+
+bool postMessage(const Ref &ref, const AdoAuth::Credential &cred, const QString &body, QString *error)
+{
+    return call("POST", apiUrl(ref, QStringLiteral("/threads")), cred, threadPayload({}, {}, 0, 0, body), error).error.isEmpty();
+}
+
 bool submit(const Ref &ref, const AdoAuth::Credential &cred, GitHubReview::Verdict verdict, const QString &body, QString *error)
 {
-    if (verdict != GitHubReview::Verdict::Comment) {
-        const auto me = AdoAuth::userId(ref.collectionUrl, cred, error);
-        if (!me)
-            return false;
-        const int vote = verdict == GitHubReview::Verdict::Approve ? 10 : -5;
-        const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("vote"), vote}}).toJson(QJsonDocument::Compact);
-        if (!call("PUT", apiUrl(ref, QStringLiteral("/reviewers/%1").arg(*me)), cred, payload, error).error.isEmpty())
-            return false;
-    }
+    if (verdict != GitHubReview::Verdict::Comment
+        && !setVote(ref, cred, verdict == GitHubReview::Verdict::Approve ? 10 : -5, error))
+        return false;
     if (!body.trimmed().isEmpty())
-        return call("POST", apiUrl(ref, QStringLiteral("/threads")), cred, threadPayload({}, {}, 0, 0, body), error).error.isEmpty();
+        return postMessage(ref, cred, body, error);
     return true;
 }
 

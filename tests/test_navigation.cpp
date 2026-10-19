@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MergeWindow.h"
 #include "NewComparisonDialog.h"
+#include "PrReview.h"
 #include "SearchBar.h"
 #include "TableDiffView.h"
 #include "Session.h"
@@ -45,6 +46,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextBlock>
+#include <QStatusBar>
 #include <QToolButton>
 
 namespace {
@@ -1495,6 +1497,30 @@ private slots:
         w3.show();
         QVERIFY(!action(w3, QStringLiteral("Previous commit"))->isEnabled());
         QVERIFY(!action(w3, QStringLiteral("Next commit"))->isEnabled());
+
+        // A PR has a vote button in the status bar, with the host's votes; here there is
+        // no server, so the vote stays unknown.
+        QToolButton *vote = nullptr;
+        for (auto *b : w3.statusBar()->findChildren<QToolButton *>())
+            if (b->text().startsWith(QStringLiteral("Your vote")))
+                vote = b;
+        QVERIFY(vote && vote->isVisible());
+        QTRY_VERIFY(vote->text() == QStringLiteral("Your vote: unknown"));
+        QStringList labels;
+        for (QAction *a : vote->menu()->actions())
+            if (!a->isSeparator())
+                labels << a->text();
+        QCOMPARE(labels.mid(0, 5), (QStringList{QStringLiteral("Approve…"), QStringLiteral("Approve with suggestions…"),
+                                                QStringLiteral("Wait for author…"), QStringLiteral("Reject…"),
+                                                QStringLiteral("Reset vote…")}));
+        QVERIFY(action(w3, QStringLiteral("Approve with suggestions…")));
+        // A GitHub PR offers GitHub's two (checked without a window, which would call gh).
+        Comparison ghPr = one;
+        ghPr.prHost = QStringLiteral("github");
+        ghPr.prNumber = 3;
+        QCOMPARE(PrReview::votes(ghPr), (QVector<GitHubReview::Vote>{GitHubReview::Vote::Approved, GitHubReview::Vote::Rejected}));
+        QCOMPARE(PrReview::voteAction(ghPr, GitHubReview::Vote::Rejected), QStringLiteral("Request changes"));
+        QVERIFY(PrReview::voteNeedsMessage(ghPr, GitHubReview::Vote::Rejected));
     }
     void loadsEveryDiffInTheBackground()
     {

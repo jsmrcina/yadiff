@@ -93,6 +93,108 @@ std::optional<GitHubReview::Comment> reply(const Comparison &cmp, qint64 threadI
     return cred ? AdoPr::reply(ado(cmp), *cred, thread, body, error) : std::nullopt;
 }
 
+QVector<Vote> votes(const Comparison &cmp)
+{
+    if (!isAdo(cmp))
+        return {Vote::Approved, Vote::Rejected};
+    return {Vote::Approved, Vote::ApprovedWithSuggestions, Vote::WaitingForAuthor, Vote::Rejected, Vote::None};
+}
+
+QString voteState(const Comparison &cmp, Vote vote)
+{
+    switch (vote) {
+    case Vote::Approved:
+        return QStringLiteral("Approved");
+    case Vote::ApprovedWithSuggestions:
+        return QStringLiteral("Approved with suggestions");
+    case Vote::WaitingForAuthor:
+        return QStringLiteral("Waiting for author");
+    case Vote::Rejected:
+        return isAdo(cmp) ? QStringLiteral("Rejected") : QStringLiteral("Changes requested");
+    case Vote::None:
+        break;
+    }
+    return QStringLiteral("No vote");
+}
+
+QString voteAction(const Comparison &cmp, Vote vote)
+{
+    switch (vote) {
+    case Vote::Approved:
+        return QStringLiteral("Approve");
+    case Vote::ApprovedWithSuggestions:
+        return QStringLiteral("Approve with suggestions");
+    case Vote::WaitingForAuthor:
+        return QStringLiteral("Wait for author");
+    case Vote::Rejected:
+        return isAdo(cmp) ? QStringLiteral("Reject") : QStringLiteral("Request changes");
+    case Vote::None:
+        break;
+    }
+    return QStringLiteral("Reset vote");
+}
+
+bool voteNeedsMessage(const Comparison &cmp, Vote vote)
+{
+    return !isAdo(cmp) && vote == Vote::Rejected;
+}
+
+int adoVoteValue(Vote vote)
+{
+    switch (vote) {
+    case Vote::Approved:
+        return 10;
+    case Vote::ApprovedWithSuggestions:
+        return 5;
+    case Vote::WaitingForAuthor:
+        return -5;
+    case Vote::Rejected:
+        return -10;
+    case Vote::None:
+        break;
+    }
+    return 0;
+}
+
+Vote adoVote(int value)
+{
+    return value >= 10 ? Vote::Approved
+         : value > 0   ? Vote::ApprovedWithSuggestions
+         : value <= -10 ? Vote::Rejected
+         : value < 0    ? Vote::WaitingForAuthor
+                        : Vote::None;
+}
+
+std::optional<Vote> myVote(const Comparison &cmp, QString *error)
+{
+    if (!isAdo(cmp))
+        return GitHubReview::myVote(gh(cmp), error);
+    const auto cred = adoCredential(cmp, error);
+    if (!cred)
+        return std::nullopt;
+    const auto value = AdoPr::myVote(ado(cmp), *cred, error);
+    return value ? std::optional<Vote>(adoVote(*value)) : std::nullopt;
+}
+
+bool setVote(const Comparison &cmp, Vote vote, const QString &message, QString *error)
+{
+    if (!isAdo(cmp)) {
+        if (vote != Vote::Approved && vote != Vote::Rejected) {
+            if (error)
+                *error = QStringLiteral("GitHub can only approve or request changes.");
+            return false;
+        }
+        return GitHubReview::submitReview(gh(cmp),
+                                          vote == Vote::Approved ? GitHubReview::Verdict::Approve
+                                                                 : GitHubReview::Verdict::RequestChanges,
+                                          message, error);
+    }
+    const auto cred = adoCredential(cmp, error);
+    if (!cred || !AdoPr::setVote(ado(cmp), *cred, adoVoteValue(vote), error))
+        return false;
+    return message.trimmed().isEmpty() || AdoPr::postMessage(ado(cmp), *cred, message, error);
+}
+
 bool submit(const Comparison &cmp, GitHubReview::Verdict verdict, const QString &body, QString *error)
 {
     if (!isAdo(cmp))

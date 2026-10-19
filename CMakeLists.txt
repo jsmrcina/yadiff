@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.15.0 LANGUAGES CXX)
+project(yadiff VERSION 0.16.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,5 +147,5 @@ if(BUILD_TESTING)
     qt_add_executable(test_navigation tests/test_navigation.cpp)
     target_link_libraries(test_navigation PRIVATE yadiffui Qt6::Test)
     add_test(NAME test_navigation COMMAND test_navigation)
-    set_tests_properties(test_navigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;YADIFF_SYNCHRONOUS=1;YADIFF_NO_TRASH=1;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-config")
+    set_tests_properties(test_navigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;YADIFF_SYNCHRONOUS=1;YADIFF_NO_TRASH=1;XDG_CONFIG_HOME=${CMAKE_CURRENT_BINARY_DIR}/test-config;YADIFF_ADO_PAT=test-only;YADIFF_SECRET_STORE_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-secrets.json")
 endif()

@@ -33,6 +33,14 @@ QString displayTime(const QString &iso);
 
 enum class Verdict { Comment, Approve, RequestChanges };
 
+// A reviewer's vote, in the terms both hosts share. GitHub knows None, Approved and
+// Rejected ("changes requested"); Azure DevOps has all five.
+enum class Vote { None, Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected };
+
+// `login`'s vote from GitHub's reviews JSON (a list, or gh --slurp's list of pages): their
+// latest approval, change request or dismissal decides; plain comments don't change it.
+Vote latestVote(const QByteArray &reviewsJson, const QString &login);
+
 // Parses GitHub's JSON (a list, or gh --slurp's list of pages).
 QVector<Comment> parseComments(const QByteArray &json);
 // Groups replies under their first comment, threads in creation order.
@@ -48,5 +56,7 @@ std::optional<Comment> post(const PrId &pr, const QString &commitId, const QStri
                             int startLine, const QString &body, QString *error);
 std::optional<Comment> reply(const PrId &pr, qint64 threadId, const QString &body, QString *error);
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error);
+// The signed-in gh user's current vote on the PR.
+std::optional<Vote> myVote(const PrId &pr, QString *error);
 
 } // namespace GitHubReview

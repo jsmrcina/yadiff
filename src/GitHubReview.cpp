@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMap>
+#include <QMutex>
 #include <QProcess>
 
 #include <algorithm>
@@ -95,6 +96,32 @@ QVector<Comment> parseComments(const QByteArray &json)
     return out;
 }
 
+Vote latestVote(const QByteArray &reviewsJson, const QString &login)
+{
+    QJsonArray reviews;
+    for (const QJsonValue &v : QJsonDocument::fromJson(reviewsJson).array()) {
+        if (v.isArray()) // --slurp: one array per page
+            for (const QJsonValue &r : v.toArray())
+                reviews.append(r);
+        else
+            reviews.append(v);
+    }
+    Vote vote = Vote::None;
+    for (const QJsonValue &v : std::as_const(reviews)) { // oldest first
+        const QJsonObject r = v.toObject();
+        if (r.value(QStringLiteral("user")).toObject().value(QStringLiteral("login")).toString().compare(login, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString state = r.value(QStringLiteral("state")).toString();
+        if (state == QLatin1String("APPROVED"))
+            vote = Vote::Approved;
+        else if (state == QLatin1String("CHANGES_REQUESTED"))
+            vote = Vote::Rejected;
+        else if (state == QLatin1String("DISMISSED"))
+            vote = Vote::None;
+    }
+    return vote;
+}
+
 QVector<Thread> threads(const QVector<Comment> &comments)
 {
     QMap<qint64, int> rootIndex;
@@ -135,6 +162,28 @@ QByteArray reviewPayload(Verdict verdict, const QString &body)
     if (!body.isEmpty())
         o.insert(QStringLiteral("body"), body);
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
+
+std::optional<Vote> myVote(const PrId &pr, QString *error)
+{
+    // Who gh is signed in as doesn't change while yadiff runs: ask once.
+    static QMutex mutex;
+    static QString login;
+    {
+        QMutexLocker lock(&mutex);
+        if (login.isEmpty()) {
+            QByteArray out;
+            if (!gh({QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")}, {}, &out,
+                    error))
+                return std::nullopt;
+            login = QString::fromUtf8(out).trimmed();
+        }
+    }
+    QByteArray out;
+    if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/reviews")},
+            {}, &out, error))
+        return std::nullopt;
+    return latestVote(out, login);
 }
 
 std::optional<QVector<Comment>> fetch(const PrId &pr, QString *error)

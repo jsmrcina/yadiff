@@ -310,6 +310,18 @@ private slots:
             GitHubReview::reviewPayload(GitHubReview::Verdict::RequestChanges, QStringLiteral("fix"))).object();
         QCOMPARE(review.value(QStringLiteral("event")).toString(), QStringLiteral("REQUEST_CHANGES"));
         QCOMPARE(GitHubReview::reviewPayload(GitHubReview::Verdict::Approve, {}), QByteArray("{\"event\":\"APPROVE\"}"));
+
+        // Your vote is your latest approval, change request or dismissal; comments don't count.
+        using Vote = GitHubReview::Vote;
+        const QByteArray reviews = R"([[{"user":{"login":"me"},"state":"APPROVED"},
+                                        {"user":{"login":"other"},"state":"CHANGES_REQUESTED"}],
+                                       [{"user":{"login":"Me"},"state":"COMMENTED"}]])";
+        QCOMPARE(GitHubReview::latestVote(reviews, QStringLiteral("me")), Vote::Approved);
+        QCOMPARE(GitHubReview::latestVote(reviews, QStringLiteral("other")), Vote::Rejected);
+        QCOMPARE(GitHubReview::latestVote(reviews, QStringLiteral("nobody")), Vote::None);
+        QCOMPARE(GitHubReview::latestVote(R"([{"user":{"login":"me"},"state":"CHANGES_REQUESTED"},
+                                              {"user":{"login":"me"},"state":"DISMISSED"}])", QStringLiteral("me")),
+                 Vote::None);
     }
 
     void globsFollowGitignoreRules()

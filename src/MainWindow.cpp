@@ -246,6 +246,14 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     syncOptionControls();
     updateViewToggle();
 
+    m_voteButton = new QToolButton;
+    m_voteButton->setAutoRaise(true);
+    m_voteButton->setPopupMode(QToolButton::InstantPopup);
+    m_voteButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_voteMenu = new QMenu(m_voteButton);
+    m_voteButton->setMenu(m_voteMenu);
+    m_voteButton->hide();
+    statusBar()->addPermanentWidget(m_voteButton);
     m_busyBar = new QProgressBar;
     m_busyBar->setMaximumWidth(260);
     m_busyBar->setMaximumHeight(18);
@@ -948,10 +956,9 @@ void MainWindow::createActions()
     // ---- Review (pull requests only) ---------------------------------------
     m_reviewMenu = menuBar()->addMenu(tr("&Review"));
     m_reviewMenuAction = m_reviewMenu->menuAction();
-    m_reviewMenu->addAction(tr("&Approve…"), this, [this] { submitReview(GitHubReview::Verdict::Approve); });
-    m_reviewMenu->addAction(tr("Request &changes…"), this, [this] { submitReview(GitHubReview::Verdict::RequestChanges); });
-    m_reviewMenu->addAction(tr("&Comment on the pull request…"), this,
-                            [this] { submitReview(GitHubReview::Verdict::Comment); });
+    // The host's votes are inserted here (rebuildVoteActions).
+    m_reviewCommentAct = m_reviewMenu->addAction(tr("&Comment on the pull request…"), this,
+                                                 [this] { submitReview(GitHubReview::Verdict::Comment); });
     m_reviewMenu->addSeparator();
     m_reviewMenu->addAction(tr("&Reload comments"), this, &MainWindow::loadComments);
     m_reviewMenu->addAction(tr("&Open pull request in browser"), this,
@@ -1057,7 +1064,7 @@ void MainWindow::createToolBar()
     reviewButton->setText(tr("Review"));
     reviewButton->setMenu(m_reviewMenu);
     reviewButton->setPopupMode(QToolButton::InstantPopup);
-    reviewButton->setToolTip(tr("Approve, request changes, or comment on the pull request"));
+    reviewButton->setToolTip(tr("Vote on the pull request, or comment on it"));
     m_reviewToolAction = tb->addWidget(reviewButton);
     m_scopeCombo = new QComboBox;
     m_scopeCombo->addItem(tr("Staged and unstaged"));
@@ -1157,6 +1164,7 @@ void MainWindow::updateModeUi()
     m_expandCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_collapseCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_reviewToolAction->setVisible(m_cmp.prNumber > 0);
+    rebuildVoteActions();
     const bool workingTree = m_repo.isRepository() && !m_repo.isBare()
                           && (working || (m_cmp.mode == Comparison::Mode::Revisions && m_cmp.rev2.isEmpty()));
     m_stageAct->setEnabled(workingTree);
@@ -1613,8 +1621,11 @@ void MainWindow::reload(std::function<void()> afterFile)
             m_files->setChanges(m_changes, groups, reviewed);
             applyFilter();
             updateSummary();
-            if (m_cmp.prNumber > 0)
+            if (m_cmp.prNumber > 0) {
                 loadComments();
+                if (!m_myVote && !m_voteBusy)
+                    loadMyVote();
+            }
 
             if (m_changes.isEmpty() || m_files->visibleCount() == 0) {
                 m_pane->showMessage(QString(), m_cmp.empty ? tr("Nothing to compare yet.\n\nUse File → New comparison (Ctrl+N) to "
@@ -2818,6 +2829,170 @@ void MainWindow::replyToThread(qint64 threadId)
             statusBar()->showMessage(tr("Reply posted"), 3000);
             if (m_shownIndex >= 0)
                 m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
+        });
+}
+
+namespace {
+
+QIcon voteIcon(std::optional<GitHubReview::Vote> vote)
+{
+    using V = GitHubReview::Vote;
+    QColor c(0x9a, 0x9a, 0x9a); // unknown or no vote
+    if (vote == V::Approved)
+        c = QColor(0x2e, 0xa0, 0x43);
+    else if (vote == V::ApprovedWithSuggestions)
+        c = QColor(0x7c, 0xc0, 0x4f);
+    else if (vote == V::WaitingForAuthor)
+        c = QColor(0xd9, 0x8e, 0x04);
+    else if (vote == V::Rejected)
+        c = QColor(0xd1, 0x3b, 0x3b);
+    QPixmap pm(32, 32);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setBrush(c);
+    p.setPen(vote ? Qt::NoPen : QPen(c, 3));
+    if (!vote)
+        p.setBrush(Qt::NoBrush); // a hollow dot until the vote is known
+    p.drawEllipse(QRectF(6, 6, 20, 20));
+    p.end();
+    return QIcon(pm);
+}
+
+} // namespace
+
+void MainWindow::rebuildVoteActions()
+{
+    qDeleteAll(m_voteActions);
+    m_voteActions.clear();
+    m_voteMenu->clear();
+    const bool pr = m_cmp.prNumber > 0;
+    m_voteButton->setVisible(pr);
+    if (!pr)
+        return;
+    auto *group = new QActionGroup(this);
+    for (const GitHubReview::Vote vote : PrReview::votes(m_cmp)) {
+        auto *a = new QAction(voteIcon(vote), PrReview::voteAction(m_cmp, vote) + QStringLiteral("…"), this);
+        a->setCheckable(vote != GitHubReview::Vote::None);
+        if (a->isCheckable())
+            group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, vote] { castVote(vote); });
+        m_voteActions << a;
+    }
+    // Reset reads as an action, not a state: after a separator.
+    for (QAction *a : std::as_const(m_voteActions)) {
+        if (!a->isCheckable()) {
+            m_reviewMenu->insertSeparator(m_reviewCommentAct);
+            m_voteMenu->addSeparator();
+        }
+        m_reviewMenu->insertAction(m_reviewCommentAct, a);
+        m_voteMenu->addAction(a);
+    }
+    m_reviewMenu->insertSeparator(m_reviewCommentAct);
+    m_voteMenu->addSeparator();
+    m_voteMenu->addAction(tr("Check my vote again"), this, &MainWindow::loadMyVote);
+    m_voteMenu->addAction(m_reviewCommentAct);
+    // Separators left from an earlier comparison's votes: no two in a row, none first.
+    QAction *previous = nullptr;
+    for (QAction *a : m_reviewMenu->actions()) {
+        if (a->isSeparator() && (!previous || previous->isSeparator()))
+            delete a;
+        else
+            previous = a;
+    }
+    updateVoteButton();
+}
+
+void MainWindow::updateVoteButton()
+{
+    if (m_cmp.prNumber <= 0)
+        return;
+    QString state;
+    if (m_voteBusy)
+        state = m_myVote ? PrReview::voteState(m_cmp, *m_myVote) + QStringLiteral("…") : tr("checking…");
+    else if (m_myVote)
+        state = PrReview::voteState(m_cmp, *m_myVote);
+    else if (!m_voteError.isEmpty())
+        state = tr("unknown");
+    else
+        state = tr("checking…");
+    m_voteButton->setText(tr("Your vote: %1").arg(state));
+    m_voteButton->setIcon(voteIcon(m_voteBusy ? std::nullopt : m_myVote));
+    m_voteButton->setToolTip(m_voteError.isEmpty()
+                                 ? tr("Your vote on this pull request on %1. Click to change it.").arg(PrReview::hostName(m_cmp))
+                                 : tr("Could not read your vote: %1").arg(m_voteError));
+    const QList<GitHubReview::Vote> all = PrReview::votes(m_cmp);
+    for (int i = 0; i < m_voteActions.size() && i < all.size(); ++i)
+        if (m_voteActions[i]->isCheckable())
+            m_voteActions[i]->setChecked(m_myVote == all[i]);
+}
+
+void MainWindow::loadMyVote()
+{
+    if (m_cmp.prNumber <= 0)
+        return;
+    m_voteBusy = true;
+    updateVoteButton();
+    const quint64 gen = ++m_voteGen;
+    runJob<std::pair<std::optional<GitHubReview::Vote>, QString>>(
+        [cmp = m_cmp] {
+            QString error;
+            const auto vote = PrReview::myVote(cmp, &error);
+            return std::make_pair(vote, vote ? QString() : (error.isEmpty() ? QStringLiteral("?") : error));
+        },
+        [this, gen](std::pair<std::optional<GitHubReview::Vote>, QString> r) {
+            if (gen != m_voteGen)
+                return;
+            m_voteBusy = false;
+            if (r.first) {
+                m_myVote = r.first;
+                m_voteError.clear();
+            } else {
+                m_voteError = r.second.section(u'\n', 0, 0);
+            }
+            updateVoteButton();
+        });
+}
+
+void MainWindow::castVote(GitHubReview::Vote vote)
+{
+    if (m_cmp.prNumber <= 0)
+        return;
+    const QString action = PrReview::voteAction(m_cmp, vote);
+    const bool needsMessage = PrReview::voteNeedsMessage(m_cmp, vote);
+    const QString about = needsMessage ? tr("A message is required.")
+                        : m_cmp.prHost == QLatin1String("ado")
+                            ? tr("A message is optional; it is posted as a comment on the pull request.")
+                            : tr("A message is optional.");
+    bool ok = false;
+    const QString message = QInputDialog::getMultiLineText(
+        this, action, tr("%1: %2\n\n%3").arg(action, m_cmp.title.isEmpty() ? PrReview::webUrl(m_cmp) : m_cmp.title, about),
+        QString(), &ok);
+    if (!ok || (needsMessage && message.trimmed().isEmpty())) {
+        updateVoteButton(); // puts the check mark back
+        return;
+    }
+    m_voteBusy = true;
+    updateVoteButton();
+    const quint64 gen = ++m_voteGen;
+    runJob<QString>(
+        [cmp = m_cmp, vote, message] {
+            QString error;
+            return PrReview::setVote(cmp, vote, message, &error) ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
+        },
+        [this, gen, vote, action](QString error) {
+            if (gen != m_voteGen)
+                return;
+            m_voteBusy = false;
+            if (!error.isEmpty()) {
+                updateVoteButton();
+                QMessageBox::warning(this, action, tr("%1 refused the vote:\n%2").arg(PrReview::hostName(m_cmp), error));
+                return;
+            }
+            m_myVote = vote;
+            m_voteError.clear();
+            updateVoteButton();
+            statusBar()->showMessage(tr("%1: done").arg(action), 4000);
         });
 }
 
@@ -4030,6 +4205,10 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_lastSignature.clear();
     m_shownIndex = -1;
     m_customTitle.clear();
+    m_myVote.reset();
+    m_voteError.clear();
+    m_voteBusy = false;
+    ++m_voteGen;
     qCInfo(lcApp).noquote() << "showing" << m_cmp.describe() << "in" << QDir::toNativeSeparators(m_repo.root());
     updateModeUi();
     updateTitle();

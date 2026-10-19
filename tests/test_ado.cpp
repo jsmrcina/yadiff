@@ -52,6 +52,7 @@ public:
     QByteArray acceptedAuth; // anything else gets 203 + HTML, like the real service
     QString remoteUrl;
     QString sourceCommit, targetCommit;
+    int vote = 5; // user-1's vote, as PUT to the reviewers endpoint
     quint16 port = 0;
 
     FakeAdo()
@@ -128,7 +129,16 @@ private:
               {"id":8,"isDeleted":false,"threadContext":{"filePath":"/a.txt","leftFileStart":{"line":1,"offset":1},"leftFileEnd":{"line":3,"offset":1}},
                "comments":[{"id":1,"parentCommentId":0,"content":"old side","author":{"displayName":"Dan"},"publishedDate":"2026-01-01T02:00:00Z"}]}]})";
         } else if (r.path.contains("/pullRequests/7/reviewers/user-1")) {
-            body = R"({"vote":10})";
+            if (r.method == "PUT")
+                vote = QJsonDocument::fromJson(r.body).object().value(QStringLiteral("vote")).toInt();
+            body = QJsonDocument(QJsonObject{{QStringLiteral("vote"), vote}}).toJson();
+        } else if (r.path.contains("/pullRequests/7/reviewers")) {
+            body = QJsonDocument(QJsonObject{{QStringLiteral("value"),
+                                              QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("someone-else")},
+                                                                     {QStringLiteral("vote"), -10}},
+                                                         QJsonObject{{QStringLiteral("id"), QStringLiteral("USER-1")},
+                                                                     {QStringLiteral("vote"), vote}}}}})
+                       .toJson();
         } else if (r.path.contains("/pullRequests/7")) {
             body = QJsonDocument(QJsonObject{
                                      {QStringLiteral("title"), QStringLiteral("Make two loud")},
@@ -374,6 +384,23 @@ private slots:
         for (const auto &r : ado.requests)
             votedWait |= r.method == "PUT" && QJsonDocument::fromJson(r.body).object().value(QStringLiteral("vote")).toInt() == -5;
         QVERIFY(votedWait);
+
+        // Votes: every one Azure DevOps has, each read back, then reset; a message goes
+        // with a vote as a comment.
+        using Vote = GitHubReview::Vote;
+        QCOMPARE(PrReview::votes(cmp).size(), 5);
+        for (Vote v : {Vote::Approved, Vote::ApprovedWithSuggestions, Vote::WaitingForAuthor, Vote::Rejected, Vote::None}) {
+            QVERIFY2(PrReview::setVote(cmp, v, {}, &error), qPrintable(error));
+            QCOMPARE(ado.vote, PrReview::adoVoteValue(v));
+            QCOMPARE(PrReview::myVote(cmp, &error), std::optional<Vote>(v));
+        }
+        QCOMPARE(PrReview::adoVoteValue(Vote::ApprovedWithSuggestions), 5);
+        QCOMPARE(PrReview::adoVote(-10), Vote::Rejected);
+        QCOMPARE(PrReview::adoVote(0), Vote::None);
+        QVERIFY(PrReview::setVote(cmp, Vote::Approved, QStringLiteral("Looks good"), &error));
+        QCOMPARE(ado.requests.last().method, QByteArray("POST"));
+        QVERIFY(ado.requests.last().body.contains("Looks good"));
+        QCOMPARE(AdoPr::parseVote(R"({"value":[{"id":"a","vote":5}]})", QStringLiteral("b")), 0); // not a reviewer
         for (const auto &r : ado.requests)
             if (r.path.contains("/pullRequests/7") && r.auth == patHeader())
                 QVERIFY(true);

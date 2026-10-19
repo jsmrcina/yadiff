@@ -32,6 +32,33 @@ public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override
     {
+        paintRow(p, option, index);
+        if (index.data(kMarkedRole).toBool())
+            paintMark(p, option, index);
+    }
+
+private:
+    // A marked file: a stripe of the mark colour down its left edge, and when it is
+    // selected (the selection hides the mark's background) a frame of it too.
+    void paintMark(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const
+    {
+        QColor mark = index.data(Qt::BackgroundRole).value<QBrush>().color();
+        if (!mark.isValid() || mark.alpha() == 0)
+            return;
+        mark.setAlpha(255);
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        p->fillRect(QRect(option.rect.left(), option.rect.top(), 4, option.rect.height()), mark);
+        if (option.state & QStyle::State_Selected) {
+            p->setPen(QPen(mark, 2));
+            p->setBrush(Qt::NoBrush);
+            p->drawRect(QRectF(option.rect).adjusted(1, 1, -1, -1));
+        }
+        p->restore();
+    }
+
+    void paintRow(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const
+    {
         const auto load = FileList::LoadState(index.data(kLoadRole).toInt());
         const bool pending = load == FileList::LoadState::Queued || load == FileList::LoadState::Loading;
         if (pending || load == FileList::LoadState::Failed) {
@@ -76,7 +103,6 @@ public:
         p->restore();
     }
 
-private:
     // The name greyed, and the state at the right edge: a hollow dot (waiting), a turning
     // arc (loading) or a red "!" (failed).
     void paintLoadState(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index,

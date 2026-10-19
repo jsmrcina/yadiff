@@ -121,6 +121,12 @@ private:
     void updateSummary();
     // The status bar's progress: opening a PR, listing files, or loading diffs (n of m).
     void updateBusy();
+    // Voting on the pull request: the host's votes in the Review menu and the status bar
+    // button, which shows the user's current vote.
+    void rebuildVoteActions();
+    void updateVoteButton();
+    void loadMyVote();
+    void castVote(GitHubReview::Vote vote);
     // Background loading of every file's diff, for comparisons whose files can't change
     // (revisions, PRs), so picking a file shows it at once. Restarts from scratch.
     void startPrefetch();
@@ -221,6 +227,14 @@ private:
     SearchBar *m_search = nullptr;
     QLabel *m_summary = nullptr;
     class QProgressBar *m_busyBar = nullptr;
+    class QToolButton *m_voteButton = nullptr;
+    QMenu *m_voteMenu = nullptr;            // the vote button's menu
+    QAction *m_reviewCommentAct = nullptr;  // the vote actions go before it in the Review menu
+    QList<QAction *> m_voteActions;         // in both menus
+    std::optional<GitHubReview::Vote> m_myVote; // unknown until loaded
+    QString m_voteError;
+    bool m_voteBusy = false;
+    quint64 m_voteGen = 0;
     bool m_resolving = false;      // openInBackground() at work
     QString m_resolveStep;         // its latest progress message
     QVector<int> m_prefetchQueue;  // change indices still to load

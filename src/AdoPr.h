@@ -56,6 +56,14 @@ std::optional<GitHubReview::Comment> post(const Ref &ref, const AdoAuth::Credent
                                           const QString &side, int line, int startLine, const QString &body, QString *error);
 std::optional<GitHubReview::Comment> reply(const Ref &ref, const AdoAuth::Credential &cred, qint64 threadId,
                                            const QString &body, QString *error);
+// Votes: 10 approved, 5 approved with suggestions, 0 no vote, -5 waiting for author,
+// -10 rejected. `userId`'s vote in the reviewers JSON (0 when they aren't a reviewer).
+int parseVote(const QByteArray &reviewersJson, const QString &userId);
+std::optional<int> myVote(const Ref &ref, const AdoAuth::Credential &cred, QString *error);
+bool setVote(const Ref &ref, const AdoAuth::Credential &cred, int vote, QString *error);
+// A pull-request-level comment thread.
+bool postMessage(const Ref &ref, const AdoAuth::Credential &cred, const QString &body, QString *error);
+
 // Approve = vote 10; RequestChanges = vote -5 ("waiting for author"); a message becomes
 // a pull-request-level comment thread.
 bool submit(const Ref &ref, const AdoAuth::Credential &cred, GitHubReview::Verdict verdict, const QString &body, QString *error);

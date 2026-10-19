@@ -46,7 +46,9 @@ path looks like a revision.
   staged and unstaged sections and one list of the working tree against HEAD. Untracked files are
   included in both. `yadiff PATH` starts in the single-list mode.
 - **Marking.** Mark a file once you've dealt with it: Ctrl+M, or right-click → Mark file. Marked files
-  get a highlight colour, which you can change under Marking → Mark highlight color. Marks are saved
+  get a highlight colour, which you can change under Marking → Mark highlight color. They also get
+  a stripe of it down their left edge. A marked file that is selected gets a frame of it too, since
+  the selection hides the highlight. Marks are saved
   per repository in `~/.config/yadiff/reviewed.ini`. A mark is tied to both versions of the file, so
   it clears itself when either side changes, but survives option changes and swapping sides. The
   Marking menu also has:
@@ -190,7 +192,7 @@ path looks like a revision.
   into a comment.
 - **GitHub review comments.** With `-ghpr`, review threads show under the lines they belong to.
   Right-click a line, or a selection for several lines, to add a comment. Right-click a thread to
-  reply. The Review menu approves, requests changes, or comments on the PR. Everything goes
+  reply. The Review menu comments on the PR or votes on it (see Voting below). Everything goes
   through `gh` and posts straight away. GitHub only accepts comments on or near changed lines.
   Outdated comments, whose line no longer exists, aren't shown.
 - **Azure DevOps pull requests:** `yadiff -ado URL` shows what the PR's Files tab shows, which is the
@@ -198,9 +200,18 @@ path looks like a revision.
   `ORG.visualstudio.com`, or Azure DevOps Server collection URLs. If the current repository has a
   remote for that Azure Repo, the PR is fetched into it, trying your own git credentials first.
   Otherwise yadiff keeps a blob-less partial clone in `~/.cache/yadiff/ado/`. Review threads,
-  comments, replies and votes work as for GitHub. Approve votes 10, and Request changes votes −5
-  ("waiting for author"). A message becomes a PR-level comment. Signing in is covered in the
-  next section.
+  comments and replies work as for GitHub. Signing in is covered in the next section.
+- **Voting.** Your vote is shown in the status bar ("Your vote: Approved" with a coloured dot).
+  Clicking it, or the Review menu, changes it.
+  - GitHub offers Approve and Request changes. Request changes needs a message.
+  - Azure DevOps offers Approve (10), Approve with suggestions (5), Wait for author (−5),
+    Reject (−10) and Reset vote (0).
+  - Each vote asks for an optional message. On Azure DevOps the message is posted as a comment on
+    the PR.
+  - Your vote is read from the host when the PR opens. "Check my vote again" re-reads it, for
+    instance after voting in the browser.
+  - On GitHub, your latest approval, change request or dismissal counts. Plain comments don't
+    change it.
 - **Background loading.** Git runs off the UI thread, so big repositories and PRs don't freeze the
   window, and switching files quickly only shows the last one. "All changes" searches show
   progress and can be stopped. Diffs over 100,000 lines ask before showing, and files over 30,000
@@ -492,7 +503,8 @@ ctest --test-dir build --output-on-failure
   unstaging and discarding single lines, patch comparisons, and saving comparisons as patches.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
-  credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
+  credentials, fetching, threads, comments, replies, every vote (set and read back), and the real
+  `yadiff -ado` command
   line, including that its log traces each step and never contains the token, and opening the PR
   in a window, which resolves it itself. The keyring is
   redirected to a temporary file there.
