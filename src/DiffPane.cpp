@@ -98,7 +98,9 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
     };
     sync(m_left->verticalScrollBar(), m_right->verticalScrollBar());
     sync(m_left->horizontalScrollBar(), m_right->horizontalScrollBar());
-    m_left->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // No vertical scrollbars: the overview strip beside them is the scrollbar.
+    for (CodeView *v : {m_inline, m_left, m_right})
+        v->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     m_leftBox = labelled(m_leftLabel, m_left);
@@ -177,6 +179,15 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
         if (b.isValid())
             v->verticalScrollBar()->setValue(std::max(0, b.firstLineNumber() - visible / 2));
     });
+    connect(m_overview, &OverviewBar::topRowRequested, this, [this](int row) {
+        CodeView *v = activeView();
+        const QTextBlock b = v->document()->findBlockByNumber(row);
+        if (b.isValid())
+            v->verticalScrollBar()->setValue(b.firstLineNumber());
+    });
+    // The wheel over the strip scrolls the diff, as over a scrollbar.
+    connect(m_overview, &OverviewBar::wheelTurned, this,
+            [this](QWheelEvent *event) { QCoreApplication::sendEvent(activeView()->verticalScrollBar(), event); });
 
     // Re-pad wrapped rows when a pane changes width.
     class ResizeWatcher : public QObject
@@ -1547,8 +1558,6 @@ void DiffPane::setPaneVisibility(int which)
     m_paneVisibility = std::clamp(which, 0, 2);
     m_leftBox->setVisible(m_paneVisibility != 2);
     m_rightBox->setVisible(m_paneVisibility != 1);
-    // The left pane's scrollbar is normally hidden (it follows the right one).
-    m_left->setVerticalScrollBarPolicy(m_paneVisibility == 1 ? Qt::ScrollBarAsNeeded : Qt::ScrollBarAlwaysOff);
 }
 
 void DiffPane::setShowLineNumbers(bool on)

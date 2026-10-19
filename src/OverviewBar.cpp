@@ -5,7 +5,7 @@
 
 OverviewBar::OverviewBar(QWidget *parent) : QWidget(parent)
 {
-    setFixedWidth(14);
+    setFixedWidth(kWidth);
     setCursor(Qt::PointingHandCursor);
     setToolTip(tr("Overview of all changes. Click to jump."));
 }
@@ -104,7 +104,7 @@ void OverviewBar::paintEvent(QPaintEvent *)
     if (m_currentFirst >= 0) {
         const int y0 = int(m_currentFirst * rowH);
         const int y1 = std::max(y0 + 2, int((m_currentLast + 1) * rowH));
-        p.fillRect(QRect(0, y0, 2, y1 - y0), palette().color(QPalette::Highlight));
+        p.fillRect(QRect(0, y0, 4, y1 - y0), palette().color(QPalette::Highlight));
     }
 
     // Visible area.
@@ -132,12 +132,36 @@ int OverviewBar::rowAtY(int y) const
 void OverviewBar::mousePressEvent(QMouseEvent *event)
 {
     const int row = rowAtY(int(event->position().y()));
-    if (row >= 0)
-        emit rowRequested(row);
+    if (row < 0)
+        return;
+    // On the visible area: grab it like a scrollbar's thumb. Elsewhere: jump there.
+    if (m_visibleCount > 0 && row >= m_visibleFirst && row < m_visibleFirst + m_visibleCount) {
+        m_dragOffset = row - m_visibleFirst;
+        return;
+    }
+    m_dragOffset = -1;
+    emit rowRequested(row);
 }
 
 void OverviewBar::mouseMoveEvent(QMouseEvent *event)
 {
-    if (event->buttons() & Qt::LeftButton)
-        mousePressEvent(event);
+    if (!(event->buttons() & Qt::LeftButton))
+        return;
+    const int row = rowAtY(int(event->position().y()));
+    if (row < 0)
+        return;
+    if (m_dragOffset >= 0)
+        emit topRowRequested(std::max(0, row - m_dragOffset));
+    else
+        emit rowRequested(row);
+}
+
+void OverviewBar::mouseReleaseEvent(QMouseEvent *)
+{
+    m_dragOffset = -1;
+}
+
+void OverviewBar::wheelEvent(QWheelEvent *event)
+{
+    emit wheelTurned(event);
 }
