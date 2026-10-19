@@ -5,6 +5,7 @@
 #include <QDialog>
 
 class QCheckBox;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QTreeWidget;
@@ -14,7 +15,8 @@ class HistoryDialog : public QDialog
 {
     Q_OBJECT
 public:
-    enum class Choice { None, CommitChanges, CompareTwo, CommitVsWorkingTree, WorkingTree };
+    // BranchChanges: what first() (a branch or tag) has that HEAD doesn't, from their merge base.
+    enum class Choice { None, CommitChanges, CompareTwo, CommitVsWorkingTree, WorkingTree, BranchChanges };
 
     HistoryDialog(const GitRepo &repo, QWidget *parent = nullptr);
 
@@ -35,6 +37,8 @@ private:
     QTreeWidget *m_list = nullptr;
     QLineEdit *m_filter = nullptr;
     QCheckBox *m_allRefs = nullptr;
+    QComboBox *m_source = nullptr; // history, branches and tags, or stashes
+    QPushButton *m_branchChanges = nullptr;
     QPushButton *m_showCommit = nullptr;
     QPushButton *m_compareTwo = nullptr;
     QPushButton *m_vsWorking = nullptr;

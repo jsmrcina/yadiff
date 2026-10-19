@@ -1,6 +1,7 @@
 #include "HistoryDialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -25,6 +26,11 @@ HistoryDialog::HistoryDialog(const GitRepo &repo, QWidget *parent) : QDialog(par
     m_filter->setPlaceholderText(tr("Filter by subject, author, hash or ref"));
     m_filter->setClearButtonEnabled(true);
     m_allRefs = new QCheckBox(tr("All branches"));
+    m_source = new QComboBox;
+    m_source->addItem(tr("History"));
+    m_source->addItem(tr("Branches and tags"));
+    m_source->addItem(tr("Stashes"));
+    m_source->setToolTip(tr("What to list: the commit history, the tips of branches and tags, or stashes"));
 
     m_list = new QTreeWidget;
     m_list->setHeaderLabels({tr("Commit"), tr("Subject"), tr("Author"), tr("Date")});
@@ -45,18 +51,23 @@ HistoryDialog::HistoryDialog(const GitRepo &repo, QWidget *parent) : QDialog(par
     m_compareTwo = new QPushButton(tr("Compare the two"));
     m_vsWorking = new QPushButton(tr("Compare with working tree"));
     auto *working = new QPushButton(tr("Working tree changes"));
+    m_branchChanges = new QPushButton(tr("Changes since HEAD"));
+    m_branchChanges->setToolTip(tr("What the branch has that HEAD doesn't: the branch against its merge base with HEAD"));
+    m_branchChanges->setVisible(false);
     m_more = new QPushButton(tr("Load more"));
     m_vsWorking->setVisible(!repo.isBare());
     working->setVisible(!repo.isBare());
     m_showCommit->setDefault(true);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
+    buttons->addButton(m_branchChanges, QDialogButtonBox::ActionRole);
     buttons->addButton(m_showCommit, QDialogButtonBox::ActionRole);
     buttons->addButton(m_compareTwo, QDialogButtonBox::ActionRole);
     buttons->addButton(m_vsWorking, QDialogButtonBox::ActionRole);
     buttons->addButton(working, QDialogButtonBox::ActionRole);
 
     auto *top = new QHBoxLayout;
+    top->addWidget(m_source);
     top->addWidget(m_filter, 1);
     top->addWidget(m_allRefs);
     auto *bottom = new QHBoxLayout;
@@ -70,6 +81,13 @@ HistoryDialog::HistoryDialog(const GitRepo &repo, QWidget *parent) : QDialog(par
 
     connect(m_filter, &QLineEdit::textChanged, this, &HistoryDialog::applyFilter);
     connect(m_allRefs, &QCheckBox::toggled, this, [this] { load(false); });
+    connect(m_source, &QComboBox::currentIndexChanged, this, [this](int source) {
+        m_allRefs->setVisible(source == 0);
+        m_branchChanges->setVisible(source == 1 && m_repo.hasHead());
+        m_showCommit->setText(source == 2 ? tr("Show stash") : tr("Show commit's changes"));
+        load(false);
+    });
+    connect(m_branchChanges, &QPushButton::clicked, this, [this] { finish(Choice::BranchChanges); });
     connect(m_more, &QPushButton::clicked, this, [this] { load(true); });
     connect(m_list, &QTreeWidget::itemSelectionChanged, this, &HistoryDialog::updateButtons);
     connect(m_list, &QTreeWidget::itemDoubleClicked, this, [this] { finish(Choice::CommitChanges); });
@@ -89,7 +107,10 @@ void HistoryDialog::load(bool more)
 {
     QString error;
     const int skip = more ? int(m_commits.size()) : 0;
-    const QVector<CommitInfo> page = m_repo.log(kPageSize, skip, m_allRefs->isChecked(), &error);
+    const int source = m_source->currentIndex();
+    const QVector<CommitInfo> page = source == 1 ? m_repo.refTips(&error)
+                                     : source == 2 ? m_repo.stashes(&error)
+                                                   : m_repo.log(kPageSize, skip, m_allRefs->isChecked(), &error);
     if (!error.isEmpty()) {
         QMessageBox::warning(this, tr("Compare commits"), tr("git log failed:\n%1").arg(error));
         return;
@@ -111,7 +132,7 @@ void HistoryDialog::load(bool more)
         item->setFont(0, mono);
         m_commits.push_back(c);
     }
-    m_more->setEnabled(page.size() == kPageSize);
+    m_more->setEnabled(source == 0 && page.size() == kPageSize);
     applyFilter();
     updateButtons();
 }
@@ -146,6 +167,7 @@ void HistoryDialog::updateButtons()
     m_showCommit->setEnabled(n == 1);
     m_vsWorking->setEnabled(n == 1);
     m_compareTwo->setEnabled(n == 2);
+    m_branchChanges->setEnabled(n == 1);
 }
 
 void HistoryDialog::finish(Choice c)

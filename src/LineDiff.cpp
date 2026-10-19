@@ -333,4 +333,55 @@ FileDiff build(const QStringList &oldLines, const QStringList &newLines, const A
     return d;
 }
 
+// ---- Partial changes (line staging) ----------------------------------------
+
+QList<QByteArray> splitKeepingEnds(const QByteArray &data)
+{
+    QList<QByteArray> lines;
+    qsizetype start = 0;
+    while (start < data.size()) {
+        const qsizetype nl = data.indexOf('\n', start);
+        const qsizetype end = nl < 0 ? data.size() : nl + 1;
+        lines << data.mid(start, end - start);
+        start = end;
+    }
+    return lines;
+}
+
+QList<QByteArray> applyPart(const QList<QByteArray> &from, const QList<QByteArray> &to, const QSet<int> &drop,
+                            const QSet<int> &take)
+{
+    // Latin-1 maps bytes one to one, so equal strings mean equal bytes. The final "\n"
+    // is left out, so that a missing newline at the end doesn't make the last line differ.
+    QStringList a, b;
+    auto key = [](const QByteArray &l) { return QString::fromLatin1(l.endsWith('\n') ? l.chopped(1) : l); };
+    for (const QByteArray &l : from)
+        a << key(l);
+    for (const QByteArray &l : to)
+        b << key(l);
+    const auto [ia, ib] = lineIds(a, b);
+    Alignment al = myers(ia, ib);
+    al.push_back({int(from.size()), int(to.size())}); // sentinel: the end of both
+
+    QList<QByteArray> out;
+    int fi = 0, ti = 0;
+    for (const Match &m : std::as_const(al)) {
+        for (; fi < m.first; ++fi)
+            if (!drop.contains(fi + 1))
+                out << from[fi];
+        for (; ti < m.second; ++ti)
+            if (take.contains(ti + 1))
+                out << to[ti];
+        if (m.first < from.size())
+            out << from[m.first];
+        fi = m.first + 1;
+        ti = m.second + 1;
+    }
+    // A kept last line without a newline that is now followed by more lines needs one.
+    for (qsizetype i = 0; i + 1 < out.size(); ++i)
+        if (!out[i].endsWith('\n'))
+            out[i] += out[i + 1].endsWith("\r\n") ? "\r\n" : "\n";
+    return out;
+}
+
 } // namespace LineDiff

@@ -3,6 +3,7 @@
 #include "DiffModel.h"
 
 #include <QByteArray>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -184,6 +185,16 @@ public:
     // left revision (or the index), deletes files the left side doesn't have (to the
     // trash when possible), and in directory comparisons copies the left file over.
     bool revert(const QVector<FileChange> &changes, const Comparison &cmp, QString *error) const;
+    // Line staging, on one file of a working-tree comparison. `oldLines` and `newLines`
+    // are the selected lines of the shown diff (removed lines by old number, added lines
+    // by new number, 1-based). Stage puts them in the index, Unstage takes them out of it
+    // (staged files), and Discard reverts them in the working tree.
+    enum class LineOp { Stage, Unstage, Discard };
+    bool applyLines(LineOp op, const FileChange &change, const Comparison &cmp, const QSet<int> &oldLines,
+                    const QSet<int> &newLines, QString *error) const;
+    // Which line operations work on this change (empty for none).
+    QVector<LineOp> lineOps(const FileChange &change, const Comparison &cmp) const;
+
     // `git blame` for one side of a change, one entry per line (empty when that side has
     // no history: an untracked file, a directory comparison, ...).
     QVector<BlameLine> blame(const FileChange &change, const Comparison &cmp, bool newSide) const;
@@ -193,6 +204,18 @@ public:
 
     // Recent commits, newest first. `allRefs` includes every branch and tag.
     QVector<CommitInfo> log(int max, int skip, bool allRefs, QString *error) const;
+    // The commits in from..to, oldest first (only those touching `paths`, when given).
+    QVector<CommitInfo> commitsInRange(const QString &from, const QString &to, int max,
+                                       const QStringList &paths = {}) const;
+    // Commits around `oid` for stepping through history, oldest first: its first-parent
+    // ancestors (up to `max`, `oid` included) and the commits from it to HEAD. *index is
+    // where `oid` is in the list.
+    QVector<CommitInfo> commitNeighbours(const QString &oid, int max, int *index) const;
+    QString commitMessage(const QString &oid) const;
+    // The tip commits of branches, remote branches and tags, newest first (refs are in `refs`).
+    QVector<CommitInfo> refTips(QString *error) const;
+    // Stashes, newest first; `refs` is the stash's name (stash@{0}).
+    QVector<CommitInfo> stashes(QString *error) const;
 
 private:
     GitRepo(QString root, bool bare, bool noRepo = false) : m_root(std::move(root)), m_bare(bare), m_noRepo(noRepo) {}

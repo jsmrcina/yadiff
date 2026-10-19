@@ -208,6 +208,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     auto *rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(0);
+    rightLayout->addWidget(createCommitBar());
     rightLayout->addWidget(m_pane, 1);
     rightLayout->addWidget(m_search);
 
@@ -247,6 +248,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     });
     connect(m_pane, &DiffPane::copyChangeRequested, this, &MainWindow::copyChange);
     connect(m_pane, &DiffPane::blameCommitRequested, this, &MainWindow::openBlameCommit);
+    connect(m_pane, &DiffPane::lineOpRequested, this, &MainWindow::applyLineOp);
     connect(m_pane, &DiffPane::hint, this, [this](const QString &text) { statusBar()->showMessage(text, 10000); });
     connect(m_pane, &DiffPane::alignRequested, this, [this](int oldLine, int newLine) {
         if (m_shownIndex < 0 || m_shownIndex >= m_changes.size() || !maybeKeepEdits())
@@ -505,6 +507,15 @@ void MainWindow::createActions()
     });
     m_copyLeftAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_Left));
     editMenu->addSeparator();
+    m_stageLinesAct = editMenu->addAction(tr("Stage current change or selected lines"), this,
+                                          [this] { applyLineOp(GitRepo::LineOp::Stage, m_pane->linesForLineOp()); });
+    m_stageLinesAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S));
+    m_unstageLinesAct = editMenu->addAction(tr("Unstage current change or selected lines"), this,
+                                            [this] { applyLineOp(GitRepo::LineOp::Unstage, m_pane->linesForLineOp()); });
+    m_unstageLinesAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_S));
+    m_discardLinesAct = editMenu->addAction(tr("Discard current change or selected lines\u2026"), this,
+                                            [this] { applyLineOp(GitRepo::LineOp::Discard, m_pane->linesForLineOp()); });
+    editMenu->addSeparator();
     m_nextAct = editMenu->addAction(QIcon::fromTheme(QStringLiteral("go-down"), style()->standardIcon(QStyle::SP_ArrowDown)),
                                     tr("Ne&xt change"), this, &MainWindow::nextChange);
     m_nextAct->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Down));
@@ -516,6 +527,12 @@ void MainWindow::createActions()
     QAction *nextFile = editMenu->addAction(tr("Next file"), this, [this] { m_files->selectNext(); });
     nextFile->setShortcut(QKeySequence(Qt::ALT | Qt::Key_PageDown));
     QAction *prevFile = editMenu->addAction(tr("Previous file"), this, [this] { m_files->selectPrev(); });
+    m_nextCommitAct = editMenu->addAction(tr("Next commit"), this, [this] { stepCommit(1); });
+    m_nextCommitAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_PageDown));
+    m_nextCommitAct->setStatusTip(tr("Step to the next (newer) commit of the range or history"));
+    m_prevCommitAct = editMenu->addAction(tr("Previous commit"), this, [this] { stepCommit(-1); });
+    m_prevCommitAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_PageUp));
+    m_prevCommitAct->setStatusTip(tr("Step to the previous (older) commit of the range or history"));
     prevFile->setShortcut(QKeySequence(Qt::ALT | Qt::Key_PageUp));
 
     // ---- View --------------------------------------------------------------
@@ -1021,6 +1038,134 @@ void MainWindow::updateModeUi()
     // Revert writes the right side: the working tree (unless swapped) or a compared folder.
     m_revertAct->setEnabled((workingTree && !m_cmp.reversed) || m_cmp.mode == Comparison::Mode::Paths);
     syncOptionControls();
+    updateCommitBar();
+}
+
+// ---- Stepping through commits -------------------------------------------------
+
+QWidget *MainWindow::createCommitBar()
+{
+    m_commitBar = new QWidget;
+    auto *layout = new QHBoxLayout(m_commitBar);
+    layout->setContentsMargins(6, 3, 6 , 3);
+    m_commitPrev = new QToolButton;
+    m_commitPrev->setArrowType(Qt::LeftArrow);
+    m_commitPrev->setAutoRaise(true);
+    m_commitNext = new QToolButton;
+    m_commitNext->setArrowType(Qt::RightArrow);
+    m_commitNext->setAutoRaise(true);
+    m_commitCombo = new QComboBox;
+    m_commitCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_commitCombo->setMinimumContentsLength(40);
+    m_commitInfo = new QLabel;
+    m_commitInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_commitInfo->setMinimumWidth(50);
+    layout->addWidget(new QLabel(tr("Commit:")));
+    layout->addWidget(m_commitPrev);
+    layout->addWidget(m_commitCombo);
+    layout->addWidget(m_commitNext);
+    layout->addWidget(m_commitInfo, 1);
+    m_commitBar->hide();
+    connect(m_commitPrev, &QToolButton::clicked, this, [this] { stepCommit(-1); });
+    connect(m_commitNext, &QToolButton::clicked, this, [this] { stepCommit(1); });
+    connect(m_commitCombo, &QComboBox::activated, this, [this](int item) {
+        showCommitStep(m_commitCombo->itemData(item).toInt());
+    });
+    return m_commitBar;
+}
+
+void MainWindow::updateCommitBar()
+{
+    if (m_steppingCommits)
+        return; // the list stays while stepping through it
+    m_commitList.clear();
+    m_commitIndex = -1;
+    m_commitRangeMode = false;
+    m_rangeCmp = m_cmp;
+    const bool revisions = m_repo.isRepository() && m_cmp.mode == Comparison::Mode::Revisions && !m_cmp.rev2.isEmpty();
+    if (revisions) {
+        // A range of several commits steps through them; a single commit through its neighbours.
+        QByteArray parent;
+        const bool hasParent = m_repo.run({QStringLiteral("rev-parse"), QStringLiteral("--verify"), QStringLiteral("--quiet"),
+                                           m_cmp.rev2 + QStringLiteral("^1")},
+                                          &parent, nullptr);
+        const bool single = hasParent ? QString::fromUtf8(parent.trimmed()) == m_cmp.rev1 : m_cmp.rev1 == m_repo.emptyTree();
+        if (single) {
+            m_commitList = m_repo.commitNeighbours(m_cmp.rev2, 300, &m_commitIndex);
+        } else if (m_repo.run({QStringLiteral("merge-base"), QStringLiteral("--is-ancestor"), m_cmp.rev1, m_cmp.rev2}, nullptr,
+                              nullptr)) {
+            m_commitList = m_repo.commitsInRange(m_cmp.rev1, m_cmp.rev2, 2000, m_cmp.paths);
+            m_commitRangeMode = true;
+            if (m_commitList.size() < 2)
+                m_commitList.clear();
+        }
+    }
+    m_commitCombo->clear();
+    if (m_commitRangeMode && !m_commitList.isEmpty())
+        m_commitCombo->addItem(tr("All %n commits", nullptr, int(m_commitList.size())), -1);
+    for (int i = 0; i < m_commitList.size(); ++i)
+        m_commitCombo->addItem(QStringLiteral("%1  %2").arg(m_commitList[i].shortOid, m_commitList[i].subject), i);
+    m_commitBar->setVisible(!m_commitList.isEmpty());
+    syncCommitBar();
+}
+
+void MainWindow::syncCommitBar()
+{
+    if (m_commitList.isEmpty())
+        return;
+    m_commitCombo->setCurrentIndex(m_commitCombo->findData(m_commitIndex));
+    const int first = m_commitRangeMode ? -1 : 0;
+    m_commitPrev->setEnabled(m_commitIndex > first);
+    m_commitNext->setEnabled(m_commitIndex < m_commitList.size() - 1);
+    m_commitPrev->setToolTip(tr("Previous (older) commit (Ctrl+Alt+PgUp)"));
+    m_commitNext->setToolTip(tr("Next (newer) commit (Ctrl+Alt+PgDown)"));
+    m_prevCommitAct->setEnabled(m_commitPrev->isEnabled());
+    m_nextCommitAct->setEnabled(m_commitNext->isEnabled());
+    if (m_commitIndex < 0) {
+        m_commitInfo->setText(tr("%1 to %2").arg(m_rangeCmp.rev1Name, m_rangeCmp.rev2Name));
+        m_commitInfo->setToolTip(QString());
+        return;
+    }
+    const CommitInfo &c = m_commitList[m_commitIndex];
+    m_commitInfo->setText(QStringLiteral("%1 · %2 · %3").arg(c.author, c.date, QString::number(m_commitIndex + 1) + u'/'
+                                                                                + QString::number(m_commitList.size())));
+    m_commitInfo->setToolTip(QStringLiteral("<pre>%1</pre>").arg(m_repo.commitMessage(c.oid).toHtmlEscaped()));
+}
+
+void MainWindow::stepCommit(int delta)
+{
+    if (m_commitList.isEmpty())
+        return;
+    const int first = m_commitRangeMode ? -1 : 0;
+    const int target = std::clamp(m_commitIndex + delta, first, int(m_commitList.size()) - 1);
+    if (target != m_commitIndex)
+        showCommitStep(target);
+}
+
+void MainWindow::showCommitStep(int index)
+{
+    if (index == m_commitIndex || !maybeKeepEdits()) {
+        syncCommitBar();
+        return;
+    }
+    Comparison c = m_rangeCmp;
+    if (index >= 0) {
+        const CommitInfo &commit = m_commitList[index];
+        c.rev1 = commit.parents.isEmpty() ? m_repo.emptyTree() : commit.parents.first();
+        c.rev1Name = commit.parents.isEmpty() ? tr("(no parent)") : commit.shortOid + u'^';
+        c.rev2 = commit.oid;
+        c.rev2Name = commit.shortOid;
+        c.title = QStringLiteral("%1 %2").arg(commit.shortOid, commit.subject);
+        // Review comments belong to the whole pull request, not to one of its commits.
+        c.prNumber = 0;
+        c.prHost.clear();
+    }
+    m_commitIndex = index;
+    m_steppingCommits = true;
+    m_diffCache.clear();
+    setComparison(c);
+    m_steppingCommits = false;
+    syncCommitBar();
 }
 
 void MainWindow::updateViewToggle()
@@ -1044,6 +1189,48 @@ void MainWindow::updateEditActions()
     m_discardAct->setEnabled(editing);
     m_copyRightAct->setEnabled(m_pane->canCopyTo(true) && m_pane->currentChange() >= 0);
     m_copyLeftAct->setEnabled(m_pane->canCopyTo(false) && m_pane->currentChange() >= 0);
+    m_stageLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Stage));
+    m_unstageLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Unstage));
+    m_discardLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Discard));
+}
+
+void MainWindow::applyLineOp(GitRepo::LineOp op, const QVector<int> &lines)
+{
+    if (m_shownIndex < 0 || m_shownIndex >= m_changes.size() || !m_pane->canLineOp(op))
+        return;
+    if (lines.isEmpty()) {
+        statusBar()->showMessage(tr("Select changed lines, or move to a change"), 3000);
+        return;
+    }
+    const FileChange fc = m_changes[m_shownIndex];
+    QSet<int> oldLines, newLines;
+    for (int i : lines) {
+        const DiffLine &l = m_pane->diff().lines.value(i);
+        if (l.kind == LineKind::Removed)
+            oldLines.insert(l.oldNo);
+        else if (l.kind == LineKind::Added)
+            newLines.insert(l.newNo);
+    }
+    const int count = int(oldLines.size() + newLines.size());
+    if (op == GitRepo::LineOp::Discard
+        && QMessageBox::question(this, tr("Discard"),
+                                 tr("Discard %n changed line(s) in %1? The working-tree file is rewritten; this "
+                                    "can't be undone.",
+                                    nullptr, count)
+                                     .arg(fc.path))
+               != QMessageBox::Yes)
+        return;
+    QString error;
+    if (!m_repo.applyLines(op, fc, m_cmp, oldLines, newLines, &error)) {
+        QMessageBox::warning(this, tr("Line staging"), error);
+        return;
+    }
+    const QString what = op == GitRepo::LineOp::Stage     ? tr("Staged %n line(s)", nullptr, count)
+                         : op == GitRepo::LineOp::Unstage ? tr("Unstaged %n line(s)", nullptr, count)
+                                                          : tr("Discarded %n line(s)", nullptr, count);
+    m_diffCache.clear();
+    reload();
+    statusBar()->showMessage(tr("%1 of %2").arg(what, fc.path), 4000);
 }
 
 void MainWindow::updateSyntaxCombo()
@@ -1423,6 +1610,7 @@ void MainWindow::showFile(int index)
             view.threads = threadsFor(fc);
             view.oldBlame = r.oldBlame;
             view.newBlame = r.newBlame;
+            view.lineOps = m_repo.lineOps(fc, m_cmp);
             m_pane->setLanguageOverride(m_syntaxBySuffix.value(QFileInfo(fc.path).suffix().toLower()));
             m_pane->setFile(view);
             if (wasEditing)
@@ -1636,6 +1824,23 @@ void MainWindow::openHistory()
         c.rev1 = dlg.first().oid;
         c.rev1Name = dlg.first().shortOid;
         break;
+    case HistoryDialog::Choice::BranchChanges: {
+        const CommitInfo tip = dlg.first();
+        QString error;
+        const auto base = m_repo.mergeBase(QStringLiteral("HEAD"), tip.oid, &error);
+        if (!base) {
+            QMessageBox::warning(this, tr("Compare commits"), tr("No merge base with HEAD:\n%1").arg(error));
+            return;
+        }
+        const QString name = tip.refs.split(QStringLiteral(", ")).value(0).remove(QStringLiteral("tag: "));
+        c.mode = Comparison::Mode::Revisions;
+        c.rev1 = *base;
+        c.rev1Name = tr("merge base %1").arg(base->left(7));
+        c.rev2 = tip.oid;
+        c.rev2Name = name.isEmpty() ? tip.shortOid : name;
+        c.title = tr("Changes on %1 since HEAD").arg(c.rev2Name);
+        break;
+    }
     }
     c.paths = m_cmp.paths;
     setComparison(c);

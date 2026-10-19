@@ -596,6 +596,74 @@ private slots:
         QCOMPARE(fd.lines[r].pair, s);
         QVERIFY(fd.lines[r].anchored && fd.lines[s].anchored);
     }
+
+    void stagesSingleLines()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "a\nb\nc\nd\ne\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/f.txt"), "a\nB\nc\nd\nx\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        auto show = [&](const QString &spec) {
+            QByteArray out;
+            repo->run({QStringLiteral("show"), spec}, &out, &error);
+            return out;
+        };
+        Comparison cmp; // staged and unstaged, unstaged against HEAD
+        FileChange fc = repo->listChanges(cmp, &error).value(0);
+        QCOMPARE(fc.group, ChangeGroup::Unstaged);
+        QCOMPARE(repo->lineOps(fc, cmp), (QVector<GitRepo::LineOp>{GitRepo::LineOp::Stage, GitRepo::LineOp::Discard}));
+
+        // Stage only the added "x" (new line 5): the index keeps e and gains x after d.
+        QVERIFY2(repo->applyLines(GitRepo::LineOp::Stage, fc, cmp, {}, {5}, &error), qPrintable(error));
+        QCOMPARE(show(QStringLiteral(":0:f.txt")), QByteArray("a\nb\nc\nd\ne\nx\n"));
+        // Then the removal of e (old line 5, numbered in HEAD).
+        QVERIFY(repo->applyLines(GitRepo::LineOp::Stage, fc, cmp, {5}, {}, &error));
+        QCOMPARE(show(QStringLiteral(":0:f.txt")), QByteArray("a\nb\nc\nd\nx\n"));
+
+        // Unstage the x again, from the staged section (HEAD -> index, x is index line 5).
+        const QVector<FileChange> both = repo->listChanges(cmp, &error);
+        FileChange staged;
+        for (const FileChange &c : both)
+            if (c.group == ChangeGroup::Staged)
+                staged = c;
+        QCOMPARE(repo->lineOps(staged, cmp), (QVector<GitRepo::LineOp>{GitRepo::LineOp::Unstage}));
+        QVERIFY(repo->applyLines(GitRepo::LineOp::Unstage, staged, cmp, {}, {5}, &error));
+        QCOMPARE(show(QStringLiteral(":0:f.txt")), QByteArray("a\nb\nc\nd\n"));
+
+        // Discard the b -> B edit in the working tree only.
+        QVERIFY(repo->applyLines(GitRepo::LineOp::Discard, fc, cmp, {2}, {2}, &error));
+        QFile f(d + QStringLiteral("/f.txt"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("a\nb\nc\nd\nx\n"));
+        f.close();
+
+        // A new file, staged line by line; unstaging every line takes it out of the index.
+        write(d + QStringLiteral("/n.txt"), "1\n2\n3");
+        const QVector<FileChange> all = repo->listChanges(cmp, &error);
+        FileChange untracked;
+        for (const FileChange &c : all)
+            if (c.status == u'?')
+                untracked = c;
+        QVERIFY(repo->applyLines(GitRepo::LineOp::Stage, untracked, cmp, {}, {1, 3}, &error));
+        QCOMPARE(show(QStringLiteral(":0:n.txt")), QByteArray("1\n3"));
+        FileChange added = untracked;
+        added.status = u'A';
+        added.group = ChangeGroup::Staged;
+        QVERIFY2(repo->applyLines(GitRepo::LineOp::Unstage, added, cmp, {}, {1, 2}, &error), qPrintable(error));
+        QByteArray ls;
+        repo->run({QStringLiteral("ls-files"), QStringLiteral("n.txt")}, &ls, &error);
+        QVERIFY(ls.isEmpty());
+
+        // Revisions can't be staged into.
+        Comparison rev;
+        rev.mode = Comparison::Mode::Revisions;
+        QVERIFY(repo->lineOps(fc, rev).isEmpty());
+    }
 };
 
 QTEST_APPLESS_MAIN(TestGitRepo)

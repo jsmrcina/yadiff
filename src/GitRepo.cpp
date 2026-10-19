@@ -16,6 +16,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 
+#include <algorithm>
 #include <functional>
 
 namespace {
@@ -958,16 +959,12 @@ QString GitRepo::diskPathPhysical(const FileChange &fc, const Comparison &cmp, b
     return !p.isEmpty() && QFileInfo(p).isFile() ? p : QString();
 }
 
-QVector<CommitInfo> GitRepo::log(int max, int skip, bool allRefs, QString *error) const
+namespace {
+const QString kLogFormat = QStringLiteral("--format=%H%x1f%h%x1f%an%x1f%ad%x1f%D%x1f%s%x1f%P%x1e");
+const QString kLogDate = QStringLiteral("--date=format:%Y-%m-%d %H:%M");
+
+QVector<CommitInfo> parseLog(const QByteArray &out)
 {
-    QStringList args{QStringLiteral("log"), QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
-                     QStringLiteral("--format=%H%x1f%h%x1f%an%x1f%ad%x1f%D%x1f%s%x1f%P%x1e"),
-                     QStringLiteral("-n"), QString::number(max), QStringLiteral("--skip=") + QString::number(skip)};
-    if (allRefs)
-        args << QStringLiteral("--all");
-    QByteArray out;
-    if (!run(args, &out, error))
-        return {};
     QVector<CommitInfo> result;
     for (const QByteArray &rec : out.split('\x1e')) {
         const QList<QByteArray> f = rec.trimmed().split('\x1f');
@@ -984,6 +981,97 @@ QVector<CommitInfo> GitRepo::log(int max, int skip, bool allRefs, QString *error
         result.push_back(c);
     }
     return result;
+}
+} // namespace
+
+QVector<CommitInfo> GitRepo::log(int max, int skip, bool allRefs, QString *error) const
+{
+    QStringList args{QStringLiteral("log"), kLogDate, kLogFormat, QStringLiteral("-n"), QString::number(max),
+                     QStringLiteral("--skip=") + QString::number(skip)};
+    if (allRefs)
+        args << QStringLiteral("--all");
+    QByteArray out;
+    if (!run(args, &out, error))
+        return {};
+    return parseLog(out);
+}
+
+QVector<CommitInfo> GitRepo::commitsInRange(const QString &from, const QString &to, int max, const QStringList &paths) const
+{
+    QByteArray out;
+    QStringList args{QStringLiteral("log"), kLogDate, kLogFormat, QStringLiteral("--topo-order"), QStringLiteral("-n"),
+                     QString::number(max), from + QStringLiteral("..") + to};
+    if (!paths.isEmpty()) {
+        args << QStringLiteral("--");
+        for (const QString &p : paths)
+            args << QStringLiteral(":(top,literal)") + p;
+    }
+    if (!run(args, &out, nullptr))
+        return {};
+    QVector<CommitInfo> list = parseLog(out);
+    std::reverse(list.begin(), list.end());
+    return list;
+}
+
+QVector<CommitInfo> GitRepo::commitNeighbours(const QString &oid, int max, int *index) const
+{
+    // Older: the first-parent ancestors. Newer: commits on the way from it to HEAD.
+    QByteArray out;
+    run({QStringLiteral("log"), kLogDate, kLogFormat, QStringLiteral("--first-parent"), QStringLiteral("-n"),
+         QString::number(max), oid},
+        &out, nullptr);
+    QVector<CommitInfo> older = parseLog(out);
+    std::reverse(older.begin(), older.end());
+    QVector<CommitInfo> newer;
+    if (hasHead()
+        && run({QStringLiteral("merge-base"), QStringLiteral("--is-ancestor"), oid, QStringLiteral("HEAD")}, nullptr, nullptr)) {
+        out.clear();
+        run({QStringLiteral("log"), kLogDate, kLogFormat, QStringLiteral("--first-parent"), QStringLiteral("--ancestry-path"),
+             QStringLiteral("-n"), QString::number(max), oid + QStringLiteral("..HEAD")},
+            &out, nullptr);
+        newer = parseLog(out);
+        std::reverse(newer.begin(), newer.end());
+    }
+    if (index)
+        *index = int(older.size()) - 1;
+    return older + newer;
+}
+
+QString GitRepo::commitMessage(const QString &oid) const
+{
+    QByteArray out;
+    run({QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--format=%B"), oid}, &out, nullptr);
+    return QString::fromUtf8(out).trimmed();
+}
+
+QVector<CommitInfo> GitRepo::refTips(QString *error) const
+{
+    QByteArray names;
+    if (!run({QStringLiteral("for-each-ref"), QStringLiteral("--sort=-committerdate"), QStringLiteral("--format=%(refname)"),
+              QStringLiteral("refs/heads"), QStringLiteral("refs/remotes"), QStringLiteral("refs/tags")},
+             &names, error))
+        return {};
+    QStringList refs;
+    for (const QByteArray &n : names.split('\n'))
+        if (!n.isEmpty() && !n.endsWith("/HEAD"))
+            refs << QString::fromUtf8(n) + QStringLiteral("^{commit}");
+    if (refs.isEmpty())
+        return {};
+    QByteArray out;
+    if (!run(QStringList{QStringLiteral("log"), kLogDate, kLogFormat, QStringLiteral("--no-walk=unsorted")} + refs, &out,
+             error))
+        return {};
+    return parseLog(out);
+}
+
+QVector<CommitInfo> GitRepo::stashes(QString *error) const
+{
+    QByteArray out;
+    if (!run({QStringLiteral("stash"), QStringLiteral("list"), kLogDate,
+              QStringLiteral("--format=%H%x1f%h%x1f%an%x1f%ad%x1f%gd%x1f%s%x1f%P%x1e")},
+             &out, error))
+        return {};
+    return parseLog(out);
 }
 
 std::optional<QByteArray> GitRepo::fileContent(const FileChange &fc, const Comparison &cmp, bool newSide,
@@ -1109,6 +1197,112 @@ bool GitRepo::unstage(const QVector<FileChange> &changes, QString *error) const
         return run(QStringList{QStringLiteral("restore"), QStringLiteral("--staged"), QStringLiteral("--")} + paths, nullptr, error);
     return run(QStringList{QStringLiteral("rm"), QStringLiteral("--cached"), QStringLiteral("-q"), QStringLiteral("--")} + paths,
                nullptr, error);
+}
+
+QVector<GitRepo::LineOp> GitRepo::lineOps(const FileChange &fc, const Comparison &cmp) const
+{
+    if (m_noRepo || m_bare || cmp.mode != Comparison::Mode::WorkingTree || cmp.reversed || fc.status == u'='
+        || fc.status == u'U' || fc.status == u'T')
+        return {};
+    if (fc.group == ChangeGroup::Staged && !cmp.allChanges)
+        return {LineOp::Unstage};
+    if (fc.status == u'D')
+        return {LineOp::Stage}; // nothing on disk to discard into
+    return {LineOp::Stage, LineOp::Discard};
+}
+
+bool GitRepo::applyLines(LineOp op, const FileChange &fc, const Comparison &cmp, const QSet<int> &oldLines,
+                         const QSet<int> &newLines, QString *error) const
+{
+    auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (!lineOps(fc, cmp).contains(op))
+        return fail(QStringLiteral("Lines of this file can't be changed that way here"));
+    auto blob = [&](const QString &spec) -> std::optional<QByteArray> {
+        QByteArray out;
+        if (!run({QStringLiteral("cat-file"), QStringLiteral("-e"), spec}, nullptr, nullptr)
+            || !run({QStringLiteral("cat-file"), QStringLiteral("blob"), spec}, &out, nullptr))
+            return std::nullopt;
+        return out;
+    };
+    const std::optional<QByteArray> index = blob(QStringLiteral(":0:") + fc.path);
+    const std::optional<QByteArray> head = hasHead() ? blob(QStringLiteral("HEAD:") + fc.oldPath) : std::nullopt;
+    const QString diskFile = m_root + u'/' + fc.path;
+    std::optional<QByteArray> work;
+    if (QFile f(diskFile); f.open(QIODevice::ReadOnly))
+        work = f.readAll();
+
+    using LineDiff::splitKeepingEnds;
+    const QList<QByteArray> I = splitKeepingEnds(index.value_or(QByteArray()));
+    const QList<QByteArray> H = splitKeepingEnds(head.value_or(QByteArray()));
+    const QList<QByteArray> W = splitKeepingEnds(work.value_or(QByteArray()));
+    // The shown diff's old side: the index, or HEAD (the default, and "all changes").
+    const bool oldIsIndex = op != LineOp::Unstage && !cmp.allChanges && !cmp.unstagedAgainstHead && fc.status != u'?';
+    const QList<QByteArray> &B = op == LineOp::Unstage ? H : oldIsIndex ? I : H;
+
+    auto writeIndex = [&](const QList<QByteArray> &lines) {
+        const QByteArray content = lines.join();
+        QByteArray sha;
+        QString err;
+        if (!run({QStringLiteral("hash-object"), QStringLiteral("-w"), QStringLiteral("--stdin"),
+                  QStringLiteral("--path=") + fc.path},
+                 &sha, &err, content))
+            return fail(err);
+        QString mode = QStringLiteral("100644");
+        QByteArray ls;
+        if (run({QStringLiteral("ls-files"), QStringLiteral("-s"), QStringLiteral("--"), QStringLiteral(":(top,literal)") + fc.path},
+                &ls, nullptr)
+            && !ls.trimmed().isEmpty())
+            mode = QString::fromUtf8(ls.left(ls.indexOf(' ')));
+        else if (QFileInfo(diskFile).isExecutable())
+            mode = QStringLiteral("100755");
+        if (!run({QStringLiteral("update-index"), QStringLiteral("--add"), QStringLiteral("--cacheinfo"),
+                  mode + u',' + QString::fromUtf8(sha.trimmed()) + u',' + fc.path},
+                 nullptr, &err))
+            return fail(err);
+        return true;
+    };
+
+    switch (op) {
+    case LineOp::Stage: {
+        // Removed lines are numbered on the shown old side; find them in the index.
+        QSet<int> drop;
+        if (&B == &I) {
+            drop = oldLines;
+        } else {
+            QStringList h, i;
+            for (const QByteArray &l : H)
+                h << QString::fromLatin1(l);
+            for (const QByteArray &l : I)
+                i << QString::fromLatin1(l);
+            const auto [ih, ii] = LineDiff::lineIds(h, i);
+            for (const LineDiff::Match &m : LineDiff::myers(ih, ii))
+                if (oldLines.contains(m.first + 1))
+                    drop.insert(m.second + 1); // lines already gone from the index stay gone
+        }
+        return writeIndex(LineDiff::applyPart(I, W, drop, newLines));
+    }
+    case LineOp::Unstage: {
+        const QList<QByteArray> result = LineDiff::applyPart(I, H, newLines, oldLines);
+        if (!head && result.isEmpty()) // nothing left of a new file: take it out of the index
+            return run({QStringLiteral("update-index"), QStringLiteral("--force-remove"), QStringLiteral("--"), fc.path},
+                       nullptr, error); // the working-tree file stays
+        return writeIndex(result);
+    }
+    case LineOp::Discard: {
+        if (!work)
+            return fail(QStringLiteral("Could not read %1").arg(fc.path));
+        const QByteArray content = LineDiff::applyPart(W, B, newLines, oldLines).join();
+        QFile f(diskFile);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(content) != content.size())
+            return fail(f.errorString());
+        return true;
+    }
+    }
+    return false;
 }
 
 namespace {

@@ -72,6 +72,11 @@ private:
     void createActions();
     void createToolBar();
     QWidget *createFilePanel();
+    QWidget *createCommitBar();
+    void updateCommitBar();
+    void syncCommitBar();
+    void stepCommit(int delta);
+    void showCommitStep(int index); // -1: the whole range
     void updateModeUi();
     void showFile(int index);
     void reloadCurrentFile();
@@ -136,6 +141,7 @@ private:
     bool saveEdits();
     void toggleEditing(bool on);
     void copyChange(int chunk, bool toNewSide);
+    void applyLineOp(GitRepo::LineOp op, const QVector<int> &lines);
 
     // Search.
     void runSearch();
@@ -240,6 +246,21 @@ private:
     QAction *m_discardAct = nullptr;
     QAction *m_copyRightAct = nullptr;
     QAction *m_copyLeftAct = nullptr;
+    // Stepping through commits: the commits of the range (or around one commit), and
+    // which one is shown (-1: the whole range, m_rangeCmp).
+    QWidget *m_commitBar = nullptr;
+    QToolButton *m_commitPrev = nullptr, *m_commitNext = nullptr;
+    QComboBox *m_commitCombo = nullptr;
+    QLabel *m_commitInfo = nullptr;
+    QVector<CommitInfo> m_commitList;
+    int m_commitIndex = -1;
+    bool m_commitRangeMode = false;
+    bool m_steppingCommits = false;
+    Comparison m_rangeCmp;
+    QAction *m_nextCommitAct = nullptr, *m_prevCommitAct = nullptr;
+    QAction *m_stageLinesAct = nullptr;
+    QAction *m_unstageLinesAct = nullptr;
+    QAction *m_discardLinesAct = nullptr;
     QAction *m_autoReloadAct = nullptr;
     QActionGroup *m_algoGroup = nullptr;
     QAction *m_ignoreSpaceChangeAct = nullptr;

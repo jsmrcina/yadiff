@@ -1366,6 +1366,120 @@ private slots:
             QVERIFY(!l.anchored);
         Settings::setDiffOptions(DiffOptions());
     }
+    void stagesTheCurrentChange()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/f.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("first")});
+        write(d + QStringLiteral("/f.txt"), "one\n2\n3\n4\n5\n6\n7\n8\n9\nten\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        MainWindow w(std::move(*repo), Comparison());
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *pane = w.findChild<DiffPane *>();
+        QVERIFY(pane->hasDiff());
+        QCOMPARE(pane->changeCount(), 2);
+        QAction *stage = action(w, QStringLiteral("Stage current change or selected lines"));
+        QVERIFY(stage->isEnabled());
+        QVERIFY(!action(w, QStringLiteral("Unstage current change or selected lines"))->isEnabled());
+        pane->goToChange(1);
+        stage->trigger();
+        QProcess p;
+        p.setWorkingDirectory(d);
+        p.start(QStringLiteral("git"), {QStringLiteral("show"), QStringLiteral(":0:f.txt")});
+        QVERIFY(p.waitForFinished());
+        QCOMPARE(p.readAllStandardOutput(), QByteArray("1\n2\n3\n4\n5\n6\n7\n8\n9\nten\n"));
+        // The file is now in both sections; the staged one can be unstaged.
+        auto *files = w.findChild<FileList *>();
+        QVERIFY(files);
+        bool unstageWorked = false;
+        for (int i = 0; i < 4 && !unstageWorked; ++i) {
+            files->selectIndex(i);
+            if (action(w, QStringLiteral("Unstage current change or selected lines"))->isEnabled()) {
+                QCOMPARE(pane->changeCount(), 1);
+                pane->goToChange(0);
+                action(w, QStringLiteral("Unstage current change or selected lines"))->trigger();
+                unstageWorked = true;
+            }
+        }
+        QVERIFY(unstageWorked);
+        p.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--cached"), QStringLiteral("--quiet")});
+        QVERIFY(p.waitForFinished());
+        QCOMPARE(p.exitCode(), 0); // nothing staged any more
+    }
+    void stepsThroughCommits()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        auto commit = [&](const char *file, const char *text, const QString &msg) {
+            write(d + u'/' + QLatin1String(file), text);
+            git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+            git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), msg});
+        };
+        commit("a.txt", "a\n", QStringLiteral("one"));
+        commit("b.txt", "b\n", QStringLiteral("two"));
+        commit("c.txt", "c\n", QStringLiteral("three"));
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.mode = Comparison::Mode::Revisions;
+        cmp.rev1 = *repo->resolveCommit(QStringLiteral("HEAD~2"), &error);
+        cmp.rev1Name = QStringLiteral("HEAD~2");
+        cmp.rev2 = *repo->resolveCommit(QStringLiteral("HEAD"), &error);
+        cmp.rev2Name = QStringLiteral("HEAD");
+        MainWindow w(std::move(*repo), cmp);
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *files = w.findChild<FileList *>();
+        auto count = [&] {
+            int n = 0;
+            while (files->selectIndex(n))
+                ++n;
+            files->selectIndex(0);
+            return n;
+        };
+        QCOMPARE(count(), 2); // b.txt and c.txt
+        QAction *next = action(w, QStringLiteral("Next commit"));
+        QAction *prev = action(w, QStringLiteral("Previous commit"));
+        QVERIFY(next->isEnabled());
+        QVERIFY(!prev->isEnabled()); // already showing the whole range
+        next->trigger();
+        QCOMPARE(count(), 1);
+        QVERIFY(w.windowTitle().contains(QStringLiteral("two")));
+        next->trigger();
+        QVERIFY(w.windowTitle().contains(QStringLiteral("three")));
+        QVERIFY(!next->isEnabled());
+        prev->trigger();
+        prev->trigger();
+        QCOMPARE(count(), 2); // back to the whole range
+        QVERIFY(!prev->isEnabled());
+
+        // A single commit steps through its neighbours, down to the root commit.
+        auto repo2 = GitRepo::open(d, &error);
+        Comparison one;
+        one.mode = Comparison::Mode::Revisions;
+        one.rev1 = *repo2->resolveCommit(QStringLiteral("HEAD~2"), &error);
+        one.rev2 = *repo2->resolveCommit(QStringLiteral("HEAD~1"), &error);
+        MainWindow w2(std::move(*repo2), one);
+        w2.show();
+        QAction *prev2 = action(w2, QStringLiteral("Previous commit"));
+        QAction *next2 = action(w2, QStringLiteral("Next commit"));
+        QVERIFY(prev2->isEnabled() && next2->isEnabled());
+        prev2->trigger();
+        QVERIFY(w2.windowTitle().contains(QStringLiteral("one")));
+        QVERIFY(!prev2->isEnabled());
+        next2->trigger();
+        next2->trigger();
+        QVERIFY(w2.windowTitle().contains(QStringLiteral("three")));
+        QVERIFY(!next2->isEnabled());
+    }
     void checkForUpdateAsksFirst()
     {
         // A fake GitHub API with a newer release.

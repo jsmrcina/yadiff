@@ -100,7 +100,21 @@ path looks like a revision.
   since it was diffed.
 - **Compare commits** with File → Compare commits (Ctrl+L) or the toolbar button. It lists recent
   history, optionally from all branches, with a filter. Pick one commit to see its changes, two to
-  compare them, or one to compare with the working tree.
+  compare them, or one to compare with the working tree. The drop-down at the top switches to the
+  tips of branches and tags, where Changes since HEAD shows what a branch has that HEAD doesn't,
+  or to stashes, where Show stash shows a stash's changes.
+- **Step through commits.** A comparison of a range, such as `yadiff main feature` or a pull
+  request, gets a commit bar above the diff. Its drop-down lists every commit in the range, and the
+  arrows (or Ctrl+Alt+PgDown and Ctrl+Alt+PgUp) step from the whole range to each commit in turn.
+  A single commit, from the commit picker or blame, steps through its neighbours instead: older
+  commits along the first parent, and newer ones on the way to HEAD. Hover the author line for the
+  full commit message. While a pull request is on one commit, review comments are hidden.
+- **Stage, unstage or discard single changes and lines.** Right-click a change in a working-tree
+  comparison for Stage this change, or select some lines (on either side, side by side) for Stage
+  selected lines. Staged files offer Unstage instead, and Discard reverts the lines in the working
+  tree after asking. Edit → Stage current change or selected lines (Ctrl+Alt+S) and Unstage
+  (Ctrl+Alt+Shift+S) do the same from the keyboard. Like git's own line staging, a partly staged
+  edit keeps the old lines and adds the chosen new ones after them.
 - **Show whitespace characters** with Ctrl+Shift+8, and **word wrap** with Alt+Z. Side-by-side
   rows stay aligned when one side wraps more than the other.
 - **Reload automatically when files change on disk** is in the Preferences menu and off by default.
@@ -209,8 +223,8 @@ computed by yadiff.
     (Ctrl+G).
   - Set editor, and Edit left or right file in it. `{file}` and `{line}` are filled in; a commit's
     side opens as a read-only copy.
-  - Editing the right side in place, applying a change to either side, and change and file
-    navigation.
+  - Editing the right side in place, applying a change to either side, staging, unstaging or
+    discarding the current change or selected lines, and change, file and commit navigation.
 - **View:**
   - Inline or side by side, and Show both, left only or right only.
   - Language, syntax highlighting on or off, show whitespace, show line numbers, word wrap, tab
@@ -343,7 +357,8 @@ ctest --test-dir build --output-on-failure
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
   options (including ignore case and leading/trailing whitespace with every algorithm, comments,
   unimportant text and manual alignment), review
-  fingerprints, line counts, directory and file comparison, `/dev/null` sides, and blame.
+  fingerprints, line counts, directory and file comparison, `/dev/null` sides, blame, and staging,
+  unstaging and discarding single lines.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
@@ -356,7 +371,8 @@ ctest --test-dir build --output-on-failure
   a change to disk, wrap alignment, auto-reload, the commit picker, and that no two actions share a
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
-  ignoring comments and manual alignment. The other GUI
+  ignoring comments, manual alignment, staging the current change and stepping through commits.
+  The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
 To look at the UI without a display, render every file in both modes to PNG:

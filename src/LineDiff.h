@@ -2,6 +2,9 @@
 
 #include "DiffModel.h"
 
+#include <QByteArray>
+#include <QList>
+#include <QSet>
 #include <QStringList>
 #include <QVector>
 
@@ -51,5 +54,15 @@ FileDiff build(const QStringList &oldLines, const QStringList &newLines, const A
 Alignment alignAround(const QStringList &oldNorm, const QStringList &newNorm, const Alignment &anchors,
                       const std::function<Alignment(const QStringList &, const QStringList &)> &align,
                       Alignment *kept);
+
+// Part of the change from `from` to `to`, for staging or discarding single lines: the
+// lines of `from` numbered in `drop` go, and the lines of `to` numbered in `take` come
+// in where the diff puts them; everything else stays as in `from`. Within a change the
+// kept old lines come first, then the taken new lines (as git's line staging does).
+// Lines are compared exactly (line endings included); numbers are 1-based.
+QList<QByteArray> applyPart(const QList<QByteArray> &from, const QList<QByteArray> &to, const QSet<int> &drop,
+                            const QSet<int> &take);
+// Splits bytes into lines that keep their terminator, so joining them gives the bytes back.
+QList<QByteArray> splitKeepingEnds(const QByteArray &data);
 
 } // namespace LineDiff

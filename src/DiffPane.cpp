@@ -1246,6 +1246,64 @@ int DiffPane::chunkAtRow(CodeView *view, int row) const
     return -1;
 }
 
+QVector<int> DiffPane::chunkLines(int chunk) const
+{
+    QVector<int> out;
+    if (chunk < 0 || chunk >= m_file.diff.chunks.size())
+        return out;
+    for (int i = m_file.diff.chunks[chunk].first; i <= m_file.diff.chunks[chunk].last; ++i)
+        out << i;
+    return out;
+}
+
+QVector<int> DiffPane::selectedChangedLines() const
+{
+    // Side by side, a selection on either side takes whole rows: both sides' lines.
+    CodeView *v = focusedView();
+    const auto [a, b] = v->selectedRows();
+    QVector<int> out;
+    if (a < 0)
+        return out;
+    QList<CodeView *> views{v};
+    if (m_mode == Mode::SideBySide)
+        views = {m_left, m_right};
+    for (int row = a; row <= b; ++row)
+        for (CodeView *cv : views)
+            if (row < cv->rows().size()) {
+                const int i = cv->rows()[row].lineIndex;
+                if (i >= 0 && m_file.diff.lines[i].kind != LineKind::Equal && !out.contains(i))
+                    out << i;
+            }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+QVector<int> DiffPane::linesForLineOp() const
+{
+    const QVector<int> sel = selectedChangedLines();
+    return sel.isEmpty() ? chunkLines(m_current) : sel;
+}
+
+void DiffPane::addLineOpActions(QMenu &menu, int chunk)
+{
+    if (m_file.lineOps.isEmpty() || isEditing())
+        return;
+    menu.addSeparator();
+    const QVector<int> sel = selectedChangedLines();
+    const QVector<int> hunk = chunkLines(chunk);
+    auto add = [&](GitRepo::LineOp op, const QString &hunkText, const QString &linesText) {
+        if (!m_file.lineOps.contains(op))
+            return;
+        QAction *h = menu.addAction(hunkText, this, [this, op, hunk] { emit lineOpRequested(op, hunk); });
+        h->setEnabled(!hunk.isEmpty());
+        if (!sel.isEmpty())
+            menu.addAction(linesText.arg(sel.size()), this, [this, op, sel] { emit lineOpRequested(op, sel); });
+    };
+    add(GitRepo::LineOp::Stage, tr("S&tage this change"), tr("Stage selected lines (%1)"));
+    add(GitRepo::LineOp::Unstage, tr("&Unstage this change"), tr("Unstage selected lines (%1)"));
+    add(GitRepo::LineOp::Discard, tr("Discard this change\u2026"), tr("Discard selected lines (%1)\u2026"));
+}
+
 void DiffPane::addAlignmentActions(QMenu &menu, CodeView *view, int row)
 {
     // Manual alignment: pick a line on one side, then the line it should line up with.
@@ -1337,6 +1395,7 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
     toOld->setEnabled(chunk >= 0 && canCopyTo(false));
     toOld->setStatusTip(tr("Replace the old side of this change with the new side, on disk"));
 
+    addLineOpActions(menu, chunk);
     addAlignmentActions(menu, view, row);
 
     if (m_file.reviewEnabled) {

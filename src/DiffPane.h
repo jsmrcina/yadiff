@@ -40,6 +40,9 @@ struct FileView {
 
     // Git blame per line of each side; empty when blame is off or not available.
     QVector<BlameLine> oldBlame, newBlame;
+
+    // Line staging that works on this file (stage, unstage, discard).
+    QVector<GitRepo::LineOp> lineOps;
 };
 
 // Right-hand side of the window: shows one file's diff inline or side by side and
@@ -80,6 +83,11 @@ public:
     void setZoom(int percent);
     // Replaces the blame of the current file (both empty hides the blame column).
     void setBlame(const QVector<BlameLine> &oldSide, const QVector<BlameLine> &newSide);
+
+    // Changed lines (FileDiff line indices) to stage, unstage or discard: the selected
+    // rows when the selection covers changed lines, otherwise the current change.
+    QVector<int> linesForLineOp() const;
+    bool canLineOp(GitRepo::LineOp op) const { return m_hasDiff && !isEditing() && m_file.lineOps.contains(op); }
 
     // Moves to line `line` of the new (or old) side; false when there is no such line.
     bool goToLine(int line, bool newSide);
@@ -146,6 +154,8 @@ signals:
     // Manual alignment: line `oldLine` of the old side should line up with `newLine`.
     void alignRequested(int oldLine, int newLine);
     void clearAlignmentsRequested();
+    // Stage, unstage or discard these FileDiff lines.
+    void lineOpRequested(GitRepo::LineOp op, const QVector<int> &lines);
     void hint(const QString &text); // a short message for the status bar
     // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
@@ -157,6 +167,9 @@ private:
     void jumpToMovePartner(CodeView *source, int row);
     void showContextMenu(CodeView *view, int row, const QPoint &globalPos);
     void addAlignmentActions(QMenu &menu, CodeView *view, int row);
+    void addLineOpActions(QMenu &menu, int chunk);
+    QVector<int> selectedChangedLines() const;
+    QVector<int> chunkLines(int chunk) const;
     int chunkAtRow(CodeView *view, int row) const;
     ViewPalette makePalette() const;
     Row makeRow(int lineIndex) const;

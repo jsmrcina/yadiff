@@ -272,6 +272,16 @@ private slots:
                 QCOMPARE(d.lines[d.lines[i].pair].pair, i);
             }
 
+        // Partial changes keep line endings and add a newline where a line stops being last.
+        const QList<QByteArray> from = LineDiff::splitKeepingEnds("a\r\nb\r\nc");
+        QCOMPARE(from.size(), 3);
+        const QList<QByteArray> to = LineDiff::splitKeepingEnds("a\r\nB\r\nc\r\nd\r\n");
+        QCOMPARE(LineDiff::applyPart(from, to, {}, {4}).join(), QByteArray("a\r\nb\r\nc\r\nd\r\n"));
+        QCOMPARE(LineDiff::applyPart(LineDiff::splitKeepingEnds("a\nb\nc"), LineDiff::splitKeepingEnds("a\nB\nc\n"), {2}, {2})
+                     .join(),
+                 QByteArray("a\nB\nc")); // a missing final newline alone doesn't make c a change
+        QCOMPARE(LineDiff::applyPart(from, to, {2}, {}).join(), QByteArray("a\r\nc"));
+
         // An equal anchor just joins the alignment.
         const LineDiff::Alignment al2 = LineDiff::alignAround(o, o, {{1, 1}}, lcs, &kept);
         QCOMPARE(al2.size(), 4);
