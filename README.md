@@ -97,8 +97,11 @@ path looks like a revision.
 - **Collapse unchanged regions** with View → Collapse unchanged regions (Ctrl+Shift+C). It's off
   by default. Long unchanged runs shrink to one row with 3 lines of context kept. Click a row to
   expand it, or use View → Expand all.
-- **Overview strip** beside the scrollbar shows every change in the file, search hits, and the
-  visible area. Click or drag it to scroll.
+- **Overview strip** on the right edge shows every change in the file, search hits, and the
+  visible area. It is the diff's scrollbar too, so the views have none:
+  - Turn the wheel over it to scroll.
+  - Drag the outlined visible area like a scrollbar's thumb.
+  - Click anywhere else on it to jump there.
 - **Find** with F3 or Ctrl+F searches the current Selection, This file, or All changes, by substring
   or regex, optionally case-sensitive. F8 and F7 step to the next and previous match, as do Enter
   and Shift+Enter in the find bar. With All changes, stepping past the last match moves to the next file that has
