@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "Log.h"
+
 #include "DiffPane.h"
 #include "Difftool.h"
 #include "FileList.h"
@@ -138,6 +140,7 @@ QString homeShortened(const QString &path)
 // What the auto-reload watches: changes to it mean the files on disk changed.
 QByteArray signatureOf(const GitRepo &repo, const Comparison &cmp)
 {
+    const Log::Quiet quiet; // runs every two seconds while auto-reload is on
     QCryptographicHash h(QCryptographicHash::Sha1);
     auto addFile = [&h](const QString &path) {
         const QFileInfo fi(path);
@@ -347,6 +350,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    qCInfo(lcApp) << "window closed";
     QSettings s;
     s.setValue(QStringLiteral("window/geometry"), saveGeometry());
     if (auto *splitter = qobject_cast<QSplitter *>(centralWidget()))
@@ -990,6 +994,30 @@ void MainWindow::createActions()
     helpMenu->addAction(tr("&Check for update now…"), this, [this] { checkForUpdates(true); })
         ->setStatusTip(tr("Look for a new release on GitHub and offer to install it"));
     helpMenu->addSeparator();
+    QAction *detailedLog = helpMenu->addAction(tr("&Detailed logging"));
+    detailedLog->setCheckable(true);
+    detailedLog->setChecked(Log::level() >= Log::Level::Debug);
+    detailedLog->setStatusTip(tr("Also log every command's error output, HTTP headers, diff timings and the actions you take"));
+    connect(detailedLog, &QAction::toggled, this, [](bool on) {
+        const Log::Level level = on ? Log::Level::Debug : Log::Level::Info;
+        Log::saveLevel(level);
+        Log::setLevel(level);
+        qCInfo(lcApp).noquote() << "log level set to" << Log::levelName(level);
+    });
+    helpMenu->addAction(tr("Open &log file"), this, [this] {
+        const QString path = Log::filePath();
+        if (path.isEmpty()) {
+            QMessageBox::information(this, tr("Log"),
+                                     tr("This window isn't logging to a file (--log or YADIFF_LOG chose otherwise)."));
+            return;
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    })->setStatusTip(tr("Open yadiff's log, to see what it did or to attach to a bug report"));
+    helpMenu->addAction(tr("Show log &folder"), this, [] {
+        const QString path = Log::filePath().isEmpty() ? Log::defaultFilePath() : Log::filePath();
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+    });
+    helpMenu->addSeparator();
     helpMenu->addAction(tr("&Usage"), this, &MainWindow::showUsage);
     helpMenu->addAction(tr("&About yadiff"), this, [this] {
         QMessageBox::about(this, tr("About yadiff"),
@@ -998,8 +1026,11 @@ void MainWindow::createActions()
                               "Alt+Down / Alt+Up: next / previous change<br>"
                               "Ctrl+T: toggle inline / side by side &nbsp; Ctrl+M: mark file<br>"
                               "Ctrl+E: edit in place, Ctrl+S: save<br>"
-                              "Right-click a change, or a file, for more.")
-                               .arg(QApplication::applicationVersion()));
+                              "Right-click a change, or a file, for more.<br><br>"
+                              "Log: %2")
+                               .arg(QApplication::applicationVersion(),
+                                    QDir::toNativeSeparators(Log::filePath().isEmpty() ? tr("(none)") : Log::filePath())
+                                        .toHtmlEscaped()));
     });
 }
 
@@ -1440,6 +1471,7 @@ void MainWindow::setComparison(const Comparison &cmp)
     m_cmp.options = options;
     m_changes.clear();
     m_shownIndex = -1;
+    qCInfo(lcApp).noquote() << "switched to" << m_cmp.describe();
     updateModeUi();
     updateTitle();
     reload();
@@ -2354,6 +2386,7 @@ void MainWindow::exportReport()
                 return;
             }
             f.close();
+            qCInfo(lcFile).noquote() << "exported the report" << path << "(" << in->files.size() << "files)";
             if (m_sync) {
                 statusBar()->showMessage(tr("Saved %1").arg(path), 3000);
                 return;
@@ -2666,6 +2699,7 @@ void MainWindow::swapSides()
     m_cmp.options = options;
     m_changes.clear();
     m_shownIndex = -1;
+    qCInfo(lcApp).noquote() << "swapped sides:" << m_cmp.describe();
     updateModeUi();
     updateTitle();
     reload();
@@ -2820,7 +2854,9 @@ void MainWindow::openInGitk()
         env.insert(QStringLiteral("GIT_DIR"), m_repo.root());
         p.setProcessEnvironment(env);
     }
-    if (!p.startDetached())
+    const bool started = p.startDetached();
+    Log::launched(lcProc(), p.program(), p.arguments(), started);
+    if (!started)
         QMessageBox::warning(this, tr("gitk"), tr("Could not start gitk."));
 }
 
@@ -2836,7 +2872,9 @@ void MainWindow::openArguments(const QStringList &args, const std::optional<Sess
     if (!m_cmp.empty) {
         // A new window (its own process), so this comparison stays as it is.
         const QStringList childArgs = sessionFile.isEmpty() ? args : QStringList{QStringLiteral("--session"), sessionFile};
-        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), childArgs))
+        const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(), childArgs);
+        Log::launched(lcApp(), QCoreApplication::applicationFilePath(), childArgs, started);
+        if (!started)
             QMessageBox::warning(this, tr("New comparison"), tr("Could not start yadiff."));
         return;
     }
@@ -3128,15 +3166,20 @@ void MainWindow::applyPatch()
     QProcess p;
     p.setWorkingDirectory(m_cmp.patchBase);
     const QStringList args = QStringList{QStringLiteral("apply")} + extra;
-    p.start(QStringLiteral("git"), args + QStringList{QStringLiteral("--check"), m_cmp.patchPath});
-    p.waitForFinished(60000);
-    if (p.exitCode() == 0) {
-        p.start(QStringLiteral("git"), args + QStringList{m_cmp.patchPath});
+    QByteArray stdErr;
+    auto gitApply = [&](const QStringList &more) {
+        Log::ProcessTrace trace(lcFile());
+        p.start(QStringLiteral("git"), args + more);
         p.waitForFinished(60000);
-    }
+        stdErr = p.readAllStandardError();
+        trace.done(p, -1, stdErr);
+    };
+    gitApply({QStringLiteral("--check"), m_cmp.patchPath});
+    if (p.exitCode() == 0)
+        gitApply({m_cmp.patchPath});
     if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
         QMessageBox::warning(this, tr("Apply patch"),
-                             tr("git apply failed; nothing was changed:\n\n%1").arg(QString::fromUtf8(p.readAllStandardError())));
+                             tr("git apply failed; nothing was changed:\n\n%1").arg(QString::fromUtf8(stdErr)));
         return;
     }
     m_diffCache.clear();
@@ -3156,9 +3199,11 @@ void MainWindow::saveAsPatch()
     const auto patch = m_repo.patch(m_cmp, &error);
     QFile f(path);
     if (!patch || !f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(*patch) != patch->size()) {
+        qCWarning(lcFile).noquote() << "could not save the patch" << path << ":" << (patch ? f.errorString() : error);
         QMessageBox::warning(this, tr("Save as patch"), patch ? f.errorString() : error);
         return;
     }
+    qCInfo(lcFile).noquote() << "saved the patch" << path << "(" << patch->size() << "bytes)";
     statusBar()->showMessage(tr("Wrote %1").arg(path), 4000);
 }
 
@@ -3402,7 +3447,9 @@ void MainWindow::editExternally(bool newSide)
     if (!hadFile)
         parts << path;
     const QString program = parts.takeFirst();
-    if (!QProcess::startDetached(program, parts))
+    const bool started = QProcess::startDetached(program, parts);
+    Log::launched(lcProc(), program, parts, started);
+    if (!started)
         QMessageBox::warning(this, tr("Edit file"), tr("Could not start %1. Check Edit > Set editor.").arg(program));
 }
 
@@ -3508,7 +3555,9 @@ void MainWindow::openBlameCommit(const QString &hash)
     if (!m_repo.resolveCommit(parent, nullptr))
         parent = m_repo.emptyTree();
     const QStringList args{QStringLiteral("-C"), m_repo.root(), parent, hash};
-    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(), args))
+    const bool started = QProcess::startDetached(QCoreApplication::applicationFilePath(), args);
+    Log::launched(lcApp(), QCoreApplication::applicationFilePath(), args, started);
+    if (!started)
         QMessageBox::warning(this, tr("Git blame"), tr("Could not start yadiff."));
 }
 
@@ -3630,7 +3679,9 @@ void MainWindow::restartForUpdate()
     if (!maybeKeepEdits())
         return;
     // Same arguments, in a new process of the updated install.
-    if (!QProcess::startDetached(Updater::restartProgram(), QApplication::arguments().mid(1))) {
+    const bool started = QProcess::startDetached(Updater::restartProgram(), QApplication::arguments().mid(1));
+    Log::launched(lcUpdate(), Updater::restartProgram(), QApplication::arguments().mid(1), started);
+    if (!started) {
         QMessageBox::warning(this, tr("Update"), tr("Could not start the updated yadiff. Start it yourself."));
         return;
     }
@@ -3658,6 +3709,7 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_lastSignature.clear();
     m_shownIndex = -1;
     m_customTitle.clear();
+    qCInfo(lcApp).noquote() << "showing" << m_cmp.describe() << "in" << QDir::toNativeSeparators(m_repo.root());
     updateModeUi();
     updateTitle();
     rememberRecent();

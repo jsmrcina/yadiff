@@ -5,6 +5,7 @@
 #include "Difftool.h"
 #include "GitHubPr.h"
 #include "GitRepo.h"
+#include "Log.h"
 #include "MainWindow.h"
 #include "MergeWindow.h"
 #include "Report.h"
@@ -14,6 +15,7 @@
 #include "ShellMenu.h"
 #include "Settings.h"
 #include "Theme.h"
+#include "UiLog.h"
 #include "Updater.h"
 #include "Usage.h"
 
@@ -26,7 +28,11 @@
 #include <QFileInfo>
 #include <QIcon>
 #include <QMessageBox>
+#include <QLocale>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QProcess>
+#include <QSysInfo>
 
 #include <cstdio>
 
@@ -36,10 +42,57 @@ bool g_gui = false; // report errors with a dialog (no terminal to print to)
 
 int fail(const QString &message)
 {
+    qCWarning(lcApp).noquote() << "exiting with an error:" << message;
     std::fprintf(stderr, "yadiff: %s\n", qPrintable(message));
     if (g_gui)
         QMessageBox::critical(nullptr, QStringLiteral("yadiff"), message);
     return 1;
+}
+
+// What a log reader needs to know about this run.
+void logStartup(const QString &cwd)
+{
+    qCInfo(lcApp).noquote() << QStringLiteral("==== yadiff %1 started (pid %2)%3 ====")
+                                   .arg(QCoreApplication::applicationVersion())
+                                   .arg(QCoreApplication::applicationPid())
+                                   .arg(qEnvironmentVariableIsSet("YADIFF_DETACHED_CHILD") ? QStringLiteral(", detached window")
+                                                                                         : QString());
+    qCInfo(lcApp).noquote() << "command line:" << Log::commandLine(QCoreApplication::applicationFilePath(),
+                                                                    QCoreApplication::arguments().mid(1));
+    qCInfo(lcApp).noquote() << "folder:" << QDir::toNativeSeparators(cwd);
+    qCInfo(lcApp).noquote() << QStringLiteral("system: %1 (%2 %3, %4), Qt %5 (built with %6), platform %7, locale %8")
+                                   .arg(QSysInfo::prettyProductName(), QSysInfo::kernelType(), QSysInfo::kernelVersion(),
+                                        QSysInfo::currentCpuArchitecture(), QString::fromLatin1(qVersion()),
+                                        QStringLiteral(QT_VERSION_STR), QGuiApplication::platformName(),
+                                        QLocale::system().name());
+    // Which of the settings yadiff reads from the environment are set (values only when harmless).
+    QStringList env;
+    const QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
+    for (const QString &name : e.keys()) {
+        if (name.startsWith(QLatin1String("YADIFF_")) || name.startsWith(QLatin1String("GIT_"))
+            || name == QLatin1String("SYSTEM_ACCESSTOKEN") || name == QLatin1String("AZURE_DEVOPS_EXT_PAT")
+            || name == QLatin1String("GH_TOKEN") || name == QLatin1String("GITHUB_TOKEN")
+            || name.startsWith(QLatin1String("HTTP")) || name.startsWith(QLatin1String("http")) || name == QLatin1String("NO_PROXY")
+            || name == QLatin1String("no_proxy")) {
+            static const QStringList harmless{QStringLiteral("YADIFF_LOG"), QStringLiteral("YADIFF_LOG_LEVEL"),
+                                              QStringLiteral("YADIFF_DETACHED_CHILD"), QStringLiteral("YADIFF_NO_DETACH"),
+                                              QStringLiteral("YADIFF_UPDATE_REPO"), QStringLiteral("GIT_DIR"),
+                                              QStringLiteral("GIT_WORK_TREE"), QStringLiteral("GIT_TRACE")};
+            env << (harmless.contains(name) ? name + u'=' + e.value(name) : name + QStringLiteral(" (set)"));
+        }
+    }
+    if (!env.isEmpty())
+        qCInfo(lcApp).noquote() << "environment:" << env.join(QStringLiteral(", "));
+    qCInfo(lcApp).noquote() << "log level" << Log::levelName(Log::level()) << "settings in"
+                            << QDir::toNativeSeparators(QSettings().fileName());
+    QProcess git;
+    Log::ProcessTrace trace(lcGit());
+    git.start(QStringLiteral("git"), {QStringLiteral("--version")});
+    git.waitForFinished(10000);
+    const QByteArray version = git.readAllStandardOutput().trimmed();
+    trace.done(git, version.size(), git.readAllStandardError());
+    if (!version.isEmpty())
+        qCInfo(lcGit).noquote() << QString::fromUtf8(version) << "at" << QStandardPaths::findExecutable(QStringLiteral("git"));
 }
 
 } // namespace
@@ -119,12 +172,27 @@ int main(int argc, char *argv[])
                                           QStringLiteral("Add yadiff to the file manager's right-click menu and exit."));
     const QCommandLineOption noShellMenuOpt(QStringLiteral("remove-file-manager-menu"),
                                             QStringLiteral("Remove yadiff from the file manager's right-click menu and exit."));
+    const QCommandLineOption logOpt(QStringLiteral("log"),
+                                    QStringLiteral("Write the log to <file> (\"-\" for the terminal, \"off\" for none) "
+                                                   "instead of the default file."),
+                                    QStringLiteral("file"));
+    const QCommandLineOption logLevelOpt(QStringLiteral("log-level"),
+                                         QStringLiteral("How much to log: error, warning, info (default) or debug."),
+                                         QStringLiteral("level"));
+    parser.addOptions({logOpt, logLevelOpt});
     parser.addOptions({dirOpt, waitOpt, allOpt, prOpt, adoOpt, adoLoginOpt, adoLogoutOpt, algoOpt, inlineOpt, sideOpt,
                        noIndexOpt, registerOpt, unregisterOpt, exportOpt, titleOpt, patchOpt, sessionOpt, selectLeftOpt,
                        compareLeftOpt, shellMenuOpt, noShellMenuOpt, mergeOpt, registerMergeOpt, unregisterMergeOpt});
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("Revisions and/or paths (see above)."),
                                  QStringLiteral("[REV [REV]] [[--] PATH...]"));
     parser.process(app);
+    if (parser.isSet(logLevelOpt) && !Log::parseLevel(parser.value(logLevelOpt))) {
+        std::fprintf(stderr, "yadiff: unknown log level '%s' (error, warning, info or debug)\n", qPrintable(parser.value(logLevelOpt)));
+        return 1;
+    }
+    Log::init(parser.value(logOpt), parser.value(logLevelOpt));
+    UiLog::install(app);
+    logStartup(parser.isSet(dirOpt) ? QDir(parser.value(dirOpt)).absolutePath() : QDir::currentPath());
 
     // A detached child (or a Windows GUI-subsystem exe) has no terminal to report errors to.
 #ifdef Q_OS_WIN
@@ -172,6 +240,11 @@ int main(int argc, char *argv[])
         in.fileName = files[3];
         in.oursLabel = QStringLiteral("Local");
         in.theirsLabel = QStringLiteral("Remote");
+        qCInfo(lcFile).noquote() << QStringLiteral("merge: base %1 (%2 bytes), local %3 (%4 bytes), remote %5 (%6 bytes) into %7")
+                                        .arg(files[0]).arg(in.base.size())
+                                        .arg(files[1]).arg(in.ours.size())
+                                        .arg(files[2]).arg(in.theirs.size())
+                                        .arg(in.outputPath);
         if (in.ours.left(8000).contains('\0') || in.theirs.left(8000).contains('\0'))
             return fail(QStringLiteral("%1 is a binary file; yadiff merges text files only").arg(files[3]));
         MergeWindow w(in);
@@ -183,6 +256,7 @@ int main(int argc, char *argv[])
             return 1;
         }
         app.exec();
+        qCInfo(lcApp) << "merge window closed;" << (w.resolvedAndSaved() ? "resolved and saved" : "not resolved");
         return w.resolvedAndSaved() ? 0 : 1;
     }
     if (parser.isSet(shellMenuOpt) || parser.isSet(noShellMenuOpt)) {
@@ -287,6 +361,7 @@ int main(int argc, char *argv[])
     auto resolved = ComparisonArgs::resolve(req, &error);
     if (!resolved)
         return fail(error);
+    qCInfo(lcApp).noquote() << "comparison:" << resolved->cmp.describe();
     if (!resolved->handed.isEmpty())
         qputenv("YADIFF_PR_RESOLVED", QJsonDocument(resolved->handed).toJson(QJsonDocument::Compact));
     std::optional<GitRepo> repo = std::move(resolved->repo);
@@ -339,7 +414,9 @@ int main(int argc, char *argv[])
         child.setProcessEnvironment(env);
         child.setStandardOutputFile(QProcess::nullDevice());
         child.setStandardErrorFile(QProcess::nullDevice());
-        if (child.startDetached())
+        const bool started = child.startDetached();
+        Log::launched(lcApp(), child.program(), args, started);
+        if (started)
             return 0;
         // Fall through and run in the foreground if detaching failed.
     }
@@ -359,5 +436,8 @@ int main(int argc, char *argv[])
         w.grabAll(grab);
         return 0;
     }
-    return app.exec();
+    const int code = app.exec();
+    qCInfo(lcApp) << "exiting with code" << code;
+    Log::shutdown();
+    return code;
 }

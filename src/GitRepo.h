@@ -134,6 +134,9 @@ struct Comparison {
     QString title;
 
     DiffOptions options;
+
+    // One line for the log: mode, sides, paths, PR.
+    QString describe() const;
 };
 
 class GitRepo
@@ -229,6 +232,12 @@ public:
 private:
     GitRepo(QString root, bool bare, bool noRepo = false) : m_root(std::move(root)), m_bare(bare), m_noRepo(noRepo) {}
     QStringList pathspecs(const Comparison &cmp) const;
+    // The public operations without their logging.
+    QVector<FileChange> listChangesFiltered(const Comparison &cmp, QString *error) const;
+    FileDiff loadDiffCore(const FileChange &change, const Comparison &cmp, QString *error) const;
+    bool revertCore(const QVector<FileChange> &changes, const Comparison &cmp, QString *error) const;
+    bool applyLinesCore(LineOp op, const FileChange &change, const Comparison &cmp, const QSet<int> &oldLines,
+                        const QSet<int> &newLines, QString *error) const;
     QVector<FileChange> listChangesCore(const Comparison &cmp, QString *error) const;
     QVector<FileChange> listPathChanges(const Comparison &cmp, QString *error) const;
     void appendIdentical(QVector<FileChange> &changes, const Comparison &cmp) const;

@@ -391,7 +391,8 @@ private slots:
         yadiff.setWorkingDirectory(tmp.path());
         yadiff.start(QStringLiteral(YADIFF_BINARY),
                     {QStringLiteral("-ado"), ado.base() + QStringLiteral("/org/My%20Project/_git/repo/pullrequest/7"),
-                     QStringLiteral("--export"), report});
+                     QStringLiteral("--export"), report, QStringLiteral("--log"), tmp.filePath(QStringLiteral("yadiff.log")),
+                     QStringLiteral("--log-level"), QStringLiteral("debug")});
         QTRY_VERIFY_WITH_TIMEOUT(yadiff.state() == QProcess::NotRunning, 60000);
         QVERIFY2(yadiff.exitCode() == 0, yadiff.readAllStandardError().constData());
         QFile f(report);
@@ -399,6 +400,20 @@ private slots:
         const QByteArray html = f.readAll();
         QVERIFY(html.contains("Make two loud"));
         QVERIFY(html.contains("TWO"));
+
+        // The log traces the whole thing, and never shows the token.
+        QFile logFile(tmp.filePath(QStringLiteral("yadiff.log")));
+        QVERIFY(logFile.open(QIODevice::ReadOnly));
+        const QByteArray log = logFile.readAll();
+        if (qEnvironmentVariableIsSet("YADIFF_TEST_DUMP_LOG"))
+            qInfo().noquote() << log;
+        for (const char *expected : {"yadiff.auth", "personal access token from YADIFF_ADO_PAT", "GET http://127.0.0.1",
+                                     "/pullRequests/7?api-version=7.1 -> HTTP 200", "resolving PR 7", "using yadiff's cache",
+                                     "git init --bare", "PR 7 resolved: merge base", "YADIFF_ADO_PAT (set)", "Authorization"})
+            QVERIFY2(log.contains(expected), expected);
+        QVERIFY(!log.contains(kPat));
+        QVERIFY(!log.contains(patHeader()));
+        QVERIFY(!log.contains(patHeader().mid(6))); // the base64 credential alone
     }
 
     void cleanupTestCase()

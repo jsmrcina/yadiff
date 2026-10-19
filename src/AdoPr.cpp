@@ -2,6 +2,7 @@
 
 #include "GitRepo.h"
 #include "Http.h"
+#include "Log.h"
 
 #include <QDir>
 #include <QFile>
@@ -32,6 +33,7 @@ Http::Response call(const QByteArray &method, const QUrl &url, const AdoAuth::Cr
                     QString *error, int *httpStatus = nullptr)
 {
     if (!Http::safeForCredentials(url)) {
+        qCWarning(lcAdo).noquote() << "refusing to send credentials to" << Log::url(url);
         if (error)
             *error = QStringLiteral("Refusing to send credentials over an unencrypted connection to %1.").arg(url.host());
         return {};
@@ -52,6 +54,8 @@ Http::Response call(const QByteArray &method, const QUrl &url, const AdoAuth::Cr
         }
         r.error = error ? *error : QStringLiteral("HTTP %1").arg(r.status);
     }
+    if (!r.error.isEmpty())
+        qCInfo(lcAdo).noquote() << method << "failed, credential from" << cred.source << "(" + cred.kindName() + "):" << r.error;
     return r;
 }
 
@@ -60,19 +64,23 @@ bool git(const QString &dir, const QStringList &args, const QProcessEnvironment 
     QProcess p;
     p.setWorkingDirectory(dir);
     p.setProcessEnvironment(env);
+    Log::ProcessTrace trace(lcGit());
     p.start(QStringLiteral("git"), args);
     if (!p.waitForStarted()) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start git.");
         return false;
     }
     p.closeWriteChannel();
     p.waitForFinished(-1);
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
+    trace.done(p, stdOut.size(), stdErr);
     if (out)
-        *out = p.readAllStandardOutput();
+        *out = stdOut;
     if (p.exitCode() != 0) {
         if (error)
-            *error = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            *error = QString::fromUtf8(stdErr).trimmed();
         return false;
     }
     return true;
@@ -86,6 +94,7 @@ QProcessEnvironment fetchEnv(const AdoAuth::Credential *cred)
     env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
     env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
     if (cred) {
+        Log::addSecret(cred->secret);
         env.insert(QStringLiteral("GIT_CONFIG_COUNT"), QStringLiteral("1"));
         env.insert(QStringLiteral("GIT_CONFIG_KEY_0"), QStringLiteral("http.extraHeader"));
         env.insert(QStringLiteral("GIT_CONFIG_VALUE_0"), QStringLiteral("Authorization: ") + QString::fromUtf8(cred->authorizationHeader()));
@@ -213,7 +222,13 @@ std::optional<Info> info(const Ref &ref, const AdoAuth::Credential &cred, QStrin
     i.sourceCommit = o.value(QStringLiteral("lastMergeSourceCommit")).toObject().value(QStringLiteral("commitId")).toString();
     i.targetCommit = o.value(QStringLiteral("lastMergeTargetCommit")).toObject().value(QStringLiteral("commitId")).toString();
     i.remoteUrl = o.value(QStringLiteral("repository")).toObject().value(QStringLiteral("remoteUrl")).toString();
+    qCInfo(lcAdo).noquote() << QStringLiteral("PR %1: \"%2\", status %3, %4 (%5) into %6 (%7), repository %8")
+                                   .arg(ref.id)
+                                   .arg(i.title, i.status, i.sourceRef, i.sourceCommit, i.targetRef, i.targetCommit,
+                                        Log::url(QUrl(i.remoteUrl)));
     if (i.sourceCommit.isEmpty() || i.targetCommit.isEmpty()) {
+        qCWarning(lcAdo) << "the PR has no lastMergeSourceCommit/lastMergeTargetCommit; response:"
+                         << QString::fromUtf8(r.body.left(2000));
         if (error)
             *error = QStringLiteral("Azure DevOps did not report the pull request's commits.");
         return std::nullopt;
@@ -225,12 +240,21 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
                                 int *httpStatus, const std::function<void(const QString &)> &progress)
 {
     auto say = [&](const QString &s) {
+        qCInfo(lcAdo).noquote() << s;
         if (progress)
             progress(s);
     };
+    auto failed = [&](const char *step) {
+        qCInfo(lcAdo).noquote() << "resolving PR" << ref.id << "failed at" << step << ":" << (error ? *error : QString());
+        return std::nullopt;
+    };
+    qCInfo(lcAdo).noquote() << QStringLiteral("resolving PR %1 in %2 / %3 / %4 (local folder %5), credential from %6 (%7)")
+                                   .arg(ref.id)
+                                   .arg(Log::url(ref.collectionUrl), ref.project, ref.repo, QDir::toNativeSeparators(localDir),
+                                        cred.source, cred.kindName());
     const auto pr = info(ref, cred, error, httpStatus);
     if (!pr)
-        return std::nullopt;
+        return failed("reading the pull request");
 
     // The user's clone when one of its remotes is this repository, else the cache.
     QString repoPath, remote;
@@ -247,10 +271,18 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
                 break;
             }
         }
+        if (own)
+            qCInfo(lcAdo).noquote() << "using the local clone" << QDir::toNativeSeparators(repoPath) << "remote" << remote;
+        else
+            qCInfo(lcAdo).noquote() << "no remote of" << QDir::toNativeSeparators(local->root()) << "is this repository:"
+                                    << QString::fromUtf8(out).trimmed();
+    } else {
+        qCInfo(lcAdo).noquote() << QDir::toNativeSeparators(localDir) << "is not a git working tree";
     }
     if (repoPath.isEmpty()) {
         repoPath = cachePath(ref);
         remote = QStringLiteral("origin");
+        qCInfo(lcAdo).noquote() << "using yadiff's cache" << QDir::toNativeSeparators(repoPath);
         if (!QDir(repoPath).exists(QStringLiteral("HEAD"))) {
             QDir().mkpath(repoPath);
             const QProcessEnvironment env = fetchEnv(nullptr);
@@ -262,12 +294,12 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
                      {QStringLiteral("config"), QStringLiteral("remote.origin.promisor"), QStringLiteral("true")},
                      {QStringLiteral("config"), QStringLiteral("remote.origin.partialclonefilter"), QStringLiteral("blob:none")}})
                 if (!git(repoPath, args, env, error))
-                    return std::nullopt;
+                    return failed("creating the cache repository");
         }
     }
     auto repo = GitRepo::open(repoPath, error);
     if (!repo)
-        return std::nullopt;
+        return failed("opening the repository");
 
     if (!repo->hasCommit(pr->sourceCommit) || !repo->hasCommit(pr->targetCommit)) {
         say(QStringLiteral("Fetching %1!%2 from %3 ...").arg(ref.repo).arg(ref.id).arg(remote));
@@ -284,6 +316,9 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
             // Own clone: the user's own git credentials first; the token if those fail.
             for (const AdoAuth::Credential *c : own ? QList<const AdoAuth::Credential *>{nullptr, &cred}
                                                     : QList<const AdoAuth::Credential *>{&cred}) {
+                qCInfo(lcAdo).noquote() << "fetching" << specs.join(u' ') << "with"
+                                        << (c ? QStringLiteral("the %1 credential").arg(c->source)
+                                              : QStringLiteral("your own git credentials"));
                 QString err;
                 git(repoPath, base + specs, fetchEnv(c), &err);
                 if (!err.isEmpty())
@@ -297,14 +332,15 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
         if (!repo->hasCommit(pr->sourceCommit) || !repo->hasCommit(pr->targetCommit)) {
             if (error)
                 *error = QStringLiteral("Could not fetch the pull request's commits: %1").arg(lastError);
-            return std::nullopt;
+            return failed("fetching");
         }
     }
 
     // Azure DevOps shows the source branch against its merge base with the target.
     const auto mergeBase = repo->mergeBase(pr->targetCommit, pr->sourceCommit, error);
     if (!mergeBase)
-        return std::nullopt;
+        return failed("finding the merge base");
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << "resolved: merge base" << *mergeBase << "head" << pr->sourceCommit;
     Resolved r;
     r.repoPath = repoPath;
     r.baseOid = *mergeBase;

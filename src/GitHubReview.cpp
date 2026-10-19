@@ -1,5 +1,7 @@
 #include "GitHubReview.h"
 
+#include "Log.h"
+
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -14,8 +16,10 @@ namespace {
 bool gh(const QStringList &args, const QByteArray &input, QByteArray *out, QString *error)
 {
     QProcess p;
+    Log::ProcessTrace trace(lcGitHub());
     p.start(QStringLiteral("gh"), args);
     if (!p.waitForStarted()) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start gh. Install the GitHub CLI and run `gh auth login`.");
         return false;
@@ -24,11 +28,13 @@ bool gh(const QStringList &args, const QByteArray &input, QByteArray *out, QStri
         p.write(input);
     p.closeWriteChannel();
     p.waitForFinished(-1);
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
+    trace.done(p, stdOut.size(), stdErr);
     if (out)
-        *out = p.readAllStandardOutput();
+        *out = stdOut;
     if (p.exitCode() != 0) {
         if (error) {
-            *error = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            *error = QString::fromUtf8(stdErr).trimmed();
             // gh prints the API's JSON error on stdout for failed requests.
             const QJsonObject o = QJsonDocument::fromJson(out ? *out : QByteArray()).object();
             if (o.contains(QStringLiteral("message")))

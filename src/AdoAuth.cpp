@@ -1,6 +1,7 @@
 #include "AdoAuth.h"
 
 #include "Http.h"
+#include "Log.h"
 #include "SecretStore.h"
 
 #include <QJsonDocument>
@@ -24,17 +25,23 @@ bool run(const QString &program, const QStringList &args, const QByteArray &inpu
 {
     QProcess p;
     p.setProcessEnvironment(env);
+    Log::ProcessTrace trace(lcAuth());
     p.start(program, args);
-    if (!p.waitForStarted())
+    if (!p.waitForStarted()) {
+        trace.done(p);
         return false;
+    }
     p.write(input);
     p.closeWriteChannel();
     if (!p.waitForFinished(timeoutMs)) {
+        trace.done(p);
         p.kill();
         return false;
     }
+    const QByteArray stdOut = p.readAllStandardOutput();
+    trace.done(p, stdOut.size(), p.readAllStandardError());
     if (out)
-        *out = p.readAllStandardOutput();
+        *out = stdOut;
     return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
 }
 
@@ -51,6 +58,7 @@ std::optional<AdoAuth::Credential> fromAzureCli()
              {}, &out, 60000))
         return std::nullopt;
     const QString token = QString::fromUtf8(out).trimmed();
+    Log::addSecret(token);
     if (token.isEmpty())
         return std::nullopt;
     return AdoAuth::Credential{AdoAuth::Credential::Kind::Bearer, token, QStringLiteral("Azure CLI")};
@@ -65,8 +73,11 @@ std::optional<AdoAuth::Credential> fromGitCredential(const QUrl &org)
     run(QStringLiteral("git"), {QStringLiteral("config"), QStringLiteral("--get-urlmatch"), QStringLiteral("credential.helper"),
                                 org.toString()},
         {}, &helper, 10000);
-    if (helper.trimmed().isEmpty())
+    if (helper.trimmed().isEmpty()) {
+        qCInfo(lcAuth).noquote() << "no git credential helper is configured for" << Log::url(org);
         return std::nullopt;
+    }
+    qCInfo(lcAuth).noquote() << "asking git's credential helper" << QString::fromUtf8(helper).trimmed() << "for" << Log::url(org);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0"));
     env.remove(QStringLiteral("GIT_ASKPASS"));
@@ -77,9 +88,11 @@ std::optional<AdoAuth::Credential> fromGitCredential(const QUrl &org)
     if (!run(QStringLiteral("git"), {QStringLiteral("credential"), QStringLiteral("fill")}, input, &out, 120000, env))
         return std::nullopt;
     for (const QByteArray &line : out.split('\n'))
-        if (line.startsWith("password=") && line.size() > 9)
+        if (line.startsWith("password=") && line.size() > 9) {
+            Log::addSecret(QString::fromUtf8(line.mid(9)));
             return AdoAuth::Credential{AdoAuth::Credential::Kind::Pat, QString::fromUtf8(line.mid(9)),
                                        QStringLiteral("git credential helper")};
+        }
     return std::nullopt;
 }
 
@@ -87,8 +100,14 @@ std::optional<AdoAuth::Credential> fromGitCredential(const QUrl &org)
 
 namespace AdoAuth {
 
+QString Credential::kindName() const
+{
+    return kind == Kind::Bearer ? QStringLiteral("bearer token") : QStringLiteral("personal access token");
+}
+
 QByteArray Credential::authorizationHeader() const
 {
+    Log::addSecret(secret);
     if (kind == Kind::Bearer)
         return "Bearer " + secret.toUtf8();
     return "Basic " + (":" + secret.toUtf8()).toBase64(); // PAT: empty user name
@@ -113,7 +132,28 @@ QUrl organizationUrl(const QUrl &collectionUrl)
     return u;
 }
 
+namespace {
+std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *diagnostics);
+}
+
 std::optional<Credential> find(const QUrl &collectionUrl, QString *diagnostics)
+{
+    QString why;
+    auto c = findCredential(collectionUrl, &why);
+    if (c) {
+        Log::addSecret(c->secret);
+        qCInfo(lcAuth).noquote() << "credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << c->kindName()
+                                 << "from" << c->source;
+    } else {
+        qCInfo(lcAuth).noquote() << "no credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << why;
+    }
+    if (diagnostics)
+        *diagnostics = why;
+    return c;
+}
+
+namespace {
+std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *diagnostics)
 {
     QStringList tried;
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -142,9 +182,12 @@ std::optional<Credential> find(const QUrl &collectionUrl, QString *diagnostics)
         *diagnostics = QStringLiteral("No Azure DevOps credential found. Tried: %1.").arg(tried.join(QStringLiteral(", ")));
     return std::nullopt;
 }
+} // namespace
 
 bool savePat(const QUrl &collectionUrl, const QString &pat, QString *error)
 {
+    Log::addSecret(pat);
+    qCInfo(lcAuth).noquote() << "saving a token for" << Log::url(organizationUrl(collectionUrl)) << "in the" << SecretStore::backendName();
     return SecretStore::write(keyFor(collectionUrl),
                               QStringLiteral("yadiff: Azure DevOps token for %1")
                                   .arg(organizationUrl(collectionUrl).toString(QUrl::StripTrailingSlash)),
@@ -153,6 +196,7 @@ bool savePat(const QUrl &collectionUrl, const QString &pat, QString *error)
 
 bool forget(const QUrl &collectionUrl, QString *error)
 {
+    qCInfo(lcAuth).noquote() << "forgetting the token for" << Log::url(organizationUrl(collectionUrl));
     return SecretStore::remove(keyFor(collectionUrl), error);
 }
 
@@ -196,12 +240,17 @@ std::optional<QJsonObject> connectionData(const QUrl &collectionUrl, const Crede
 std::optional<QString> validate(const QUrl &collectionUrl, const Credential &cred, QString *error)
 {
     const auto o = connectionData(collectionUrl, cred, error);
-    if (!o)
+    if (!o) {
+        qCInfo(lcAuth).noquote() << "the" << cred.kindName() << "from" << cred.source << "was not accepted by"
+                                 << Log::url(collectionUrl) << ":" << (error ? *error : QString());
         return std::nullopt;
+    }
     const QJsonObject user = o->value(QStringLiteral("authenticatedUser")).toObject();
     QString name = user.value(QStringLiteral("providerDisplayName")).toString();
     if (name.isEmpty())
         name = user.value(QStringLiteral("customDisplayName")).toString();
+    qCInfo(lcAuth).noquote() << "signed in to" << Log::url(collectionUrl) << "as" << name << "with the" << cred.kindName()
+                             << "from" << cred.source;
     return name.isEmpty() ? QStringLiteral("(unknown user)") : name;
 }
 

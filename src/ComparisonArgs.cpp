@@ -4,6 +4,7 @@
 #include "AdoLoginDialog.h"
 #include "AdoPr.h"
 #include "GitHubPr.h"
+#include "Log.h"
 #include "Settings.h"
 
 #include <QDialog>
@@ -142,6 +143,8 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
         const QString link = isAdo ? req.ado : req.ghpr;
         // The parent process resolves the PR and hands the result to the detached child.
         handed = req.handed;
+        if (!handed.isEmpty())
+            qCInfo(lcApp).noquote() << "using the pull request the starting process resolved:" << handed.value(QStringLiteral("title")).toString();
         if (handed.isEmpty()) {
             auto progress = [&req](const QString &msg) {
                 if (req.progress)
@@ -171,6 +174,7 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
                 std::optional<AdoPr::Resolved> pr;
                 for (int attempt = 0; attempt < 2 && !pr; ++attempt) {
                     if (!cred) {
+                        qCInfo(lcAdo).noquote() << "asking the user to sign in:" << (attempt == 0 ? diag : error);
                         AdoLoginDialog dlg(ref->collectionUrl, attempt == 0 ? diag : error);
                         if (dlg.exec() != QDialog::Accepted || !dlg.credential())
                             return failed(attempt == 0 ? diag + QStringLiteral(" Sign-in was cancelled.") : error);
@@ -184,6 +188,8 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
                     if (!pr && AdoAuth::authProblem(status).isEmpty())
                         return failed(error); // not a sign-in problem: retrying won't help
                     if (!pr) {
+                        qCInfo(lcAdo).noquote() << "HTTP" << status << "with the credential from" << cred->source
+                                                << (attempt == 0 ? "; signing in again" : "; giving up");
                         error = QStringLiteral("%1 (credential from %2)").arg(AdoAuth::authProblem(status), cred->source);
                         cred.reset();
                     }

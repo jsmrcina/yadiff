@@ -30,5 +30,6 @@ inline QString yadiffUsageText()
         "Options: -C DIR (run in DIR), -a/--all (all changes vs HEAD), --wait (stay attached),\n"
         "--algorithm NAME, --title TEXT, --inline, --side-by-side, --unregister-difftool, --ado-logout ORG,\n"
         "--select-left PATH and --compare-to-left PATH (used by the file manager menu),\n"
-        "--remove-file-manager-menu, --unregister-mergetool.");
+        "--remove-file-manager-menu, --unregister-mergetool,\n"
+        "--log FILE (\"-\" for the terminal, \"off\"), --log-level error|warning|info|debug.");
 }

@@ -1,5 +1,7 @@
 #include "Session.h"
 
+#include "Log.h"
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -77,7 +79,9 @@ bool Session::write(const QString &path, QString *error) const
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(QJsonDocument(o).toJson()) < 0) {
         if (error)
             *error = QStringLiteral("%1: %2").arg(path, f.errorString());
+        qCWarning(lcFile).noquote() << "could not write the session" << path << ":" << f.errorString();
         return false;
     }
+    qCInfo(lcFile).noquote() << "saved the session" << path;
     return true;
 }

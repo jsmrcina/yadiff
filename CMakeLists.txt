@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.13.0 LANGUAGES CXX)
+project(yadiff VERSION 0.14.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ add_library(yadiffcore STATIC
     src/DiffFormat.cpp src/DiffFormat.h
     src/DiffModel.cpp src/DiffModel.h
     src/LineDiff.cpp src/LineDiff.h
+    src/Log.cpp src/Log.h
     src/Comments.cpp src/Comments.h
     src/PatchFile.cpp src/PatchFile.h
     src/HexDiff.cpp src/HexDiff.h
@@ -53,6 +54,7 @@ add_library(yadiffui STATIC
     src/HistoryDialog.cpp src/HistoryDialog.h
     src/ImageDiffView.cpp src/ImageDiffView.h
     src/TableDiffView.cpp src/TableDiffView.h
+    src/UiLog.cpp src/UiLog.h
     src/MergeWindow.cpp src/MergeWindow.h
     src/MainWindow.cpp src/MainWindow.h
     src/NewComparisonDialog.cpp src/NewComparisonDialog.h
@@ -133,6 +135,10 @@ if(BUILD_TESTING)
     target_compile_definitions(test_ado PRIVATE YADIFF_BINARY="$<TARGET_FILE:yadiff>")
     add_dependencies(test_ado yadiff)
     add_test(NAME test_ado COMMAND test_ado)
+
+    qt_add_executable(test_log tests/test_log.cpp)
+    target_link_libraries(test_log PRIVATE yadiffcore Qt6::Test)
+    add_test(NAME test_log COMMAND test_log)
 
     qt_add_executable(test_update tests/test_update.cpp)
     target_link_libraries(test_update PRIVATE yadiffcore Qt6::Test)

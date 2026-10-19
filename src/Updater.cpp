@@ -1,6 +1,7 @@
 #include "Updater.h"
 
 #include "Http.h"
+#include "Log.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -32,25 +33,30 @@ bool runTool(const QString &program, const QStringList &args, QByteArray *out, Q
     if (!workDir.isEmpty())
         p.setWorkingDirectory(workDir);
     p.setProcessChannelMode(QProcess::SeparateChannels);
+    Log::ProcessTrace trace(lcUpdate());
     p.start(program, args);
     if (!p.waitForStarted(15000)) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start %1").arg(program);
         return false;
     }
     p.closeWriteChannel();
     if (!p.waitForFinished(timeoutMs)) {
+        trace.done(p);
         p.kill();
         p.waitForFinished(5000);
         if (error)
             *error = QStringLiteral("%1 timed out").arg(program);
         return false;
     }
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
+    trace.done(p, stdOut.size(), stdErr);
     if (out)
-        *out = p.readAllStandardOutput();
+        *out = stdOut;
     if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
         if (error) {
-            const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            const QString err = QString::fromUtf8(stdErr).trimmed();
             *error = QStringLiteral("%1 %2 failed: %3")
                          .arg(QFileInfo(program).fileName(), args.value(0),
                               err.isEmpty() ? QStringLiteral("exit code %1").arg(p.exitCode()) : err.right(2000));
@@ -264,7 +270,7 @@ QString repository()
     return env.isEmpty() ? QStringLiteral("jsmrcina/yadiff") : env;
 }
 
-std::optional<Release> latest(QString *error)
+static std::optional<Release> latestRelease(QString *error)
 {
     if (const QString gh = ghProgram(); !gh.isEmpty()) {
         QByteArray out;
@@ -295,6 +301,17 @@ std::optional<Release> latest(QString *error)
             *error = QStringLiteral("GitHub's answer had no release tag");
         return std::nullopt;
     }
+    return r;
+}
+
+std::optional<Release> latest(QString *error)
+{
+    const auto r = latestRelease(error);
+    if (r)
+        qCInfo(lcUpdate).noquote() << "latest release of" << repository() << "is" << r->tag << "(running"
+                                   << QCoreApplication::applicationVersion() + ")";
+    else
+        qCInfo(lcUpdate).noquote() << "could not find the latest release of" << repository() << ":" << (error ? *error : QString());
     return r;
 }
 
@@ -348,7 +365,7 @@ QString unsupportedReason()
 #endif
 }
 
-bool install(const Release &release, const std::function<void(const QString &)> &progress, QString *error)
+static bool installRelease(const Release &release, const std::function<void(const QString &)> &progress, QString *error)
 {
     const InstallKind kind = currentInstallKind();
     if (kind == InstallKind::Unsupported) {
@@ -376,6 +393,21 @@ bool install(const Release &release, const std::function<void(const QString &)> 
     const bool ok = kind == InstallKind::LinuxSnapshot ? installLinux(release, work, progress, error)
                                                        : installWindows(release, work, progress, error);
     QDir(work).removeRecursively();
+    return ok;
+}
+
+bool install(const Release &release, const std::function<void(const QString &)> &progress, QString *error)
+{
+    qCInfo(lcUpdate).noquote() << "installing" << release.tag << "over" << QCoreApplication::applicationFilePath();
+    const bool ok = installRelease(release, [&](const QString &s) {
+        qCInfo(lcUpdate).noquote() << s;
+        if (progress)
+            progress(s);
+    }, error);
+    if (ok)
+        qCInfo(lcUpdate).noquote() << "installed" << release.tag;
+    else
+        qCWarning(lcUpdate).noquote() << "installing" << release.tag << "failed:" << (error ? *error : QString());
     return ok;
 }
 

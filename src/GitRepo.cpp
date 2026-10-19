@@ -1,5 +1,6 @@
 #include "GitRepo.h"
 #include "LineDiff.h"
+#include "Log.h"
 
 #include "Comments.h"
 #include "FileFilter.h"
@@ -16,6 +17,7 @@
 #include <QSet>
 #include <QHash>
 #include <QProcess>
+#include <QElapsedTimer>
 #include <QProcessEnvironment>
 
 #include <algorithm>
@@ -41,8 +43,10 @@ bool runGit(const QString &workDir, const QStringList &args, QByteArray *out, QS
     QStringList full{QStringLiteral("-c"), QStringLiteral("core.quotepath=false"), QStringLiteral("-c"),
                      QStringLiteral("color.ui=false")};
     full += args;
+    Log::ProcessTrace trace(lcGit());
     p.start(QStringLiteral("git"), full);
     if (!p.waitForStarted()) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start git. Is it installed and on PATH?");
         return false;
@@ -51,16 +55,52 @@ bool runGit(const QString &workDir, const QStringList &args, QByteArray *out, QS
         p.write(input);
     p.closeWriteChannel();
     p.waitForFinished(-1);
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     if (out)
-        *out = p.readAllStandardOutput();
-    const bool ok = p.exitCode() == 0 || (allowExitOne && p.exitCode() == 1);
-    if (p.exitStatus() != QProcess::NormalExit || !ok) {
+        *out = stdOut;
+    const bool ok = p.exitStatus() == QProcess::NormalExit && (p.exitCode() == 0 || (allowExitOne && p.exitCode() == 1));
+    trace.done(p, stdOut.size(), stdErr, ok);
+    if (!ok) {
         if (error)
-            *error = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            *error = QString::fromUtf8(stdErr).trimmed();
         return false;
     }
     return true;
 }
+
+} // namespace
+
+QString Comparison::describe() const
+{
+    QString s;
+    switch (mode) {
+    case Mode::WorkingTree:
+        s = QStringLiteral("working tree against %1%2").arg(unstagedAgainstHead ? QStringLiteral("HEAD") : QStringLiteral("the index"),
+                                                           allChanges ? QStringLiteral(" (all changes)") : QString());
+        break;
+    case Mode::Revisions:
+        s = QStringLiteral("%1 (%2) against %3 (%4)")
+                .arg(rev1Name, rev1, rev2Name.isEmpty() ? QStringLiteral("working tree") : rev2Name, rev2);
+        break;
+    case Mode::Paths:
+        s = QStringLiteral("%1 %2 against %3").arg(pathsAreFiles ? QStringLiteral("file") : QStringLiteral("folder"), leftPath, rightPath);
+        break;
+    case Mode::Patch:
+        s = QStringLiteral("patch %1 on %2").arg(patchPath, patchBase);
+        break;
+    }
+    if (!paths.isEmpty())
+        s += QStringLiteral(", limited to %1").arg(paths.join(QStringLiteral(", ")));
+    if (prNumber > 0)
+        s += QStringLiteral(", %1 PR %2 (%3)").arg(prHost).arg(prNumber).arg(prWebUrl);
+    if (reversed)
+        s += QStringLiteral(", reversed");
+    if (empty)
+        s += QStringLiteral(", empty");
+    return s;
+}
+
+namespace {
 
 struct LineStat {
     int added = -1;
@@ -477,6 +517,46 @@ bool matchesAnyGlob(const QString &path, const QStringList &globs)
 
 QVector<FileChange> GitRepo::listChanges(const Comparison &cmp, QString *error) const
 {
+    QElapsedTimer timer;
+    timer.start();
+    QString err;
+    const QVector<FileChange> result = listChangesFiltered(cmp, &err);
+    if (!err.isEmpty())
+        qCWarning(lcGit).noquote() << "listing changes failed:" << err;
+    else
+        qCInfo(lcGit).noquote() << "listed" << result.size() << "changed files in" << timer.elapsed() << "ms";
+    if (error && !err.isEmpty())
+        *error = err;
+    return result;
+}
+
+FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString *error) const
+{
+    QElapsedTimer timer;
+    timer.start();
+    QString err;
+    FileDiff d = loadDiffCore(fc, cmp, &err);
+    const qint64 ms = timer.elapsed();
+    if (!err.isEmpty()) {
+        qCWarning(lcDiff).noquote() << "diff of" << fc.path << "failed:" << err;
+    } else if (ms >= 500 || lcDiff().isDebugEnabled()) {
+        const QString what = QStringLiteral("diff of %1 (%2, algorithm %3): %4 lines, %5 chunks, %6 moves%7 in %8 ms")
+                                 .arg(fc.path, QString(fc.status), algorithmName(cmp.options.algorithm))
+                                 .arg(d.lines.size()).arg(d.chunks.size()).arg(d.moves.size())
+                                 .arg(d.message.isEmpty() ? QString() : QStringLiteral(" (\"%1\")").arg(d.message))
+                                 .arg(ms);
+        if (ms >= 500)
+            qCInfo(lcDiff).noquote() << "slow" << what;
+        else
+            qCDebug(lcDiff).noquote() << what;
+    }
+    if (error && !err.isEmpty())
+        *error = err;
+    return d;
+}
+
+QVector<FileChange> GitRepo::listChangesFiltered(const Comparison &cmp, QString *error) const
+{
     if (cmp.empty)
         return {};
     QVector<FileChange> result = listChangesCore(cmp, error);
@@ -668,7 +748,7 @@ QVector<FileChange> GitRepo::listPathChanges(const Comparison &cmp, QString *err
     return result;
 }
 
-FileDiff GitRepo::loadDiff(const FileChange &fc, const Comparison &cmp, QString *error) const
+FileDiff GitRepo::loadDiffCore(const FileChange &fc, const Comparison &cmp, QString *error) const
 {
     if (fc.status == u'=') {
         // Identical: show the file itself (every line unchanged).
@@ -1299,6 +1379,7 @@ void GitRepo::appendIdentical(QVector<FileChange> &changes, const Comparison &cm
 
 bool GitRepo::stage(const QVector<FileChange> &changes, QString *error) const
 {
+    qCInfo(lcFile) << "staging" << changes.size() << "files";
     QStringList args{QStringLiteral("add"), QStringLiteral("-A"), QStringLiteral("--")};
     for (const FileChange &fc : changes) {
         args << QStringLiteral(":(top,literal)") + fc.path;
@@ -1310,6 +1391,7 @@ bool GitRepo::stage(const QVector<FileChange> &changes, QString *error) const
 
 bool GitRepo::unstage(const QVector<FileChange> &changes, QString *error) const
 {
+    qCInfo(lcFile) << "unstaging" << changes.size() << "files";
     QStringList paths;
     for (const FileChange &fc : changes) {
         paths << QStringLiteral(":(top,literal)") + fc.path;
@@ -1404,6 +1486,20 @@ QVector<GitRepo::LineOp> GitRepo::lineOps(const FileChange &fc, const Comparison
 
 bool GitRepo::applyLines(LineOp op, const FileChange &fc, const Comparison &cmp, const QSet<int> &oldLines,
                          const QSet<int> &newLines, QString *error) const
+{
+    const char *name = op == LineOp::Stage ? "staging" : op == LineOp::Unstage ? "unstaging" : "discarding";
+    qCInfo(lcFile).noquote() << name << oldLines.size() << "removed and" << newLines.size() << "added lines of" << fc.path;
+    QString err;
+    const bool ok = applyLinesCore(op, fc, cmp, oldLines, newLines, &err);
+    if (!ok)
+        qCWarning(lcFile).noquote() << name << "lines of" << fc.path << "failed:" << err;
+    if (error && !err.isEmpty())
+        *error = err;
+    return ok;
+}
+
+bool GitRepo::applyLinesCore(LineOp op, const FileChange &fc, const Comparison &cmp, const QSet<int> &oldLines,
+                             const QSet<int> &newLines, QString *error) const
 {
     auto fail = [error](const QString &message) {
         if (error)
@@ -1502,10 +1598,15 @@ bool removeToTrash(const QString &path, QString *error)
     if (!QFileInfo::exists(path))
         return true;
     // Tests set YADIFF_NO_TRASH so they don't fill the desktop's trash.
-    if (qEnvironmentVariableIsEmpty("YADIFF_NO_TRASH") && QFile::moveToTrash(path))
+    if (qEnvironmentVariableIsEmpty("YADIFF_NO_TRASH") && QFile::moveToTrash(path)) {
+        qCInfo(lcFile).noquote() << "moved" << path << "to the trash";
         return true;
-    if (QFile::remove(path))
+    }
+    if (QFile::remove(path)) {
+        qCInfo(lcFile).noquote() << "deleted" << path;
         return true;
+    }
+    qCWarning(lcFile).noquote() << "could not delete" << path;
     if (error)
         *error = QStringLiteral("Could not delete %1").arg(path);
     return false;
@@ -1513,6 +1614,21 @@ bool removeToTrash(const QString &path, QString *error)
 } // namespace
 
 bool GitRepo::revert(const QVector<FileChange> &changes, const Comparison &displayedCmp, QString *error) const
+{
+    QStringList paths;
+    for (const FileChange &fc : changes)
+        paths << fc.path;
+    qCInfo(lcFile).noquote() << "reverting" << paths.join(QStringLiteral(", ")) << "in" << displayedCmp.describe();
+    QString err;
+    const bool ok = revertCore(changes, displayedCmp, &err);
+    if (!ok)
+        qCWarning(lcFile).noquote() << "reverting failed:" << err;
+    if (error && !err.isEmpty())
+        *error = err;
+    return ok;
+}
+
+bool GitRepo::revertCore(const QVector<FileChange> &changes, const Comparison &displayedCmp, QString *error) const
 {
     for (const FileChange &displayed : changes) {
         if (displayed.status == u'=')
@@ -1527,6 +1643,7 @@ bool GitRepo::revert(const QVector<FileChange> &changes, const Comparison &displ
                 return false;
             if (QFileInfo(left).isFile()) {
                 QDir().mkpath(QFileInfo(right).absolutePath());
+                qCInfo(lcFile).noquote() << "copying" << left << "over" << right;
                 if (!QFile::copy(left, right)) {
                     if (error)
                         *error = QStringLiteral("Could not copy %1 to %2").arg(left, right);

@@ -359,6 +359,56 @@ Tokens are never put on a command line. Git gets them through `GIT_CONFIG_*` env
 as an `http.extraHeader`. yadiff refuses to send credentials over plain HTTP, except to
 `localhost`, which the tests use.
 
+## Logging
+
+yadiff keeps a log of what it does, for tracing a problem after the fact. Every yadiff process
+appends to the same file, and each line names its process and thread:
+
+- **Linux:** `~/.cache/yadiff/yadiff.log`
+- **Windows:** `%LOCALAPPDATA%\cache\yadiff\yadiff.log`
+
+**Help > Open log file** opens it, and **Help > About** shows where it is. When it passes 5 MB at
+startup it becomes `yadiff.log.1`, replacing the previous one.
+
+At the default level, `info`, the log has:
+
+- the version, command line, system, Qt and git versions, and which yadiff-related environment
+  variables are set (names only, except harmless ones like `YADIFF_LOG`);
+- every comparison opened, and every git, `gh`, `az`, `secret-tool` and `git apply` command, with
+  its folder, exit status, time and output size, and its error output when it failed;
+- every HTTP request, with its method, URL, status, time and size. A failed request also gets the
+  request header names, the response headers that identify it (Azure DevOps `ActivityId` and
+  `X-VSS-E2EID`, GitHub `X-GitHub-Request-Id`, `WWW-Authenticate`, `Location`) and the error body;
+- each step of opening a pull request: the credential chosen and where it came from, the PR's
+  commits, whether your clone or yadiff's cache is used, each fetch attempt, and where it failed;
+- files written: saves, merges, patches, sessions, reports, staging, reverts and deletions;
+- every message box and its answer, every status bar message, and diffs that took over 0.5 s;
+- a crash's signal and backtrace (Linux) or exception code (Windows).
+
+**Help > Detailed logging**, or `--log-level debug`, adds:
+
+- the error output of commands that worked;
+- all response headers;
+- the timing of every diff;
+- each menu item, toolbar button, shortcut and button used.
+
+The auto-reload poll's `git status`, which runs every two seconds, is logged only at that level.
+
+`--log FILE` or `YADIFF_LOG` writes somewhere else: `-` means the terminal, and `off` means no log.
+`--log-level` or `YADIFF_LOG_LEVEL` sets the level for one run. It can be `error`, `warning`, `info`
+or `debug`.
+
+**Secrets stay out:**
+
+- A command's input and standard output are never logged. Those are where `git credential`,
+  `az account get-access-token` and `secret-tool` pass tokens.
+- Every line is scrubbed before it's written. The credentials yadiff used become `***`, and so does
+  anything that looks like one: URL passwords, `Authorization`/`Bearer`/`Basic` values, GitHub and
+  Azure DevOps tokens, JWTs, and `token=`-style query parameters.
+
+The log still names your organization, projects, repositories, branches and file paths, so read it
+before sharing it.
+
 ## Building
 
 ### Linux
@@ -426,7 +476,11 @@ ctest --test-dir build --output-on-failure
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, fetching, threads, comments, replies, votes, and the real `yadiff -ado` command
-  line. The keyring is redirected to a temporary file there.
+  line, including that its log traces each step and never contains the token. The keyring is
+  redirected to a temporary file there.
+- `test_log` covers secret scrubbing (URL passwords, auth headers, GitHub and Azure DevOps tokens,
+  JWTs, query parameters and registered secrets), command-line quoting, levels, the file format,
+  failed and quiet commands.
 - `test_update` covers version comparison, telling an `install.sh` snapshot from other installs,
   replacing files in use the Windows way, and reading the latest release from a fake GitHub API.
 - `test_navigation` drives the real window offscreen. It checks change navigation across files, the
@@ -478,6 +532,7 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |
 | `src/PrReview.*` | Review operations for whichever host a PR is on |
 | `src/Http.*`, `src/SecretStore.*` | HTTP client, system keyring |
+| `src/Log.*`, `src/UiLog.*` | The log: categories, file, secret scrubbing, crash handler; dialogs and actions |
 | `src/Updater.*` | Update checks and installs from GitHub releases |
 | `src/ReviewStore.*` | Persisted review marks |
 | `src/CodeView.*` | Text view: gutter, move annotations, folds, search hits, wrap padding, editing |

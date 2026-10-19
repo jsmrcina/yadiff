@@ -1,5 +1,7 @@
 #include "TextFile.h"
 
+#include "Log.h"
+
 #include <QFile>
 
 namespace TextFile {
@@ -34,16 +36,13 @@ bool write(const QString &path, const Content &c, QString *error)
             data += c.eol;
     }
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(data) != data.size()) {
+        qCWarning(lcFile).noquote() << "could not write" << path << ":" << f.errorString();
         if (error)
             *error = f.errorString();
         return false;
     }
-    if (f.write(data) != data.size()) {
-        if (error)
-            *error = f.errorString();
-        return false;
-    }
+    qCInfo(lcFile).noquote() << "saved" << path << "(" << c.lines.size() << "lines," << data.size() << "bytes)";
     return true;
 }
 

@@ -21,6 +21,7 @@ struct Credential {
     QString secret;
     QString source; // where it came from, for messages ("keyring", "Azure CLI", ...)
     QByteArray authorizationHeader() const;
+    QString kindName() const; // "personal access token" or "bearer token", for the log
 };
 
 // Canonical organisation URL: https://dev.azure.com/ORG for both cloud spellings,

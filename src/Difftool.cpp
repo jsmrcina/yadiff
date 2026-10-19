@@ -1,5 +1,7 @@
 #include "Difftool.h"
 
+#include "Log.h"
+
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QProcess>
@@ -10,19 +12,24 @@ namespace {
 bool git(const QStringList &args, QString *out, QString *error)
 {
     QProcess p;
+    Log::ProcessTrace trace(lcGit());
     p.start(QStringLiteral("git"), args);
     if (!p.waitForStarted()) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start git.");
         return false;
     }
     p.waitForFinished(-1);
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
     if (out)
-        *out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        *out = QString::fromUtf8(stdOut).trimmed();
     // `git config --unset` exits 5 when the key is absent; treat that as success.
-    if (p.exitCode() != 0 && !(args.contains(QStringLiteral("--unset")) && p.exitCode() == 5)) {
+    const bool ok = p.exitCode() == 0 || (args.contains(QStringLiteral("--unset")) && p.exitCode() == 5);
+    trace.done(p, stdOut.size(), stdErr, ok);
+    if (!ok) {
         if (error)
-            *error = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            *error = QString::fromUtf8(stdErr).trimmed();
         return false;
     }
     return true;

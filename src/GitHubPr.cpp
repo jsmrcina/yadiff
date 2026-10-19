@@ -1,5 +1,7 @@
 #include "GitHubPr.h"
 
+#include "Log.h"
+
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -20,19 +22,23 @@ bool runProcess(const QString &program, const QStringList &args, const QString &
     env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0")); // never hang on a password prompt
     env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
     p.setProcessEnvironment(env);
+    Log::ProcessTrace trace(program == QLatin1String("git") ? lcGit() : lcGitHub());
     p.start(program, args);
     if (!p.waitForStarted()) {
+        trace.done(p);
         if (error)
             *error = QStringLiteral("Could not start %1.").arg(program);
         return false;
     }
     p.closeWriteChannel();
     p.waitForFinished(-1);
+    const QByteArray stdOut = p.readAllStandardOutput(), stdErr = p.readAllStandardError();
+    trace.done(p, stdOut.size(), stdErr);
     if (out)
-        *out = p.readAllStandardOutput();
+        *out = stdOut;
     if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
         if (error)
-            *error = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            *error = QString::fromUtf8(stdErr).trimmed();
         return false;
     }
     return true;
@@ -121,9 +127,14 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
                                 const std::function<void(const QString &)> &progress)
 {
     auto say = [&](const QString &s) {
+        qCInfo(lcGitHub).noquote() << s;
         if (progress)
             progress(s);
     };
+    qCInfo(lcGitHub).noquote() << QStringLiteral("resolving %1/%2#%3 (local folder %4)")
+                                      .arg(ref.owner, ref.repo)
+                                      .arg(ref.number)
+                                      .arg(QDir::toNativeSeparators(localDir));
     const QString prUrl = QStringLiteral("https://github.com/%1/%2/pull/%3").arg(ref.owner, ref.repo).arg(ref.number);
 
     // 1. Metadata from gh (handles authentication for private repositories).
@@ -142,6 +153,9 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
         // For merged PRs this is where the base branch stood, which keeps their diff
         // meaningful after the base has moved past (or absorbed) the PR head.
         baseOid = o.value(QStringLiteral("baseRefOid")).toString();
+        qCInfo(lcGitHub).noquote() << QStringLiteral("PR #%1: \"%2\", %3 (%4) into %5 (%6)")
+                                          .arg(ref.number)
+                                          .arg(title, headRefName, headOid, baseRef, baseOid);
     } else {
         say(QStringLiteral("gh unavailable (%1); using GitHub's pull refs").arg(ghError.section(u'\n', 0, 0)));
     }
@@ -156,8 +170,13 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
     if (repoPath.isEmpty()) {
         repoPath = cacheRepoPath(ref);
         remote = QStringLiteral("origin");
-        if (!ensureCacheRepo(ref, repoPath, error))
+        qCInfo(lcGitHub).noquote() << "using yadiff's cache" << QDir::toNativeSeparators(repoPath);
+        if (!ensureCacheRepo(ref, repoPath, error)) {
+            qCWarning(lcGitHub).noquote() << "could not create the cache repository:" << (error ? *error : QString());
             return std::nullopt;
+        }
+    } else {
+        qCInfo(lcGitHub).noquote() << "using the local clone" << QDir::toNativeSeparators(repoPath) << "remote" << remote;
     }
     auto repo = GitRepo::open(repoPath, error);
     if (!repo)
@@ -182,6 +201,7 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
                 *error += QStringLiteral("\nWithout the gh CLI yadiff relies on GitHub's merge ref, which closed and "
                                          "conflicting PRs don't have. Install gh and run `gh auth login`.");
         }
+        qCWarning(lcGitHub).noquote() << "fetch failed:" << fetchError;
         return std::nullopt;
     }
 
@@ -196,6 +216,7 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
             if (line.indexOf('\t') >= 40)
                 fetched << QString::fromLatin1(line.left(line.indexOf('\t')));
     if (fetched.size() < 2) {
+        qCWarning(lcGitHub).noquote() << "FETCH_HEAD" << fh.fileName() << "lists" << fetched.size() << "commits, expected 2";
         if (error)
             *error = QStringLiteral("Could not read the fetched PR refs.");
         return std::nullopt;
@@ -221,8 +242,11 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
 
     // GitHub's "Files changed" shows the PR head against the merge base.
     const auto base = repo->mergeBase(baseTip, headOid, error);
-    if (!base)
+    if (!base) {
+        qCWarning(lcGitHub).noquote() << "no merge base of" << baseTip << "and" << headOid << ":" << (error ? *error : QString());
         return std::nullopt;
+    }
+    qCInfo(lcGitHub).noquote() << "PR" << ref.number << "resolved: merge base" << *base << "head" << headOid;
 
     Resolved r;
     r.ref = ref;

@@ -3,6 +3,7 @@
 #include "CodeView.h"
 #include "DiffPane.h"
 #include "LineDiff.h"
+#include "Log.h"
 #include "Settings.h"
 #include "Syntax.h"
 
@@ -437,12 +438,15 @@ bool MergeWindow::save()
     }
     QFile f(m_in.outputPath);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(data) != data.size()) {
+        qCWarning(lcFile).noquote() << "could not write the merge result" << m_in.outputPath << ":" << f.errorString();
         QMessageBox::warning(this, tr("Save"), tr("Could not write %1: %2").arg(m_in.outputPath, f.errorString()));
         return false;
     }
     f.close();
     m_result->document()->setModified(false);
     m_savedResolved = open == 0 && !markers;
+    qCInfo(lcFile).noquote() << "saved the merge result" << m_in.outputPath << "(" << data.size() << "bytes," << open
+                             << "conflicts unresolved," << (markers ? "with" : "no") << "conflict markers)";
     statusBar()->showMessage(tr("Saved %1").arg(m_in.outputPath), 4000);
     emit saved(m_savedResolved);
     return true;
