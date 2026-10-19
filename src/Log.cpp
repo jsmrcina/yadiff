@@ -71,6 +71,7 @@ State &state()
 
 std::atomic<int> g_crashFd{-1};
 thread_local int t_quiet = 0;
+std::atomic<bool> g_stopping{false};
 
 const char *typeName(QtMsgType type)
 {
@@ -466,19 +467,38 @@ ProcessTrace::ProcessTrace(const QLoggingCategory &category)
     m_timer.start();
 }
 
+void stopChildProcesses()
+{
+    g_stopping = true;
+}
+
+bool stopping()
+{
+    return g_stopping;
+}
+
 bool ProcessTrace::wait(QProcess &p, int timeoutMs)
 {
     QElapsedTimer waited;
     waited.start();
     qint64 nextReport = 10000;
     for (;;) {
-        qint64 slice = nextReport - waited.elapsed();
+        // Short slices, so stopChildProcesses() is noticed quickly.
+        qint64 slice = std::min<qint64>(250, nextReport - waited.elapsed());
         if (timeoutMs >= 0)
             slice = std::min<qint64>(slice, timeoutMs - waited.elapsed());
         if (p.waitForFinished(int(std::max<qint64>(slice, 1))))
             return true;
         if (p.state() == QProcess::NotRunning)
             return false; // failed to start, or already collected
+        if (g_stopping) {
+            if (m_category.isInfoEnabled())
+                QMessageLogger(nullptr, 0, nullptr, m_category.categoryName()).info().noquote()
+                    << "stopping (yadiff is exiting):" << commandLine(p.program(), p.arguments());
+            p.kill();
+            p.waitForFinished(5000);
+            return false;
+        }
         if (timeoutMs >= 0 && waited.elapsed() >= timeoutMs)
             return false;
         if (waited.elapsed() >= nextReport) {

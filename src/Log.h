@@ -97,6 +97,12 @@ public:
     Quiet &operator=(const Quiet &) = delete;
 };
 
+// At exit: every command a ProcessTrace is waiting on is killed (within a quarter of a
+// second), and stopping() tells long work to give up, so closing the window never leaves
+// yadiff (or a git fetch) running in the background.
+void stopChildProcesses();
+bool stopping();
+
 // Logs a detached start (a new window, an editor, gitk).
 void launched(const QLoggingCategory &category, const QString &program, const QStringList &args, bool ok);
 

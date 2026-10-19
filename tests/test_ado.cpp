@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QtConcurrent/QtConcurrentRun>
 
 namespace {
 
@@ -53,6 +54,8 @@ public:
     QString remoteUrl;
     QString sourceCommit, targetCommit;
     int vote = 5; // user-1's vote, as PUT to the reviewers endpoint
+    QByteArray changesJson;              // the latest iteration's changes
+    QHash<QByteArray, QByteArray> blobs; // blob id -> content
     quint16 port = 0;
 
     FakeAdo()
@@ -139,6 +142,26 @@ private:
                                                          QJsonObject{{QStringLiteral("id"), QStringLiteral("USER-1")},
                                                                      {QStringLiteral("vote"), vote}}}}})
                        .toJson();
+        } else if (r.path.contains("/pullRequests/7/iterations/2/changes")) {
+            body = changesJson;
+        } else if (r.path.contains("/pullRequests/7/iterations")) {
+            body = QJsonDocument(
+                       QJsonObject{{QStringLiteral("value"),
+                                    QJsonArray{QJsonObject{{QStringLiteral("id"), 1},
+                                                           {QStringLiteral("sourceRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}},
+                                                           {QStringLiteral("commonRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}}},
+                                               QJsonObject{{QStringLiteral("id"), 2},
+                                                           {QStringLiteral("sourceRefCommit"), QJsonObject{{QStringLiteral("commitId"), sourceCommit}}},
+                                                           {QStringLiteral("commonRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}}}}}})
+                       .toJson();
+        } else if (r.path.contains("/_apis/git/repositories/repo/blobs/")) {
+            const QByteArray id = QString::fromLatin1(r.path).section(u'/', -1).section(u'?', 0, 0).toLatin1();
+            if (blobs.contains(id)) {
+                body = blobs.value(id);
+            } else {
+                code = 404;
+                body = R"({"message":"no such blob"})";
+            }
         } else if (r.path.contains("/pullRequests/7")) {
             body = QJsonDocument(QJsonObject{
                                      {QStringLiteral("title"), QStringLiteral("Make two loud")},
@@ -261,6 +284,26 @@ private slots:
         QVERIFY(error.contains(QStringLiteral("unencrypted")));
     }
 
+    void parsesTheRestApisView()
+    {
+        QCOMPARE(AdoPr::safeRelativePath(QStringLiteral("/dir/a.txt")), QStringLiteral("dir/a.txt"));
+        for (const char *bad : {"/../x", "/a/../../x", "/a/./b", "/C:/x", "/a\\b", "/", "//", "/a//b"})
+            QVERIFY2(AdoPr::safeRelativePath(QString::fromLatin1(bad)).isEmpty(), bad);
+        const auto it = AdoPr::parseLatestIteration(R"({"value":[
+            {"id":3,"sourceRefCommit":{"commitId":"h3"},"commonRefCommit":{"commitId":"b3"}},
+            {"id":1,"sourceRefCommit":{"commitId":"h1"},"commonRefCommit":{"commitId":"b1"}}]})");
+        QVERIFY(it && it->id == 3 && it->headCommit == QLatin1String("h3") && it->baseCommit == QLatin1String("b3"));
+        int next = -1;
+        const auto changes = AdoPr::parseChanges(R"({"changeEntries":[
+            {"changeType":"edit, rename","originalPath":"/old.txt","item":{"path":"/new.txt","objectId":"n","originalObjectId":"o"}},
+            {"changeType":"delete","item":{"path":"/gone.txt","objectId":"g"}}],"nextSkip":2000})", &next);
+        QCOMPARE(next, 2000);
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(changes[0].oldPath, QStringLiteral("/old.txt"));
+        QCOMPARE(changes[0].path, QStringLiteral("/new.txt"));
+        QVERIFY(changes[1].path.isEmpty() && changes[1].oldObjectId == QLatin1String("g") && changes[1].objectId.isEmpty());
+    }
+
     void parsesThreadsAndBuildsPayloads()
     {
         const QByteArray json = R"({"value":[{"id":5,"threadContext":{"filePath":"/src/a.cpp","rightFileStart":{"line":10},"rightFileEnd":{"line":12}},
@@ -297,13 +340,20 @@ private slots:
         QDir().mkpath(work);
         git(work, {QStringLiteral("init"), QStringLiteral("-q"), QStringLiteral("-b"), QStringLiteral("main")});
         write(work + QStringLiteral("/a.txt"), "one\ntwo\nthree\n");
+        write(work + QStringLiteral("/gone.txt"), "going\n");
+        QDir().mkpath(work + QStringLiteral("/sub"));
+        write(work + QStringLiteral("/sub/r.txt"), "renamed\n");
         git(work, {QStringLiteral("add"), QStringLiteral("-A")});
         git(work, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("base")});
         QByteArray target, source;
         git(work, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")}, &target);
         git(work, {QStringLiteral("switch"), QStringLiteral("-q"), QStringLiteral("-c"), QStringLiteral("feature")});
         write(work + QStringLiteral("/a.txt"), "one\nTWO\nthree\n");
-        git(work, {QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("loud")});
+        write(work + QStringLiteral("/new.txt"), "fresh\n");
+        git(work, {QStringLiteral("rm"), QStringLiteral("-q"), QStringLiteral("gone.txt")});
+        git(work, {QStringLiteral("mv"), QStringLiteral("sub/r.txt"), QStringLiteral("sub/r2.txt")});
+        git(work, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(work, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("loud")});
         git(work, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")}, &source);
         git(tmp.path(), {QStringLiteral("clone"), QStringLiteral("-q"), QStringLiteral("--bare"), work, remote});
 
@@ -312,6 +362,40 @@ private slots:
         ado.remoteUrl = remote;
         ado.sourceCommit = QString::fromLatin1(source);
         ado.targetCommit = QString::fromLatin1(target);
+        // The API's view of the PR: its changed files with their blob ids, and the blobs.
+        auto blobId = [&](const QByteArray &commit, const char *path) {
+            QByteArray id;
+            git(work, {QStringLiteral("rev-parse"), QString::fromLatin1(commit + ':' + path)}, &id);
+            QProcess cat; // not git(), which trims: a blob's last newline matters here
+            cat.setWorkingDirectory(work);
+            cat.start(QStringLiteral("git"), {QStringLiteral("cat-file"), QStringLiteral("blob"), QString::fromLatin1(id)});
+            cat.waitForFinished();
+            ado.blobs.insert(id, cat.readAllStandardOutput());
+            return QString::fromLatin1(id);
+        };
+        auto entry = [](const char *type, const QString &path, const QString &id, const QString &oldId, const QString &original = {}) {
+            QJsonObject item{{QStringLiteral("path"), path}};
+            if (!id.isEmpty())
+                item.insert(QStringLiteral("objectId"), id);
+            if (!oldId.isEmpty())
+                item.insert(QStringLiteral("originalObjectId"), oldId);
+            QJsonObject e{{QStringLiteral("changeType"), QLatin1String(type)}, {QStringLiteral("item"), item}};
+            if (!original.isEmpty())
+                e.insert(QStringLiteral("originalPath"), original);
+            return e;
+        };
+        ado.changesJson = QJsonDocument(QJsonObject{
+            {QStringLiteral("changeEntries"),
+             QJsonArray{entry("edit", QStringLiteral("/a.txt"), blobId(source, "a.txt"), blobId(target, "a.txt")),
+                        entry("add", QStringLiteral("/new.txt"), blobId(source, "new.txt"), {}),
+                        entry("delete", QStringLiteral("/gone.txt"), {}, blobId(target, "gone.txt")),
+                        entry("rename", QStringLiteral("/sub/r2.txt"), blobId(source, "sub/r2.txt"), blobId(target, "sub/r.txt"),
+                              QStringLiteral("/sub/r.txt")),
+                        QJsonObject{{QStringLiteral("changeType"), QStringLiteral("edit")},
+                                    {QStringLiteral("item"), QJsonObject{{QStringLiteral("path"), QStringLiteral("/sub")},
+                                                                         {QStringLiteral("isFolder"), true}}}},
+                        entry("add", QStringLiteral("/../escape.txt"), blobId(source, "new.txt"), {})}},
+            {QStringLiteral("nextSkip"), 0}}).toJson();
         const auto ref = AdoPr::parse(ado.base() + QStringLiteral("/org/My%20Project/_git/repo/pullrequest/7"));
         QVERIFY(ref);
         const AdoAuth::Credential cred{AdoAuth::Credential::Kind::Pat, QString::fromLatin1(kPat), QStringLiteral("test")};
@@ -324,8 +408,17 @@ private slots:
         QCOMPARE(status, 203);
         QVERIFY(!AdoAuth::authProblem(status).isEmpty());
 
-        // The right one resolves the PR into yadiff's cache and diffs source against the merge base.
-        auto pr = AdoPr::resolve(*ref, cred, tmp.path(), &error, &status);
+        // Without a clone, the right one downloads the PR's changed files (both versions of
+        // each) from the latest iteration, against its merge base. No git fetch at all.
+        // On a worker thread, as in the window: the download waits for its own threads, and
+        // this one has to keep serving the fake server meanwhile.
+        auto resolveOffThread = [&] {
+            auto future = QtConcurrent::run([&] { return AdoPr::resolve(*ref, cred, tmp.path(), &error, &status); });
+            while (!future.isFinished())
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            return future.result();
+        };
+        auto pr = resolveOffThread();
         QVERIFY2(pr, qPrintable(error));
         QCOMPARE(pr->headOid, ado.sourceCommit);
         QCOMPARE(pr->baseOid, ado.targetCommit);
@@ -334,15 +427,47 @@ private slots:
         QVERIFY(pr->repoPath.startsWith(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)));
         for (const auto &r : ado.requests)
             QVERIFY(r.path.contains("/My Project/")); // project names are URL-encoded properly
-        auto repo = GitRepo::open(pr->repoPath, &error);
-        QVERIFY(repo && repo->isBare());
+        auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("(missing)");
+        };
+        QCOMPARE(read(pr->baseDir + QStringLiteral("/a.txt")), QByteArray("one\ntwo\nthree\n"));
+        QCOMPARE(read(pr->headDir + QStringLiteral("/a.txt")), QByteArray("one\nTWO\nthree\n"));
+        QCOMPARE(read(pr->headDir + QStringLiteral("/new.txt")), QByteArray("fresh\n"));
+        QVERIFY(!QFile::exists(pr->baseDir + QStringLiteral("/new.txt")));
+        QCOMPARE(read(pr->baseDir + QStringLiteral("/gone.txt")), QByteArray("going\n"));
+        QVERIFY(!QFile::exists(pr->headDir + QStringLiteral("/gone.txt")));
+        QCOMPARE(read(pr->baseDir + QStringLiteral("/sub/r.txt")), QByteArray("renamed\n"));
+        QCOMPARE(read(pr->headDir + QStringLiteral("/sub/r2.txt")), QByteArray("renamed\n"));
+        // "/../escape.txt" was refused: nothing outside the two folders.
+        QVERIFY(!QFile::exists(pr->repoPath + QStringLiteral("/escape.txt")));
+        QVERIFY(!QFile::exists(QFileInfo(pr->repoPath).absolutePath() + QStringLiteral("/escape.txt")));
+        // A second look at the same iteration downloads nothing.
+        auto blobRequests = [&] {
+            int n = 0;
+            for (const auto &r : ado.requests)
+                n += r.path.contains("/blobs/");
+            return n;
+        };
+        const int before = blobRequests();
+        QVERIFY(resolveOffThread());
+        QCOMPARE(blobRequests(), before);
+
+        // The two folders compare like any two folders, read-only.
+        auto repo = std::optional<GitRepo>(GitRepo::forPaths(pr->repoPath));
         Comparison cmp;
-        cmp.mode = Comparison::Mode::Revisions;
-        cmp.rev1 = pr->baseOid;
-        cmp.rev2 = pr->headOid;
+        cmp.mode = Comparison::Mode::Paths;
+        cmp.leftPath = pr->baseDir;
+        cmp.rightPath = pr->headDir;
+        cmp.readOnly = true;
         const auto changes = repo->listChanges(cmp, &error);
-        QCOMPARE(changes.size(), 1);
-        QCOMPARE(changes[0].path, QStringLiteral("a.txt"));
+        QStringList paths;
+        for (const FileChange &fc : changes)
+            paths << fc.path;
+        QVERIFY2(paths.contains(QStringLiteral("a.txt")) && paths.contains(QStringLiteral("new.txt"))
+                     && paths.contains(QStringLiteral("gone.txt")) && paths.contains(QStringLiteral("sub/r2.txt")),
+                 qPrintable(paths.join(u',')));
+        QVERIFY(repo->diskPath(changes[0], cmp, true).isEmpty());
 
         // Review operations through the same entry points the window uses.
         cmp.prHost = QStringLiteral("ado");
@@ -435,9 +560,9 @@ private slots:
         if (qEnvironmentVariableIsSet("YADIFF_TEST_DUMP_LOG"))
             qInfo().noquote() << log;
         for (const char *expected : {"yadiff.auth", "personal access token from YADIFF_ADO_PAT", "GET http://127.0.0.1",
-                                     "/pullRequests/7?api-version=7.1 -> HTTP 200", "resolving PR 7", "using yadiff's cache",
-                                     "git init --bare", "with the YADIFF_ADO_PAT credential", "git fetch --no-tags",
-                                     "PR 7 resolved: merge base", "YADIFF_ADO_PAT (set)", "Authorization"})
+                                     "/pullRequests/7?api-version=7.1 -> HTTP 200", "resolving PR 7", "is not a git working tree",
+                                     "/iterations/2/changes", "/blobs/", "PR 7 downloaded", "YADIFF_ADO_PAT (set)",
+                                     "Authorization"})
             QVERIFY2(log.contains(expected), expected);
         QVERIFY(!log.contains(kPat));
         QVERIFY(!log.contains(patHeader()));
@@ -462,14 +587,14 @@ private slots:
         const QByteArray wlog = windowLog.readAll();
         QVERIFY(wlog.contains("a pull request, opened in the window"));
         QVERIFY(wlog.contains("in the background"));
-        QVERIFY(wlog.contains("PR 7 resolved"));
-        QVERIFY(wlog.contains("(without line counts)"));
+        QVERIFY(wlog.contains("is downloaded already")); // the report's download, reused
     }
 
     void cleanupTestCase()
     {
         // Test mode keeps these under ~/.qttest, never the real cache; still, tidy up.
         QDir(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/yadiff/ado")).removeRecursively();
+        QDir(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/yadiff/ado-pr")).removeRecursively();
     }
 
 private:

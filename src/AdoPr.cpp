@@ -5,6 +5,9 @@
 #include "Log.h"
 
 #include <QDir>
+#include <QThreadPool>
+#include <QDirIterator>
+#include <QDateTime>
 #include <QFile>
 #include <QHash>
 #include <QJsonArray>
@@ -14,6 +17,10 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QtConcurrent/QtConcurrentMap>
+
+#include <atomic>
+#include <tuple>
 
 namespace {
 
@@ -31,8 +38,17 @@ QUrl apiUrl(const AdoPr::Ref &ref, const QString &tail)
     return QUrl(base, QUrl::StrictMode);
 }
 
+// Repository-level API (not under the pull request), e.g. "/blobs/ID".
+QUrl repoApiUrl(const AdoPr::Ref &ref, const QString &tail)
+{
+    QString base = ref.collectionUrl.toString(QUrl::StripTrailingSlash) + u'/' + seg(ref.project)
+                 + QStringLiteral("/_apis/git/repositories/") + seg(ref.repo) + tail;
+    base += (tail.contains(u'?') ? u'&' : u'?') + QStringLiteral("api-version=7.1");
+    return QUrl(base, QUrl::StrictMode);
+}
+
 Http::Response call(const QByteArray &method, const QUrl &url, const AdoAuth::Credential &cred, const QByteArray &body,
-                    QString *error, int *httpStatus = nullptr)
+                    QString *error, int *httpStatus = nullptr, const QByteArray &accept = "application/json")
 {
     if (!Http::safeForCredentials(url)) {
         qCWarning(lcAdo).noquote() << "refusing to send credentials to" << Log::url(url);
@@ -40,7 +56,7 @@ Http::Response call(const QByteArray &method, const QUrl &url, const AdoAuth::Cr
             *error = QStringLiteral("Refusing to send credentials over an unencrypted connection to %1.").arg(url.host());
         return {};
     }
-    Http::Response r = Http::request(method, url, {{"Authorization", cred.authorizationHeader()}, {"Accept", "application/json"}}, body);
+    Http::Response r = Http::request(method, url, {{"Authorization", cred.authorizationHeader()}, {"Accept", accept}}, body);
     if (httpStatus)
         *httpStatus = r.status;
     if (!r.error.isEmpty()) {
@@ -143,14 +159,40 @@ GitHubReview::Comment commentFrom(const QJsonObject &c, qint64 threadId, const Q
     return out;
 }
 
-QString cachePath(const AdoPr::Ref &ref)
+QString downloadRoot()
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation);
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)).filePath(QStringLiteral("yadiff/ado-pr"));
+}
+
+// Where one version of a PR is downloaded: by organisation, repository, PR and commits.
+QString downloadPath(const AdoPr::Ref &ref, const AdoPr::Iteration &it)
+{
     QString org = AdoAuth::organizationUrl(ref.collectionUrl).toString(QUrl::RemoveScheme | QUrl::StripTrailingSlash).mid(2);
     org.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")), QStringLiteral("_"));
     QString name = ref.project + u'_' + ref.repo;
     name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")), QStringLiteral("_"));
-    return QDir(base).filePath(QStringLiteral("yadiff/ado/%1/%2.git").arg(org.toLower(), name.toLower()));
+    return QDir(downloadRoot())
+        .filePath(QStringLiteral("%1/%2/%3-%4-%5")
+                      .arg(org.toLower(), name.toLower())
+                      .arg(ref.id)
+                      .arg(it.headCommit.left(12), it.baseCommit.left(12)));
+}
+
+// Downloads older than a week go (a PR looked at again is downloaded again).
+void removeOldDownloads()
+{
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-7);
+    QDirIterator it(downloadRoot(), {QStringLiteral(".yadiff-complete")}, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+    QStringList old;
+    while (it.hasNext()) {
+        it.next();
+        if (it.fileInfo().lastModified() < cutoff)
+            old << it.fileInfo().absolutePath();
+    }
+    for (const QString &dir : std::as_const(old)) {
+        qCInfo(lcAdo).noquote() << "removing an old download:" << QDir::toNativeSeparators(dir);
+        QDir(dir).removeRecursively();
+    }
 }
 
 } // namespace
@@ -238,6 +280,189 @@ std::optional<Info> info(const Ref &ref, const AdoAuth::Credential &cred, QStrin
     return i;
 }
 
+std::optional<Iteration> parseLatestIteration(const QByteArray &json)
+{
+    std::optional<Iteration> latest;
+    for (const QJsonValue &v : QJsonDocument::fromJson(json).object().value(QStringLiteral("value")).toArray()) {
+        const QJsonObject o = v.toObject();
+        Iteration it;
+        it.id = o.value(QStringLiteral("id")).toInt();
+        it.headCommit = o.value(QStringLiteral("sourceRefCommit")).toObject().value(QStringLiteral("commitId")).toString();
+        it.baseCommit = o.value(QStringLiteral("commonRefCommit")).toObject().value(QStringLiteral("commitId")).toString();
+        if (it.id > 0 && !it.headCommit.isEmpty() && !it.baseCommit.isEmpty() && (!latest || it.id > latest->id))
+            latest = it;
+    }
+    return latest;
+}
+
+QVector<Change> parseChanges(const QByteArray &json, int *nextSkip)
+{
+    const QJsonObject top = QJsonDocument::fromJson(json).object();
+    if (nextSkip)
+        *nextSkip = top.value(QStringLiteral("nextSkip")).toInt();
+    QVector<Change> out;
+    for (const QJsonValue &v : top.value(QStringLiteral("changeEntries")).toArray()) {
+        const QJsonObject e = v.toObject();
+        const QJsonObject item = e.value(QStringLiteral("item")).toObject();
+        if (item.value(QStringLiteral("isFolder")).toBool() || item.value(QStringLiteral("gitObjectType")).toString() == QLatin1String("tree"))
+            continue;
+        const QString type = e.value(QStringLiteral("changeType")).toString().toLower();
+        const QString path = item.value(QStringLiteral("path")).toString();
+        QString original = e.value(QStringLiteral("originalPath")).toString();
+        if (original.isEmpty())
+            original = e.value(QStringLiteral("sourceServerItem")).toString();
+        Change c;
+        c.objectId = item.value(QStringLiteral("objectId")).toString();
+        c.oldObjectId = item.value(QStringLiteral("originalObjectId")).toString();
+        if (type.contains(QLatin1String("delete"))) {
+            c.oldPath = path;
+            if (c.oldObjectId.isEmpty())
+                c.oldObjectId = c.objectId;
+            c.objectId.clear();
+        } else if (type.contains(QLatin1String("add"))) {
+            c.path = path;
+            c.oldObjectId.clear();
+        } else {
+            c.path = path;
+            c.oldPath = original.isEmpty() ? path : original;
+        }
+        if (c.path.isEmpty() && c.oldPath.isEmpty())
+            continue;
+        out.push_back(c);
+    }
+    return out;
+}
+
+QString safeRelativePath(const QString &apiPath)
+{
+    QString p = apiPath;
+    while (p.startsWith(u'/'))
+        p.remove(0, 1);
+    if (p.isEmpty() || p.contains(u'\\') || p.contains(u':') || p.contains(QChar(0)))
+        return {};
+    for (const QString &part : p.split(u'/'))
+        if (part.isEmpty() || part == QLatin1String(".") || part == QLatin1String(".."))
+            return {};
+    return p;
+}
+
+std::optional<Resolved> download(const Ref &ref, const AdoAuth::Credential &cred, const QString &title,
+                                 const QString &sourceRef, const QString &targetRef, QString *error,
+                                 const std::function<void(const QString &)> &progress)
+{
+    auto say = [&](const QString &s) {
+        qCInfo(lcAdo).noquote() << s;
+        if (progress)
+            progress(s);
+    };
+    // The latest iteration: the PR's head and its merge base, as the Files tab shows them.
+    const Http::Response its = call("GET", apiUrl(ref, QStringLiteral("/iterations")), cred, {}, error);
+    if (!its.error.isEmpty())
+        return std::nullopt;
+    const auto it = parseLatestIteration(its.body);
+    if (!it) {
+        if (error)
+            *error = QStringLiteral("Azure DevOps did not report the pull request's iterations.");
+        return std::nullopt;
+    }
+    Resolved r;
+    r.repoPath = downloadPath(ref, *it);
+    r.baseDir = r.repoPath + QStringLiteral("/base");
+    r.headDir = r.repoPath + QStringLiteral("/head");
+    r.baseOid = it->baseCommit;
+    r.headOid = it->headCommit;
+    r.baseName = QStringLiteral("%1 (merge base %2)").arg(shortRef(targetRef), it->baseCommit.left(10));
+    r.headName = QStringLiteral("PR %1 %2 (%3)").arg(ref.id).arg(shortRef(sourceRef), it->headCommit.left(10));
+    r.title = QStringLiteral("%1/%2!%3%4").arg(ref.project, ref.repo).arg(ref.id).arg(title.isEmpty() ? QString() : QStringLiteral(": ") + title);
+    const QString marker = r.repoPath + QStringLiteral("/.yadiff-complete");
+    if (QFileInfo::exists(marker)) {
+        qCInfo(lcAdo).noquote() << "PR" << ref.id << "iteration" << it->id << "is downloaded already:"
+                                << QDir::toNativeSeparators(r.repoPath);
+        QFile touch(marker); // still in use: not old yet
+        if (touch.open(QIODevice::ReadWrite))
+            touch.setFileTime(QDateTime::currentDateTime(), QFileDevice::FileModificationTime);
+        return r;
+    }
+    removeOldDownloads();
+
+    say(QStringLiteral("Listing the pull request's files (iteration %1)…").arg(it->id));
+    QVector<Change> changes;
+    for (int skip = 0;;) {
+        const Http::Response page = call(
+            "GET", apiUrl(ref, QStringLiteral("/iterations/%1/changes?$compareTo=0&$top=2000&$skip=%2").arg(it->id).arg(skip)), cred,
+            {}, error);
+        if (!page.error.isEmpty())
+            return std::nullopt;
+        int next = 0;
+        changes += parseChanges(page.body, &next);
+        if (next <= skip)
+            break;
+        skip = next;
+    }
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << "changes" << changes.size() << "files";
+
+    // Every version to download: (blob id, file to write).
+    QVector<std::pair<QString, QString>> files;
+    QDir(r.repoPath).removeRecursively();
+    for (const Change &c : std::as_const(changes)) {
+        for (const auto &[apiPath, id, dir] : {std::make_tuple(c.oldPath, c.oldObjectId, r.baseDir),
+                                              std::make_tuple(c.path, c.objectId, r.headDir)}) {
+            if (apiPath.isEmpty() || id.isEmpty())
+                continue;
+            const QString rel = safeRelativePath(apiPath);
+            if (rel.isEmpty()) {
+                qCWarning(lcAdo).noquote() << "skipping a file with an unsafe path:" << apiPath;
+                continue;
+            }
+            files.push_back({id, dir + u'/' + rel});
+        }
+    }
+    QDir().mkpath(r.baseDir);
+    QDir().mkpath(r.headDir);
+
+    // A few at a time: each file is its own request.
+    std::atomic<int> done{0};
+    std::atomic<bool> failed{false};
+    QMutex errorMutex;
+    QString firstError;
+    QThreadPool pool;
+    pool.setMaxThreadCount(8);
+    const int total = int(files.size());
+    say(QStringLiteral("Downloading %1 files…").arg(total));
+    QtConcurrent::blockingMap(&pool, files, [&](const std::pair<QString, QString> &f) {
+        if (failed || Log::stopping())
+            return;
+        QString err;
+        const Http::Response blob = call("GET", repoApiUrl(ref, QStringLiteral("/blobs/%1?$format=octetstream").arg(f.first)), cred,
+                                         {}, &err, nullptr, "application/octet-stream");
+        QDir().mkpath(QFileInfo(f.second).absolutePath());
+        QFile out(f.second);
+        if (blob.error.isEmpty() && !(out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(blob.body) == blob.body.size()))
+            err = QStringLiteral("Could not write %1: %2").arg(QDir::toNativeSeparators(f.second), out.errorString());
+        if (!blob.error.isEmpty() || !err.isEmpty()) {
+            failed = true;
+            QMutexLocker lock(&errorMutex);
+            if (firstError.isEmpty())
+                firstError = err.isEmpty() ? blob.error : err;
+            return;
+        }
+        const int n = ++done;
+        if (progress && (n == total || n % 5 == 0))
+            progress(QStringLiteral("Downloading the changed files: %1 of %2…").arg(n).arg(total));
+    });
+    if (failed || Log::stopping()) {
+        if (error)
+            *error = firstError.isEmpty() ? QStringLiteral("The download was stopped.")
+                                          : QStringLiteral("Could not download the pull request's files: %1").arg(firstError);
+        QDir(r.repoPath).removeRecursively();
+        return std::nullopt;
+    }
+    if (QFile complete(marker); !complete.open(QIODevice::WriteOnly))
+        qCWarning(lcAdo).noquote() << "could not write" << marker << ":" << complete.errorString();
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << "downloaded" << total << "files into" << QDir::toNativeSeparators(r.repoPath);
+    return r;
+}
+
 std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred, const QString &localDir, QString *error,
                                 int *httpStatus, const std::function<void(const QString &)> &progress)
 {
@@ -282,22 +507,13 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
         qCInfo(lcAdo).noquote() << QDir::toNativeSeparators(localDir) << "is not a git working tree";
     }
     if (repoPath.isEmpty()) {
-        repoPath = cachePath(ref);
-        remote = QStringLiteral("origin");
-        qCInfo(lcAdo).noquote() << "using yadiff's cache" << QDir::toNativeSeparators(repoPath);
-        if (!QDir(repoPath).exists(QStringLiteral("HEAD"))) {
-            QDir().mkpath(repoPath);
-            const QProcessEnvironment env = fetchEnv(nullptr);
-            for (const QStringList &args : QList<QStringList>{
-                     {QStringLiteral("init"), QStringLiteral("--bare"), QStringLiteral("-q")},
-                     {QStringLiteral("remote"), QStringLiteral("add"), QStringLiteral("origin"), pr->remoteUrl},
-                     {QStringLiteral("config"), QStringLiteral("core.repositoryformatversion"), QStringLiteral("1")},
-                     {QStringLiteral("config"), QStringLiteral("extensions.partialClone"), QStringLiteral("origin")},
-                     {QStringLiteral("config"), QStringLiteral("remote.origin.promisor"), QStringLiteral("true")},
-                     {QStringLiteral("config"), QStringLiteral("remote.origin.partialclonefilter"), QStringLiteral("blob:none")}})
-                if (!git(repoPath, args, env, error))
-                    return failed("creating the cache repository");
-        }
+        // No clone here: download just the changed files. Fetching the commits into an
+        // empty repository would bring their whole history (millions of objects in a
+        // large repository).
+        auto r = download(ref, cred, pr->title, pr->sourceRef, pr->targetRef, error, progress);
+        if (!r)
+            return failed("downloading the changed files");
+        return r;
     }
     auto repo = GitRepo::open(repoPath, error);
     if (!repo)

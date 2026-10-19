@@ -1170,7 +1170,7 @@ void MainWindow::updateModeUi()
     m_stageAct->setEnabled(workingTree);
     m_unstageAct->setEnabled(workingTree);
     // Revert writes the right side: the working tree (unless swapped) or a compared folder.
-    m_revertAct->setEnabled((workingTree && !m_cmp.reversed) || m_cmp.mode == Comparison::Mode::Paths);
+    m_revertAct->setEnabled((workingTree && !m_cmp.reversed) || (m_cmp.mode == Comparison::Mode::Paths && !m_cmp.readOnly));
     m_applyPatchAct->setEnabled(m_cmp.mode == Comparison::Mode::Patch);
     syncOptionControls();
     updateCommitBar();
@@ -1613,7 +1613,8 @@ void MainWindow::reload(std::function<void()> afterFile)
             // Fully qualified folder names: the working tree or compared folder's path.
             QString folderRoot;
             if (m_cmp.mode == Comparison::Mode::Paths)
-                folderRoot = m_cmp.pathsAreFiles ? QString() : m_cmp.rightPath;
+                // A downloaded PR's folders are in yadiff's cache: show them repository-relative.
+                folderRoot = m_cmp.pathsAreFiles || m_cmp.readOnly ? QString() : m_cmp.rightPath;
             else if (!m_repo.isBare())
                 folderRoot = m_repo.root();
             m_files->setProperty("folderRoot", folderRoot);
@@ -1962,7 +1963,11 @@ void MainWindow::showFile(int index)
         right = tr("After the patch");
     } else if (m_cmp.mode == Comparison::Mode::Paths) {
         left = homeShortened(m_cmp.pathsAreFiles ? QFileInfo(m_cmp.leftPath).absolutePath() : m_cmp.leftPath);
+        if (!m_cmp.rev1Name.isEmpty()) // named sides (a downloaded pull request), not cache folders
+            left = m_cmp.rev1Name;
         right = homeShortened(m_cmp.pathsAreFiles ? QFileInfo(m_cmp.rightPath).absolutePath() : m_cmp.rightPath);
+        if (!m_cmp.rev2Name.isEmpty())
+            right = m_cmp.rev2Name;
     } else if (m_cmp.mode == Comparison::Mode::Revisions) {
         left = m_cmp.rev1Name;
         right = m_cmp.rev2.isEmpty() ? tr("Working tree") : m_cmp.rev2Name;
@@ -3215,6 +3220,15 @@ void MainWindow::downloadAgain(bool onlySelected)
         reload();
         return;
     }
+    if (m_cmp.readOnly) {
+        // Downloaded through the API: open it again, which downloads a newer iteration.
+        QString error;
+        if (auto req = ComparisonArgs::fromArguments(comparisonArguments(), QDir::homePath(), &error))
+            openInBackground(*req);
+        else
+            QMessageBox::warning(this, tr("Download again"), error);
+        return;
+    }
     // Pull requests: fetch again, which also picks up commits pushed since.
     statusBar()->showMessage(tr("Fetching the pull request again…"));
     struct Result {
@@ -3405,7 +3419,10 @@ QStringList MainWindow::comparisonArguments() const
 {
     // Arguments that open this comparison again (from any directory).
     const Comparison &c = m_cmp;
-    QStringList a{QStringLiteral("-C"), c.mode == Comparison::Mode::Patch ? c.patchBase : m_repo.root()};
+    // A downloaded PR's folder is in yadiff's cache and goes after a week: not a place to start from.
+    QStringList a{QStringLiteral("-C"), c.mode == Comparison::Mode::Patch ? c.patchBase
+                                        : c.readOnly                      ? QDir::homePath()
+                                                                          : m_repo.root()};
     if (c.prNumber > 0 && c.prHost == QLatin1String("github"))
         return a << QStringLiteral("-ghpr")
                  << QStringLiteral("https://github.com/%1/%2/pull/%3").arg(c.prOwner, c.prRepo).arg(c.prNumber);

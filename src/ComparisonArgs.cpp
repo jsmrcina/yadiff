@@ -211,16 +211,27 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
                           {QStringLiteral("head"), pr->headOid},
                           {QStringLiteral("baseName"), pr->baseName},
                           {QStringLiteral("headName"), pr->headName},
-                          {QStringLiteral("title"), pr->title}};
+                          {QStringLiteral("title"), pr->title},
+                          {QStringLiteral("baseDir"), pr->baseDir},
+                          {QStringLiteral("headDir"), pr->headDir}};
             }
         }
         auto str = [&](const char *k) { return handed.value(QLatin1String(k)).toString(); };
-        repo = GitRepo::open(str("repoPath"), &error);
-        if (!repo)
-            return failed(error);
-        cmp.mode = Comparison::Mode::Revisions;
-        cmp.rev1 = str("base");
-        cmp.rev2 = str("head");
+        if (!str("baseDir").isEmpty()) {
+            // Downloaded through the API (no clone): the two versions as folders, read-only.
+            repo = GitRepo::forPaths(str("repoPath"));
+            cmp.mode = Comparison::Mode::Paths;
+            cmp.leftPath = str("baseDir");
+            cmp.rightPath = str("headDir");
+            cmp.readOnly = true;
+        } else {
+            repo = GitRepo::open(str("repoPath"), &error);
+            if (!repo)
+                return failed(error);
+            cmp.mode = Comparison::Mode::Revisions;
+            cmp.rev1 = str("base");
+            cmp.rev2 = str("head");
+        }
         cmp.rev1Name = str("baseName");
         cmp.rev2Name = str("headName");
         cmp.title = str("title");

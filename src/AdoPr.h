@@ -40,8 +40,36 @@ std::optional<Info> info(const Ref &ref, const AdoAuth::Credential &cred, QStrin
 
 struct Resolved {
     QString repoPath, baseOid, headOid, baseName, headName, title;
+    // Without a clone of the repository: the PR's changed files, downloaded through the
+    // REST API into yadiff's cache, as two folders (merge base and PR). repoPath is their parent.
+    QString baseDir, headDir;
 };
-// Fetches the PR into the user's clone (when a remote matches) or yadiff's cache.
+
+// The REST API's view of a pull request (exposed for tests).
+struct Iteration {
+    int id = 0;
+    QString headCommit, baseCommit; // the PR's head and its merge base with the target
+};
+// The latest iteration in GET .../pullRequests/ID/iterations.
+std::optional<Iteration> parseLatestIteration(const QByteArray &json);
+struct Change {
+    QString path, oldPath;          // repository-relative; path empty when deleted, oldPath when added
+    QString objectId, oldObjectId;  // blob ids of the two versions
+};
+// GET .../iterations/N/changes?$compareTo=0: the files that differ from the merge base.
+// `nextSkip` is where the next page starts (0: none).
+QVector<Change> parseChanges(const QByteArray &json, int *nextSkip = nullptr);
+// A path from the API ("/dir/file.txt") as one that is safe to write under a folder:
+// relative, without ".." or a drive letter. Empty when it isn't.
+QString safeRelativePath(const QString &apiPath);
+// Downloads the files the PR changes (both versions) into yadiff's cache.
+std::optional<Resolved> download(const Ref &ref, const AdoAuth::Credential &cred, const QString &title,
+                                 const QString &sourceRef, const QString &targetRef, QString *error,
+                                 const std::function<void(const QString &)> &progress = {});
+
+// Fetches the PR into the user's clone (when a remote matches); without one, downloads
+// its changed files through the REST API (a clone of a large repository's history is
+// far too big to fetch).
 std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred, const QString &localDir, QString *error,
                                 int *httpStatus = nullptr, const std::function<void(const QString &)> &progress = {});
 

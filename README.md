@@ -199,8 +199,18 @@ path looks like a revision.
   source branch against its merge base with the target. Links can be `dev.azure.com`,
   `ORG.visualstudio.com`, or Azure DevOps Server collection URLs. If the current repository has a
   remote for that Azure Repo, the PR is fetched into it, trying your own git credentials first.
-  Otherwise yadiff keeps a blob-less partial clone in `~/.cache/yadiff/ado/`. Review threads,
-  comments and replies work as for GitHub. Signing in is covered in the next section.
+  - **Without a clone, git isn't used at all.** yadiff asks the REST API for the PR's latest
+    iteration (its head and merge base) and the files it changes.
+  - **Only those files are downloaded,** both versions, eight at a time, into
+    `~/.cache/yadiff/ado-pr/`. Fetching the commits into an empty repository would bring their
+    whole history, which for a large repository is millions of objects.
+  - **The PR then shows as two read-only folders,** without blame or commit stepping.
+  - **A download is reused** until the PR gets a new iteration. Downloads older than a week are
+    removed.
+  - **Download again** picks up new pushes.
+  - **Closing the window stops any git command still running for it.**
+
+  Review threads, comments and replies work as for GitHub. Signing in is covered in the next section.
 - **Voting.** Your vote is shown in the status bar ("Your vote: Approved" with a coloured dot).
   Clicking it, or the Review menu, changes it.
   - GitHub offers Approve and Request changes. Request changes needs a message.

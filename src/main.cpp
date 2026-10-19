@@ -446,6 +446,8 @@ int main(int argc, char *argv[])
         w.grabAll(grab);
         return 0;
     }
+    // Closing the window stops whatever git is still doing for it (a long fetch, say).
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [] { Log::stopChildProcesses(); });
     const int code = app.exec();
     qCInfo(lcApp) << "exiting with code" << code;
     Log::shutdown();

@@ -98,6 +98,8 @@ QString Comparison::describe() const
         s += QStringLiteral(", %1 PR %2 (%3)").arg(prHost).arg(prNumber).arg(prWebUrl);
     if (reversed)
         s += QStringLiteral(", reversed");
+    if (readOnly)
+        s += QStringLiteral(", read-only");
     if (empty)
         s += QStringLiteral(", empty");
     return s;
@@ -1149,6 +1151,8 @@ FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp,
 
 QString GitRepo::diskPath(const FileChange &fc, const Comparison &cmp, bool newSide) const
 {
+    if (cmp.readOnly)
+        return {};
     if (!cmp.reversed)
         return diskPathPhysical(fc, cmp, newSide);
     return diskPathPhysical(physicalChange(fc, cmp), physicalComparison(cmp), !newSide);

@@ -132,6 +132,9 @@ struct Comparison {
 
     // Shown in the window title instead of the default description (e.g. a PR title).
     QString title;
+    // Nothing shown is a file to edit, revert or write to (a pull request downloaded into
+    // yadiff's cache as two folders): diskPath() is empty for every side.
+    bool readOnly = false;
 
     DiffOptions options;
 

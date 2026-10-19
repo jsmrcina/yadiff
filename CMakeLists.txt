@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.16.0 LANGUAGES CXX)
+project(yadiff VERSION 0.16.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +40,7 @@ add_library(yadiffcore STATIC
     src/TextFile.cpp src/TextFile.h
 )
 target_include_directories(yadiffcore PUBLIC src)
-target_link_libraries(yadiffcore PUBLIC Qt6::Core Qt6::Network)
+target_link_libraries(yadiffcore PUBLIC Qt6::Core Qt6::Network Qt6::Concurrent)
 if(WIN32)
     target_link_libraries(yadiffcore PRIVATE advapi32) # Credential Manager (CredReadW/CredWriteW)
 endif()
