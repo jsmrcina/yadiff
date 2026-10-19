@@ -42,8 +42,9 @@ struct CommitInfo {
     QStringList parents;
 };
 
-// Histogram to Minimal are git's; MyersLcs and Heckel are yadiff's own (LineDiff).
-enum class DiffAlgorithm { Histogram, Patience, Myers, Minimal, MyersLcs, Heckel };
+// Histogram to Minimal are git's; MyersLcs and Heckel are yadiff's own (LineDiff), and
+// Structural compares tokens (StructuralDiff).
+enum class DiffAlgorithm { Histogram, Patience, Myers, Minimal, MyersLcs, Heckel, Structural };
 const QVector<DiffAlgorithm> &allAlgorithms(); // in menu order
 
 struct DiffOptions {

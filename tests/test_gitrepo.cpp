@@ -492,6 +492,8 @@ private slots:
         };
 
         for (DiffAlgorithm algo : allAlgorithms()) {
+            if (algo == DiffAlgorithm::Structural)
+                continue; // compares tokens, so whitespace never counts (structuralDiff below)
             cmp.options = DiffOptions();
             cmp.options.algorithm = algo;
             FileDiff fd = repo->loadDiff(fc, cmp, &error);

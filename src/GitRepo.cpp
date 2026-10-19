@@ -4,6 +4,7 @@
 #include "Comments.h"
 #include "FileFilter.h"
 #include "PatchFile.h"
+#include "StructuralDiff.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -208,6 +209,7 @@ QString algorithmName(DiffAlgorithm a)
     case DiffAlgorithm::Minimal: return QStringLiteral("minimal");
     case DiffAlgorithm::MyersLcs: return QStringLiteral("myers-lcs");
     case DiffAlgorithm::Heckel: return QStringLiteral("heckel");
+    case DiffAlgorithm::Structural: return QStringLiteral("structural");
     }
     return QStringLiteral("histogram");
 }
@@ -221,6 +223,7 @@ QString algorithmLabel(DiffAlgorithm a)
     case DiffAlgorithm::Minimal: return QStringLiteral("Minimal");
     case DiffAlgorithm::MyersLcs: return QStringLiteral("Myers LCS");
     case DiffAlgorithm::Heckel: return QStringLiteral("Heckel isolation");
+    case DiffAlgorithm::Structural: return QStringLiteral("Structural (tokens)");
     }
     return {};
 }
@@ -240,6 +243,9 @@ QString algorithmDescription(DiffAlgorithm a)
         return QStringLiteral("yadiff's own exact Myers: a longest common subsequence of lines, so the fewest changes.");
     case DiffAlgorithm::Heckel:
         return QStringLiteral("Heckel's algorithm: unique lines anchor the match and isolate the changes between them.");
+    case DiffAlgorithm::Structural:
+        return QStringLiteral("Compares tokens, not lines: re-wrapped, re-indented or reformatted code doesn't count, and "
+                              "only the tokens that changed are highlighted.");
     }
     return {};
 }
@@ -247,13 +253,15 @@ QString algorithmDescription(DiffAlgorithm a)
 const QVector<DiffAlgorithm> &allAlgorithms()
 {
     static const QVector<DiffAlgorithm> all{DiffAlgorithm::Patience, DiffAlgorithm::Histogram, DiffAlgorithm::Myers,
-                                            DiffAlgorithm::Minimal,  DiffAlgorithm::MyersLcs,  DiffAlgorithm::Heckel};
+                                            DiffAlgorithm::Minimal,  DiffAlgorithm::MyersLcs,  DiffAlgorithm::Heckel,
+                                            DiffAlgorithm::Structural};
     return all;
 }
 
 bool DiffOptions::inProcess() const
 {
-    return algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel || ignoreCase || ignoreTrim
+    return algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel
+        || algorithm == DiffAlgorithm::Structural || ignoreCase || ignoreTrim
         || ignoreComments || !unimportantPatterns.isEmpty();
 }
 
@@ -307,8 +315,10 @@ QString DiffOptions::normalized(QString l) const
 QStringList DiffOptions::gitArgs() const
 {
     // yadiff's own algorithms diff in-process; git lists the files with plain Myers.
-    const DiffAlgorithm gitAlgorithm =
-        algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel ? DiffAlgorithm::Myers : algorithm;
+    const DiffAlgorithm gitAlgorithm = algorithm == DiffAlgorithm::MyersLcs || algorithm == DiffAlgorithm::Heckel
+                                               || algorithm == DiffAlgorithm::Structural
+                                           ? DiffAlgorithm::Myers
+                                           : algorithm;
     return QStringList{QStringLiteral("--diff-algorithm=") + algorithmName(gitAlgorithm)} + whitespaceArgs();
 }
 
@@ -953,6 +963,23 @@ FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp,
     const QStringList oldLines = LineDiff::splitLines(QString::fromUtf8(oldData.value_or(QByteArray())));
     const QStringList newLines = LineDiff::splitLines(QString::fromUtf8(newData.value_or(QByteArray())));
     const DiffOptions &o = cmp.options;
+    LineDiff::Alignment anchors;
+    for (const auto &[o1, n1] : fc.anchors)
+        anchors.push_back({o1 - 1, n1 - 1});
+    if (o.algorithm == DiffAlgorithm::Structural) {
+        StructuralDiff::Options so;
+        so.syntax = Comments::forFile(fc.path);
+        if (!so.syntax.isValid())
+            so.syntax.quotes = QStringLiteral("\"'"); // still keep strings together
+        so.ignoreCase = o.ignoreCase;
+        so.ignoreComments = o.ignoreComments;
+        d = StructuralDiff::build(oldLines, newLines, so, anchors);
+        if (d.chunks.isEmpty() && fc.anchors.isEmpty()) {
+            d = FileDiff();
+            d.message = QStringLiteral("No differences in the code's tokens (only whitespace or line breaks changed)");
+        }
+        return d;
+    }
     const QStringList oldNorm = o.normalizedLines(oldLines, fc.oldPath);
     const QStringList newNorm = o.normalizedLines(newLines, fc.path);
 
@@ -990,9 +1017,6 @@ FileDiff GitRepo::loadDiffInProcess(const FileChange &fc, const Comparison &cmp,
         return LineDiff::fromUnifiedZero(QString::fromUtf8(out), int(oldPart.size()), int(newPart.size()));
     };
 
-    LineDiff::Alignment anchors;
-    for (const auto &[o1, n1] : fc.anchors)
-        anchors.push_back({o1 - 1, n1 - 1});
     const LineDiff::Alignment alignment = LineDiff::alignAround(oldNorm, newNorm, anchors, align, &anchors);
     if (!alignError.isEmpty()) {
         if (error)

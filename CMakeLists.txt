@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.11.0 LANGUAGES CXX)
+project(yadiff VERSION 0.12.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,6 +18,7 @@ add_library(yadiffcore STATIC
     src/Comments.cpp src/Comments.h
     src/PatchFile.cpp src/PatchFile.h
     src/HexDiff.cpp src/HexDiff.h
+    src/StructuralDiff.cpp src/StructuralDiff.h
     src/TableDiff.cpp src/TableDiff.h
     src/Scratch.cpp src/Scratch.h
     src/Session.cpp src/Session.h

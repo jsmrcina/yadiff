@@ -17,12 +17,16 @@ yadiff -ado URL             an Azure DevOps pull request,
 yadiff --ado-login [ORG]    sign in to Azure DevOps (--ado-logout ORG forgets the saved token)
 yadiff --no-index A B       two directories or two files, in or outside a repository
                            (automatic when A and B aren't both inside the current repository)
+yadiff --patch FILE         a patch file, on the files it applies to when they're there
+yadiff --session FILE       a session saved with File > Save session
 yadiff --register-difftool  make yadiff git's difftool (--unregister-difftool undoes it)
+yadiff --add-file-manager-menu   "Compare with yadiff" in Dolphin or Explorer (--remove-file-manager-menu)
 yadiff ... --export FILE    write an HTML report of the comparison instead of opening a window
 
 Options: -C <dir>             run as if started in <dir>
          -a, --all            one list of all changes against HEAD, not staged/unstaged
-         --algorithm <name>   patience (default), histogram, myers, minimal, myers-lcs or heckel
+         --algorithm <name>   patience (default), histogram, myers, minimal, myers-lcs, heckel or structural
+         --title <text>       window title for the comparison
          --wait               stay attached to the terminal until the window closes
          --inline / --side-by-side   initial view mode
 ```
@@ -57,6 +61,12 @@ path looks like a revision.
     slower on files with very many changes.
   - Heckel isolation anchors on lines that occur once on each side and grows matches from there.
     It is fast and keeps blocks together.
+  - Structural (tokens) compares the code's tokens (names, numbers, strings, operators and comment
+    words) instead of lines. Lines with the same tokens match whatever their whitespace, and in a
+    changed region the lines whose tokens all reappear on the other side, such as a call re-wrapped
+    over several lines, braces moved or code re-indented, are greyed as unimportant. Only the tokens
+    that really changed are highlighted. It works without a parser, so it's language-agnostic; the
+    file type only tells it the comment and string syntax.
 
   The Options menu also ignores whitespace changes, all whitespace, leading and trailing
   whitespace, blank lines, CR at end of line, or case. Ignoring case or leading and trailing
@@ -387,7 +397,8 @@ ctest --test-dir build --output-on-failure
 - `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
   yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel. It also
   covers comment stripping, unimportant lines, alignment around manual anchors, reading and
-  applying patch files, hex dumps, and CSV parsing and table comparison.
+  applying patch files, hex dumps, CSV parsing and table comparison, and the structural (token)
+  algorithm.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
   applying a change to a file, line-ending preservation, sessions, the file manager menu, and
   difftool registration. That last one uses a temporary git config.

@@ -3,6 +3,7 @@
 #include "LineDiff.h"
 #include "HexDiff.h"
 #include "PatchFile.h"
+#include "StructuralDiff.h"
 #include "TableDiff.h"
 
 #include <QRandomGenerator>
@@ -326,6 +327,49 @@ private slots:
         // By order, the moved rows don't match up the same way.
         r = TableDiff::compare(oh, od, nh, nd, -1);
         QVERIFY(r.added + r.removed + r.changed > 0);
+    }
+
+    void structuralDiff()
+    {
+        const Comments::Syntax cpp = Comments::forFile(QStringLiteral("a.cpp"));
+        const auto toks = StructuralDiff::tokenize({QStringLiteral("if (a->b == \"x y\") // note it")}, cpp, false);
+        QStringList keys;
+        for (const auto &t : toks)
+            keys << t.key;
+        QCOMPARE(keys, (QStringList{QStringLiteral("if"), QStringLiteral("("), QStringLiteral("a"), QStringLiteral("->"),
+                                    QStringLiteral("b"), QStringLiteral("=="), QStringLiteral("\"x y\""), QStringLiteral(")"),
+                                    QStringLiteral("/"), QStringLiteral("/"), QStringLiteral("note"), QStringLiteral("it")}));
+        QVERIFY(toks.last().comment);
+
+        // A call re-wrapped over three lines, re-indented code, and one real change.
+        const QStringList o{QStringLiteral("int f() {"), QStringLiteral("  call(alpha, beta, gamma);"),
+                            QStringLiteral("  return x+1;"), QStringLiteral("}")};
+        const QStringList n{QStringLiteral("int f() {"), QStringLiteral("    call(alpha,"), QStringLiteral("         beta,"),
+                            QStringLiteral("         gamma);"), QStringLiteral("    return x + 2;"), QStringLiteral("}")};
+        StructuralDiff::Options opt;
+        opt.syntax = cpp;
+        const FileDiff d = StructuralDiff::build(o, n, opt);
+        QCOMPARE(d.chunks.size(), 1);
+        int important = 0;
+        for (const DiffLine &l : d.lines) {
+            if (l.kind == LineKind::Equal || l.unimportant)
+                continue;
+            ++important;
+            // Only "1" and "2" are highlighted.
+            QCOMPARE(l.highlights.size(), 1);
+            QCOMPARE(l.highlights[0].length, 1);
+            QVERIFY(l.pair >= 0);
+        }
+        QCOMPARE(important, 2); // return x+1 / return x + 2
+        int unimportant = 0;
+        for (const DiffLine &l : d.lines)
+            unimportant += l.unimportant && l.kind != LineKind::Equal;
+        QCOMPARE(unimportant, 4); // the call on one line, and on three
+
+        // Only whitespace: nothing that counts.
+        const FileDiff same = StructuralDiff::build({QStringLiteral("a=b;")}, {QStringLiteral("a = b ;")}, opt);
+        QVERIFY(same.chunks.isEmpty());
+        QVERIFY(same.lines[0].unimportant);
     }
 
     void stripsComments()

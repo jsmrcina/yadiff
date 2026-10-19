@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
     const QCommandLineOption adoLogoutOpt(QStringLiteral("ado-logout"),
                                           QStringLiteral("Forget the saved Azure DevOps token for an organisation and exit."));
     const QCommandLineOption algoOpt(QStringLiteral("algorithm"),
-                                     QStringLiteral("Diff algorithm: patience (default), histogram, myers, minimal, myers-lcs or heckel."),
+                                     QStringLiteral("Diff algorithm: patience (default), histogram, myers, minimal, myers-lcs, heckel or structural."),
                                      QStringLiteral("name"));
     const QCommandLineOption inlineOpt(QStringLiteral("inline"), QStringLiteral("Start in inline view."));
     const QCommandLineOption sideOpt(QStringLiteral("side-by-side"), QStringLiteral("Start in side-by-side view."));
