@@ -42,6 +42,10 @@ bool showWhitespace();
 void setShowWhitespace(bool on);
 bool wordWrap();
 void setWordWrap(bool on);
+bool tableView(); // CSV and TSV files as tables
+void setTableView(bool on);
+bool hexBinary(); // binary files as a hex dump
+void setHexBinary(bool on);
 bool autoReload();
 void setAutoReload(bool on);
 

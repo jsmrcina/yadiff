@@ -139,7 +139,7 @@ int main(int argc, char *argv[])
 
     if (parser.isSet(shellMenuOpt) || parser.isSet(noShellMenuOpt)) {
         QString summary, menuError;
-        const bool ok = parser.isSet(shellMenuOpt) ? ShellMenu::install(Difftool::preferredExecutable(), &summary, &menuError)
+        const bool ok = parser.isSet(shellMenuOpt) ? ShellMenu::install(Difftool::stableExecutable(), &summary, &menuError)
                                                    : ShellMenu::uninstall(&summary, &menuError);
         if (!ok)
             return fail(menuError);

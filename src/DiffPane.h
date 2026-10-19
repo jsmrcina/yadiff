@@ -41,6 +41,12 @@ struct FileView {
     // Git blame per line of each side; empty when blame is off or not available.
     QVector<BlameLine> oldBlame, newBlame;
 
+    // CSV / TSV: both sides' text, for the table view (empty sides are missing files).
+    bool isTable = false;
+    QString oldTable, newTable;
+    // A binary file shown as a hex dump (read only).
+    bool isHex = false;
+
     // Line staging that works on this file (stage, unstage, discard).
     QVector<GitRepo::LineOp> lineOps;
 };
@@ -136,8 +142,15 @@ public:
     bool hasSelection() const;
 
     // Editing the new (working-tree) side.
-    bool canEdit() const { return m_hasDiff && m_file.newOnDisk && !m_file.diff.binary; }
-    bool canCopyTo(bool newSide) const { return m_hasDiff && (newSide ? m_file.newOnDisk : m_file.oldOnDisk); }
+    bool canEdit() const { return m_hasDiff && m_file.newOnDisk && !m_file.diff.binary && !m_file.isHex && !showsTable(); }
+    bool canCopyTo(bool newSide) const
+    {
+        return m_hasDiff && !m_file.isHex && !showsTable() && (newSide ? m_file.newOnDisk : m_file.oldOnDisk);
+    }
+
+    // CSV and TSV files show as tables while this is on.
+    void setTableView(bool on);
+    bool showsTable() const { return m_file.isTable && m_tableView; }
     void setEditing(bool on);
     bool isEditing() const;
     bool isModified() const;
@@ -157,6 +170,7 @@ signals:
     // Stage, unstage or discard these FileDiff lines.
     void lineOpRequested(GitRepo::LineOp op, const QVector<int> &lines);
     void hint(const QString &text); // a short message for the status bar
+    void textViewRequested();       // the table view's "Text view" button
     // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
     void replyRequested(qint64 threadId);
@@ -242,6 +256,8 @@ private:
     QPushButton *m_showAnyway = nullptr;
     QWidget *m_messagePage = nullptr;
     ImageDiffView *m_image = nullptr;
+    class TableDiffView *m_table = nullptr;
+    bool m_tableView = true;
     // Review threads anchored to FileDiff lines: line index -> thread indices.
     QHash<int, QVector<int>> m_threadsAt;
     QSet<qint64> m_expandedThreads; // review threads shown in full

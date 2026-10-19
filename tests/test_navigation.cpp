@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "NewComparisonDialog.h"
 #include "SearchBar.h"
+#include "TableDiffView.h"
 #include "Session.h"
 #include "Settings.h"
 #include "Theme.h"
@@ -1480,6 +1481,56 @@ private slots:
         next2->trigger();
         QVERIFY(w2.windowTitle().contains(QStringLiteral("three")));
         QVERIFY(!next2->isEnabled());
+    }
+    void hexAndTables()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        QByteArray bin(300, '\x01');
+        bin[0] = '\0';
+        write(d + QStringLiteral("/a.bin"), bin);
+        write(d + QStringLiteral("/b.csv"), "id,v\n1,a\n2,b\n3,c\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("first")});
+        bin[150] = '\x02';
+        write(d + QStringLiteral("/a.bin"), bin);
+        write(d + QStringLiteral("/b.csv"), "id,v\n1,a\n2,B\n4,d\n");
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        Comparison cmp;
+        cmp.allChanges = true;
+        Settings::setHexBinary(true);
+        Settings::setTableView(true);
+        MainWindow w(std::move(*repo), cmp);
+        w.resize(1200, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *pane = w.findChild<DiffPane *>();
+        auto *files = w.findChild<FileList *>();
+        QVERIFY(files->selectIndex(0)); // a.bin
+        QVERIFY(pane->diff().hexDump);
+        QCOMPARE(pane->changeCount(), 1);
+        QVERIFY(!pane->canEdit());
+        QVERIFY(!pane->canCopyTo(true));
+
+        QVERIFY(files->selectIndex(1)); // b.csv
+        auto *table = pane->findChild<TableDiffView *>();
+        QVERIFY(pane->showsTable());
+        QVERIFY(table->isVisible());
+        QCOMPARE(table->result().changed, 1);
+        QCOMPARE(table->changeCount(), 3); // 2 changed, 3 removed, 4 added (by order)
+        table->setKeyColumn(0);
+        QCOMPARE(table->result().changed, 1);
+        QCOMPARE(table->result().removed, 1);
+        QCOMPARE(table->result().added, 1);
+        QVERIFY(pane->nextChange());
+        QVERIFY(pane->nextChange());
+        QVERIFY(!pane->nextChange()); // the last of three
+        QMetaObject::invokeMethod(table, "textViewRequested");
+        QVERIFY(!pane->showsTable());
+        QVERIFY(!action(w, QStringLiteral("Show CSV and TSV files as tables"))->isChecked());
+        Settings::setTableView(true);
     }
     void checkForUpdateAsksFirst()
     {

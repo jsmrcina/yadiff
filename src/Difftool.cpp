@@ -49,6 +49,17 @@ QString preferredExecutable()
     return self.isEmpty() ? QCoreApplication::applicationFilePath() : self;
 }
 
+QString stableExecutable()
+{
+    // An absolute path that keeps working: the yadiff on PATH (install.sh's link, which
+    // follows updates) when it is this program, else this program itself.
+    const QString self = QFileInfo(QCoreApplication::applicationFilePath()).canonicalFilePath();
+    const QString onPath = QStandardPaths::findExecutable(QStringLiteral("yadiff"));
+    if (!onPath.isEmpty() && QFileInfo(onPath).canonicalFilePath() == self)
+        return QFileInfo(onPath).absoluteFilePath();
+    return self.isEmpty() ? QCoreApplication::applicationFilePath() : self;
+}
+
 QString command(const QString &executable)
 {
     const QString exe = executable == QLatin1String("yadiff") ? executable : shellQuote(executable);

@@ -152,6 +152,15 @@ path looks like a revision.
   modes: side by side, swipe with a draggable divider, onion skin with an opacity slider, and
   difference with changed pixels in red. It shows dimensions and file sizes, and switches between
   fit and 100%.
+- **Binary files as hex.** Changed binary files that aren't images show as a hex dump, 16 bytes a
+  row with offsets and ASCII. Changed bytes are highlighted. When bytes are inserted or removed,
+  the rows after them line up again, each side with its own offsets. View → Show binary files as
+  hex turns it off. Files over 8 MB keep the "binary file differs" message.
+- **CSV and TSV as tables.** `.csv`, `.tsv`, `.tab` and `.psv` files show as a table: added rows
+  green, removed rows red, and changed cells as "old → new". Columns match by their header (so
+  reordered columns still line up), and rows match by order or by a key column picked from the
+  drop-down. "Only changed rows" hides the rest, and change navigation steps through the changed
+  rows. Text view, or View → Show CSV and TSV files as tables, switches back to the text diff.
 - **HTML report** comes from File → Export HTML report (Ctrl+Shift+E) or `--export FILE`. It's one
   self-contained page with a summary table, every file's diff with 3 lines of context, word
   highlights, moved lines, review ticks and embedded images. It follows the browser's light or
@@ -257,6 +266,7 @@ computed by yadiff.
     width, and zoom (Ctrl++, Ctrl+-, and Ctrl+0 for 100%).
   - Collapse unchanged regions, expand or collapse review comments, and trim the common prefix
     from folder names, which are fully qualified otherwise.
+  - CSV and TSV files as tables, and binary files as hex.
   - Git blame, Color theme, Fonts, and Diff colors and tab width.
 - **Options:**
   - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
@@ -376,8 +386,8 @@ ctest --test-dir build --output-on-failure
 
 - `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
   yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel. It also
-  covers comment stripping, unimportant lines, alignment around manual anchors, and reading and
-  applying patch files.
+  covers comment stripping, unimportant lines, alignment around manual anchors, reading and
+  applying patch files, hex dumps, and CSV parsing and table comparison.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
   applying a change to a file, line-ending preservation, sessions, the file manager menu, and
   difftool registration. That last one uses a temporary git config.
@@ -400,7 +410,7 @@ ctest --test-dir build --output-on-failure
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
   ignoring comments, manual alignment, staging the current change, stepping through commits, and
-  dropped files, patches, sessions and recent comparisons.
+  dropped files, patches, sessions, recent comparisons, and the hex and table views.
   The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
@@ -432,6 +442,8 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/Difftool.*` | git difftool registration |
 | `src/FileFilter.*` | File list filter terms |
 | `src/ImageDiffView.*` | Image comparison modes |
+| `src/HexDiff.*` | Binary files as hex rows, aligned with content-defined chunks |
+| `src/TableDiff.*`, `src/TableDiffView.*` | CSV/TSV parsing, row and cell comparison, and the table view |
 | `src/Report.*` | HTML report |
 | `src/GitHubReview.*` | PR review comments through `gh` |
 | `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |

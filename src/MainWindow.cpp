@@ -17,6 +17,8 @@
 #include "Report.h"
 #include "TextFile.h"
 #include "Theme.h"
+#include "HexDiff.h"
+#include "TableDiff.h"
 #include "ComparisonArgs.h"
 #include "Updater.h"
 #include "Usage.h"
@@ -206,6 +208,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     m_pane->setSyntaxEnabled(Settings::syntaxEnabled());
     m_pane->setHighlightClickedWord(Settings::highlightClickedWord());
     m_pane->setPaneVisibility(Settings::paneVisibility());
+    m_pane->setTableView(Settings::tableView());
     m_pane->setZoom(Settings::zoomPercent());
     m_files->setMarkColor(Settings::markColor());
     m_files->setFont(Settings::fileListFont());
@@ -648,6 +651,25 @@ void MainWindow::createActions()
         Settings::setWordWrap(on);
         m_pane->setWordWrap(on);
     });
+    QAction *tables = viewMenu->addAction(tr("Show CSV and TSV files as &tables"));
+    tables->setCheckable(true);
+    tables->setChecked(Settings::tableView());
+    tables->setStatusTip(tr("Compare .csv and .tsv files row by row and cell by cell"));
+    connect(tables, &QAction::toggled, this, [this](bool on) {
+        Settings::setTableView(on);
+        m_pane->setTableView(on);
+        updateEditActions();
+    });
+    connect(m_pane, &DiffPane::textViewRequested, tables, [tables] { tables->setChecked(false); });
+    QAction *hex = viewMenu->addAction(tr("Show binary files as &hex"));
+    hex->setCheckable(true);
+    hex->setChecked(Settings::hexBinary());
+    hex->setStatusTip(tr("Compare binary files byte by byte, as a hex dump"));
+    connect(hex, &QAction::toggled, this, [this](bool on) {
+        Settings::setHexBinary(on);
+        m_diffCache.clear();
+        reloadCurrentFile();
+    });
     QMenu *tabMenu = viewMenu->addMenu(tr("Ta&b width"));
     auto *tabGroup = new QActionGroup(this);
     for (int w : {2, 3, 4, 8}) {
@@ -924,7 +946,7 @@ void MainWindow::createActions()
     helpMenu->addAction(tr("U&nregister as git difftool"), this, &MainWindow::unregisterDifftool);
     helpMenu->addAction(tr("Add to the &file manager's menu"), this, [this] {
         QString summary, error;
-        if (ShellMenu::install(Difftool::preferredExecutable(), &summary, &error))
+        if (ShellMenu::install(Difftool::stableExecutable(), &summary, &error))
             QMessageBox::information(this, tr("File manager menu"), summary);
         else
             QMessageBox::warning(this, tr("File manager menu"), error);
@@ -1592,18 +1614,38 @@ void MainWindow::showFile(int index)
         QImage oldImage, newImage;
         qint64 oldBytes = 0, newBytes = 0;
         QVector<BlameLine> oldBlame, newBlame;
+        QString oldTable, newTable;
     };
     const bool imagePath = isImagePath(fc.path) || isImagePath(fc.oldPath);
+    const bool tablePath = TableDiff::isTableFile(fc.path);
+    const bool hexBinary = Settings::hexBinary();
     const auto cached = m_diffCache.constFind(index);
     const bool haveCached = cached != m_diffCache.constEnd() && !imagePath;
     const FileDiff cachedDiff = haveCached ? *cached : FileDiff();
     const bool large = m_showLarge.contains(index);
 
     runJob<FileResult>(
-        [repo = m_repo, cmp = m_cmp, fc, imagePath, haveCached, cachedDiff, blame = Settings::showBlame()] {
+        [repo = m_repo, cmp = m_cmp, fc, imagePath, tablePath, hexBinary, haveCached, cachedDiff,
+         blame = Settings::showBlame()] {
             FileResult r;
             r.diff = haveCached ? cachedDiff : repo.loadDiff(fc, cmp, &r.error);
-            if (blame && !r.diff.binary && r.error.isEmpty()) {
+            if (r.diff.binary && !imagePath && hexBinary && r.error.isEmpty()) {
+                // Binary: a hex dump of both sides (when they aren't huge).
+                constexpr qint64 kMaxHex = 8 * 1024 * 1024;
+                const auto oldBytes = repo.fileContent(fc, cmp, false, kMaxHex);
+                const auto newBytes = repo.fileContent(fc, cmp, true, kMaxHex);
+                if (oldBytes || newBytes) {
+                    r.diff = HexDiff::build(oldBytes.value_or(QByteArray()), newBytes.value_or(QByteArray()));
+                    if (r.diff.lines.isEmpty())
+                        r.diff.message = QStringLiteral("Both sides are empty");
+                }
+            }
+            if (tablePath && !r.diff.binary && r.error.isEmpty()) {
+                constexpr qint64 kMaxTable = 32 * 1024 * 1024;
+                r.oldTable = QString::fromUtf8(repo.fileContent(fc, cmp, false, kMaxTable).value_or(QByteArray()));
+                r.newTable = QString::fromUtf8(repo.fileContent(fc, cmp, true, kMaxTable).value_or(QByteArray()));
+            }
+            if (blame && !r.diff.binary && !r.diff.hexDump && r.error.isEmpty()) {
                 r.oldBlame = repo.blame(fc, cmp, false);
                 r.newBlame = repo.blame(fc, cmp, true);
             }
@@ -1620,7 +1662,7 @@ void MainWindow::showFile(int index)
             }
             return r;
         },
-        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large, countsFromDiff](FileResult r) {
+        [this, gen, index, fc, left, right, title, isNew, isGone, wasEditing, then, large, countsFromDiff, tablePath](FileResult r) {
             if (gen != m_fileGen)
                 return; // the user moved on to another file
             m_fileBusy = false;
@@ -1663,7 +1705,13 @@ void MainWindow::showFile(int index)
             view.threads = threadsFor(fc);
             view.oldBlame = r.oldBlame;
             view.newBlame = r.newBlame;
-            view.lineOps = m_repo.lineOps(fc, m_cmp);
+            view.lineOps = r.diff.hexDump ? QVector<GitRepo::LineOp>() : m_repo.lineOps(fc, m_cmp);
+            view.isHex = r.diff.hexDump;
+            if (r.diff.hexDump)
+                view.fileName.clear(); // no syntax highlighting for a dump
+            view.isTable = tablePath && !r.diff.binary && (!r.oldTable.isEmpty() || !r.newTable.isEmpty());
+            view.oldTable = r.oldTable;
+            view.newTable = r.newTable;
             m_pane->setLanguageOverride(m_syntaxBySuffix.value(QFileInfo(fc.path).suffix().toLower()));
             m_pane->setFile(view);
             if (wasEditing)

@@ -16,5 +16,8 @@ bool isRegistered();
 
 // The executable to put in the command: `yadiff` on PATH when it is this program, else our own path.
 QString preferredExecutable();
+// An absolute path for places that don't search PATH as a shell does, such as the
+// desktop's file manager (whose PATH may not have ~/.local/bin).
+QString stableExecutable();
 
 } // namespace Difftool

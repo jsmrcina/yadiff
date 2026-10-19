@@ -146,6 +146,10 @@ bool showWhitespace() { return flag("view/showWhitespace", false); }
 void setShowWhitespace(bool on) { setFlag("view/showWhitespace", on); }
 bool wordWrap() { return flag("view/wordWrap", false); }
 void setWordWrap(bool on) { setFlag("view/wordWrap", on); }
+bool tableView() { return flag("view/tableView", true); }
+void setTableView(bool on) { setFlag("view/tableView", on); }
+bool hexBinary() { return flag("view/hexBinary", true); }
+void setHexBinary(bool on) { setFlag("view/hexBinary", on); }
 bool autoReload() { return flag("behaviour/autoReload", false); }
 void setAutoReload(bool on) { setFlag("behaviour/autoReload", on); }
 

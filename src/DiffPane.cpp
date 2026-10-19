@@ -1,6 +1,7 @@
 #include "DiffPane.h"
 
 #include "ImageDiffView.h"
+#include "TableDiffView.h"
 #include "OverviewBar.h"
 #include "Settings.h"
 #include "Syntax.h"
@@ -128,6 +129,13 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
     m_stack->addWidget(m_sidePage);                        // 1
     m_stack->addWidget(m_messagePage);                     // 2
     m_stack->addWidget(m_image);                           // 3
+    m_table = new TableDiffView;
+    m_stack->addWidget(m_table);                           // 4
+    connect(m_table, &TableDiffView::textViewRequested, this, &DiffPane::textViewRequested);
+    connect(m_table, &TableDiffView::currentChangeChanged, this, [this](int index, int count) {
+        if (showsTable())
+            emit currentChangeChanged(index, count);
+    });
 
     m_overview = new OverviewBar;
     auto *body = new QHBoxLayout;
@@ -314,6 +322,11 @@ void DiffPane::setFile(const FileView &file)
         m_image->setImages(m_file.oldImage, m_file.newImage, m_file.oldBytes, m_file.newBytes);
         m_stack->setCurrentIndex(3);
         m_overview->setRows({}, {});
+    } else if (showsTable()) {
+        const DiffColors c = Settings::colors();
+        m_table->setColors(c.added, c.removed, Settings::emphasis(c.added));
+        m_table->setTables(m_file.oldTable, m_file.newTable, m_file.fileName);
+        m_stack->setCurrentIndex(4);
     } else if (!m_file.diff.message.isEmpty() && m_file.diff.lines.isEmpty()) {
         m_message->setText(m_file.diff.message);
         m_stack->setCurrentIndex(2);
@@ -893,6 +906,8 @@ void DiffPane::rebuild()
         m_right->setRows(right, pal, font, tab);
         m_stack->setCurrentIndex(1);
     }
+    if (showsTable())
+        m_stack->setCurrentIndex(4); // the text views stay ready behind it
     applySyntax();
     for (CodeView *v : {m_inline, m_left, m_right}) {
         v->setShowWhitespace(m_showWhitespace);
@@ -987,8 +1002,19 @@ void DiffPane::showChange(int index)
     emit currentChangeChanged(m_current, changeCount());
 }
 
+void DiffPane::setTableView(bool on)
+{
+    if (m_tableView == on)
+        return;
+    m_tableView = on;
+    if (m_hasDiff && m_file.isTable)
+        setFile(FileView(m_file)); // shows the other view
+}
+
 bool DiffPane::nextChange()
 {
+    if (showsTable())
+        return m_table->nextChange();
     if (m_current + 1 >= changeCount())
         return false;
     showChange(m_current + 1);
@@ -997,6 +1023,8 @@ bool DiffPane::nextChange()
 
 bool DiffPane::prevChange()
 {
+    if (showsTable())
+        return m_table->prevChange();
     if (m_current <= 0)
         return false;
     showChange(m_current - 1);
@@ -1005,12 +1033,20 @@ bool DiffPane::prevChange()
 
 void DiffPane::goToFirstChange()
 {
+    if (showsTable()) {
+        m_table->goToChange(0);
+        return;
+    }
     if (changeCount() > 0)
         showChange(0);
 }
 
 void DiffPane::goToLastChange()
 {
+    if (showsTable()) {
+        m_table->goToChange(m_table->changeCount() - 1);
+        return;
+    }
     if (changeCount() > 0)
         showChange(changeCount() - 1);
 }

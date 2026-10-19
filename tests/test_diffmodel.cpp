@@ -1,7 +1,9 @@
 #include "Comments.h"
 #include "DiffModel.h"
 #include "LineDiff.h"
+#include "HexDiff.h"
 #include "PatchFile.h"
+#include "TableDiff.h"
 
 #include <QRandomGenerator>
 
@@ -250,6 +252,80 @@ private slots:
             gaps += l.gap;
         QCOMPARE(gaps, 2);
         QCOMPARE(d.chunks.size(), 2);
+    }
+
+    void hexDumps()
+    {
+        QCOMPARE(HexDiff::row("Hello, world!\n\x01\xff", 0, 16),
+                 QStringLiteral("00000000  48 65 6c 6c 6f 2c 20 77  6f 72 6c 64 21 0a 01 ff  |Hello, world!...|"));
+        QByteArray a(4096, '\0');
+        for (int i = 0; i < a.size(); ++i)
+            a[i] = char((i * 7919) % 251);
+        // Same size, one byte changed: one row pair, two highlights (hex and ASCII).
+        QByteArray b = a;
+        b[100] = char(b[100] ^ 0x55);
+        FileDiff d = HexDiff::build(a, b);
+        QVERIFY(d.hexDump);
+        QCOMPARE(d.chunks.size(), 1);
+        int removed = 0;
+        for (const DiffLine &l : d.lines)
+            if (l.kind == LineKind::Removed) {
+                ++removed;
+                QCOMPARE(l.highlights.size(), 2);
+                QVERIFY(l.pair >= 0);
+            }
+        QCOMPARE(removed, 1);
+        // Three bytes inserted: the rest lines up again, with each side's own offsets.
+        QByteArray c = a;
+        c.insert(1000, "XYZ");
+        d = HexDiff::build(a, c);
+        QCOMPARE(d.chunks.size(), 1);
+        const DiffLine &last = d.lines.last();
+        QCOMPARE(last.kind, LineKind::Equal);
+        QCOMPARE(last.text.left(8).toInt(nullptr, 16) - last.oldText.left(8).toInt(nullptr, 16), 3);
+        QCOMPARE(last.text.mid(8), last.oldText.mid(8)); // same bytes
+        QVERIFY(!last.unimportant);
+        // Added file.
+        d = HexDiff::build({}, QByteArray("abc"));
+        QCOMPARE(d.lines.size(), 1);
+        QCOMPARE(d.lines[0].kind, LineKind::Added);
+    }
+
+    void tables()
+    {
+        const TableDiff::Table t = TableDiff::parse(QStringLiteral("id,name\r\n1,\"Smith, J\"\n2,\"say \"\"hi\"\"\nthere\"\n\n"), u',');
+        QCOMPARE(t.size(), 3);
+        QCOMPARE(t[1][1], QStringLiteral("Smith, J"));
+        QCOMPARE(t[2][1], QStringLiteral("say \"hi\"\nthere"));
+        QCOMPARE(TableDiff::delimiterFor(QStringLiteral("a.csv"), QStringLiteral("a;b;c")), QChar(u';'));
+        QCOMPARE(TableDiff::delimiterFor(QStringLiteral("a.tsv"), QString()), QChar(u'\t'));
+
+        // By key: row 2 changed its price, 3 was removed, 4 added, and the columns moved.
+        const QStringList oh{QStringLiteral("id"), QStringLiteral("name"), QStringLiteral("price")};
+        const TableDiff::Table od{{QStringLiteral("1"), QStringLiteral("apple"), QStringLiteral("5")},
+                                  {QStringLiteral("2"), QStringLiteral("pear"), QStringLiteral("6")},
+                                  {QStringLiteral("3"), QStringLiteral("plum"), QStringLiteral("7")}};
+        const QStringList nh{QStringLiteral("name"), QStringLiteral("id"), QStringLiteral("price")};
+        const TableDiff::Table nd{{QStringLiteral("pear"), QStringLiteral("2"), QStringLiteral("9")},
+                                  {QStringLiteral("apple"), QStringLiteral("1"), QStringLiteral("5")},
+                                  {QStringLiteral("fig"), QStringLiteral("4"), QStringLiteral("1")}};
+        TableDiff::Result r = TableDiff::compare(oh, od, nh, nd, 1); // key: "id" (second new column)
+        QCOMPARE(r.columns, nh);
+        QCOMPARE(r.changed, 1);
+        QCOMPARE(r.added, 1);
+        QCOMPARE(r.removed, 1);
+        bool sawChange = false;
+        for (const TableDiff::Row &row : r.rows)
+            if (row.kind == TableDiff::Row::Kind::Changed) {
+                QCOMPARE(row.changedColumns, QVector<int>{2});
+                QCOMPARE(r.oldCell(od, row.oldRow, 2), QStringLiteral("6"));
+                QCOMPARE(r.newCell(nd, row.newRow, 2), QStringLiteral("9"));
+                sawChange = true;
+            }
+        QVERIFY(sawChange);
+        // By order, the moved rows don't match up the same way.
+        r = TableDiff::compare(oh, od, nh, nd, -1);
+        QVERIFY(r.added + r.removed + r.changed > 0);
     }
 
     void stripsComments()

@@ -51,6 +51,7 @@ struct FileDiff {
     QVector<Chunk> chunks;
     QVector<MoveBlock> moves;
     bool binary = false;
+    bool hexDump = false;   // a binary file's bytes as hex rows (HexDiff)
     QString message;        // shown instead of content when set (binary, empty, ...)
 };
 
