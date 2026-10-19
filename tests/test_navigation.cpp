@@ -6,6 +6,7 @@
 #include "HistoryDialog.h"
 #include "ImageDiffView.h"
 #include "MainWindow.h"
+#include "MergeWindow.h"
 #include "NewComparisonDialog.h"
 #include "SearchBar.h"
 #include "TableDiffView.h"
@@ -20,6 +21,7 @@
 #include <QContextMenuEvent>
 #include <QFile>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QMimeData>
 #include <QTimer>
 #include <QRadioButton>
@@ -1531,6 +1533,97 @@ private slots:
         QVERIFY(!pane->showsTable());
         QVERIFY(!action(w, QStringLiteral("Show CSV and TSV files as tables"))->isChecked());
         Settings::setTableView(true);
+    }
+    void mergeWindowResolves()
+    {
+        QTemporaryDir tmp;
+        MergeWindow::Input in;
+        in.base = "a\nb\nc\nd\ne\nf\n";
+        in.ours = "a\nB\nc\nd\ne\nX\n";   // b changed (only here), f conflicts
+        in.theirs = "a\nb\nc\nD\ne\nY\n"; // d changed (only here), f conflicts
+        in.outputPath = tmp.filePath(QStringLiteral("out.txt"));
+        in.fileName = QStringLiteral("out.txt");
+        MergeWindow w(in);
+        w.show();
+        QCOMPARE(w.conflictCount(), 1);
+        QCOMPARE(w.unresolvedCount(), 1);
+        QCOMPARE(w.resultText(), QStringLiteral("a\nB\nc\nD\ne\n<<<<<<< Ours\nX\n||||||| base\nf\n=======\nY\n>>>>>>> Theirs\n"));
+        QVERIFY(w.currentRegion() >= 0); // opens on the conflict
+        w.take(Merge3::Pick::TheirsThenOurs);
+        QCOMPARE(w.unresolvedCount(), 0);
+        QCOMPARE(w.resultText(), QStringLiteral("a\nB\nc\nD\ne\nY\nX\n"));
+        w.take(Merge3::Pick::Theirs);
+        QCOMPARE(w.resultText(), QStringLiteral("a\nB\nc\nD\ne\nY\n"));
+        QVERIFY(w.save());
+        QVERIFY(w.resolvedAndSaved());
+        QFile f(in.outputPath);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("a\nB\nc\nD\ne\nY\n"));
+        f.close();
+        // Back to markers, then a hand edit resolves it too.
+        w.take(Merge3::Pick::Markers);
+        QCOMPARE(w.unresolvedCount(), 1);
+        auto *edit = w.findChild<QPlainTextEdit *>();
+        QTextCursor c(edit->document());
+        c.setPosition(int(w.resultText().indexOf(QStringLiteral("X"))));
+        c.insertText(QStringLiteral("hand "));
+        QCOMPARE(w.unresolvedCount(), 0);
+        // CRLF files keep their line endings.
+        MergeWindow::Input crlf = in;
+        crlf.base = "a\r\nb\r\n";
+        crlf.ours = "a\r\nB\r\n";
+        crlf.theirs = "a\r\nb\r\n";
+        MergeWindow w2(crlf);
+        QCOMPARE(w2.conflictCount(), 0);
+        QVERIFY(w2.save());
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("a\r\nB\r\n"));
+        w.findChild<QPlainTextEdit *>()->document()->setModified(false);
+    }
+
+    void resolvesARealConflict()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q"), QStringLiteral("-b"), QStringLiteral("main")});
+        write(d + QStringLiteral("/f.txt"), "one\ntwo\nthree\n");
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("base")});
+        git(d, {QStringLiteral("checkout"), QStringLiteral("-qb"), QStringLiteral("other")});
+        write(d + QStringLiteral("/f.txt"), "one\nTWO (theirs)\nthree\n");
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("theirs")});
+        git(d, {QStringLiteral("checkout"), QStringLiteral("-q"), QStringLiteral("main")});
+        write(d + QStringLiteral("/f.txt"), "one\nTWO (ours)\nthree\n");
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qam"), QStringLiteral("ours")});
+        QProcess merge;
+        merge.setWorkingDirectory(d);
+        merge.start(QStringLiteral("git"), {QStringLiteral("merge"), QStringLiteral("-q"), QStringLiteral("other")});
+        QVERIFY(merge.waitForFinished());
+        QVERIFY(merge.exitCode() != 0); // conflict
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        MainWindow w(std::move(*repo), Comparison());
+        w.show();
+        QAction *resolve = action(w, QStringLiteral("Resolve conflict\u2026"));
+        QVERIFY(resolve->isEnabled());
+        resolve->trigger();
+        MergeWindow *mw = nullptr;
+        for (QWidget *top : QApplication::topLevelWidgets())
+            if (auto *m = qobject_cast<MergeWindow *>(top); m && m->isVisible())
+                mw = m;
+        QVERIFY(mw);
+        QCOMPARE(mw->conflictCount(), 1);
+        mw->take(Merge3::Pick::OursThenTheirs);
+        QVERIFY(mw->save());
+        mw->close();
+        QFile f(d + QStringLiteral("/f.txt"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("one\nTWO (ours)\nTWO (theirs)\nthree\n"));
+        QProcess p;
+        p.setWorkingDirectory(d);
+        p.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only"), QStringLiteral("--diff-filter=U")});
+        QVERIFY(p.waitForFinished());
+        QVERIFY(p.readAllStandardOutput().isEmpty()); // marked resolved
     }
     void checkForUpdateAsksFirst()
     {

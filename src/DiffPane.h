@@ -18,6 +18,9 @@ class QMenu;
 class QStackedWidget;
 class QTimer;
 
+// The diff colours (theme and Settings) for views shown in `w`.
+ViewPalette diffPalette(const QWidget *w);
+
 // Everything DiffPane needs to show one file.
 struct FileView {
     FileDiff diff;

@@ -191,6 +191,23 @@ private slots:
                  QStringLiteral("'/opt/my tools/yadiff' --wait --no-index \"$LOCAL\" \"$REMOTE\""));
         QVERIFY(Difftool::unregisterTool(&summary, &error));
         QVERIFY(!Difftool::isRegistered());
+
+        // The merge tool, with git's own placeholders and trustExitCode.
+        QVERIFY(!Difftool::isMergeToolRegistered());
+        QVERIFY2(Difftool::registerMergeTool(QStringLiteral("yadiff"), true, &summary, &error), qPrintable(error));
+        QVERIFY(Difftool::isMergeToolRegistered());
+        p.start(QStringLiteral("git"), {QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--get-regexp"),
+                                        QStringLiteral("^merge")});
+        p.waitForFinished();
+        const QString merge = QString::fromUtf8(p.readAllStandardOutput());
+        QVERIFY(merge.contains(QStringLiteral("mergetool.yadiff.cmd yadiff --merge \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"")));
+        QVERIFY(merge.contains(QStringLiteral("mergetool.yadiff.trustexitcode true")));
+        QVERIFY(merge.contains(QStringLiteral("merge.tool yadiff")));
+        QVERIFY(Difftool::unregisterMergeTool(&summary, &error));
+        QVERIFY(!Difftool::isMergeToolRegistered());
+        p.start(QStringLiteral("git"), {QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("merge.tool")});
+        p.waitForFinished();
+        QVERIFY(p.readAllStandardOutput().isEmpty());
         qunsetenv("GIT_CONFIG_GLOBAL");
     }
 

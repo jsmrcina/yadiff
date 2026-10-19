@@ -169,6 +169,7 @@ private:
     void toggleEditing(bool on);
     void copyChange(int chunk, bool toNewSide);
     void applyLineOp(GitRepo::LineOp op, const QVector<int> &lines);
+    void resolveConflict();
 
     // Search.
     void runSearch();
@@ -289,6 +290,7 @@ private:
     QAction *m_applyPatchAct = nullptr;
     QString m_selectOnLoad;  // a file to show once the list loads (from a session)
     QString m_droppedLeft;   // a dropped file waiting for the one to compare it with
+    QAction *m_resolveAct = nullptr;
     QAction *m_stageLinesAct = nullptr;
     QAction *m_unstageLinesAct = nullptr;
     QAction *m_discardLinesAct = nullptr;

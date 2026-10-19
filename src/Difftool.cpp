@@ -116,4 +116,65 @@ bool isRegistered()
         && !out.isEmpty();
 }
 
+QString mergeCommand(const QString &executable)
+{
+    const QString exe = executable == QLatin1String("yadiff") ? executable : shellQuote(executable);
+    return exe + QStringLiteral(" --merge \"$BASE\" \"$LOCAL\" \"$REMOTE\" \"$MERGED\"");
+}
+
+bool registerMergeTool(const QString &executable, bool makeDefault, QString *summary, QString *error)
+{
+    const QString cmd = mergeCommand(executable);
+    auto set = [&](const char *key, const QString &value) {
+        return git({QStringLiteral("config"), QStringLiteral("--global"), QLatin1String(key), value}, nullptr, error);
+    };
+    // trustExitCode: yadiff exits 0 only when the result was saved with every conflict resolved.
+    if (!set("mergetool.yadiff.cmd", cmd) || !set("mergetool.yadiff.trustExitCode", QStringLiteral("true")))
+        return false;
+    QString text = QStringLiteral("git config --global mergetool.yadiff.cmd '%1'\n"
+                                  "git config --global mergetool.yadiff.trustExitCode true\n")
+                       .arg(cmd);
+    if (makeDefault) {
+        if (!set("merge.tool", QStringLiteral("yadiff")) || !set("mergetool.prompt", QStringLiteral("false")))
+            return false;
+        text += QStringLiteral("git config --global merge.tool yadiff\ngit config --global mergetool.prompt false\n");
+    }
+    if (summary)
+        *summary = text;
+    return true;
+}
+
+bool unregisterMergeTool(QString *summary, QString *error)
+{
+    auto unset = [&](const char *key) {
+        return git({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--unset"), QLatin1String(key)},
+                   nullptr, nullptr);
+    };
+    if (!unset("mergetool.yadiff.cmd")) {
+        if (error)
+            *error = QStringLiteral("yadiff is not registered as a git mergetool");
+        return false;
+    }
+    unset("mergetool.yadiff.trustExitCode");
+    QString text = QStringLiteral("git config --global --unset mergetool.yadiff.cmd\n"
+                                  "git config --global --unset mergetool.yadiff.trustExitCode\n");
+    QString tool;
+    git({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("merge.tool")}, &tool, nullptr);
+    if (tool == QLatin1String("yadiff")) {
+        unset("merge.tool");
+        unset("mergetool.prompt");
+        text += QStringLiteral("git config --global --unset merge.tool\ngit config --global --unset mergetool.prompt\n");
+    }
+    if (summary)
+        *summary = text;
+    return true;
+}
+
+bool isMergeToolRegistered()
+{
+    QString out;
+    return git({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("mergetool.yadiff.cmd")}, &out, nullptr)
+        && !out.isEmpty();
+}
+
 } // namespace Difftool

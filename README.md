@@ -20,6 +20,8 @@ yadiff --no-index A B       two directories or two files, in or outside a reposi
 yadiff --patch FILE         a patch file, on the files it applies to when they're there
 yadiff --session FILE       a session saved with File > Save session
 yadiff --register-difftool  make yadiff git's difftool (--unregister-difftool undoes it)
+yadiff --merge BASE LOCAL REMOTE MERGED   three-way merge (what git mergetool runs)
+yadiff --register-mergetool make yadiff git's mergetool (--unregister-mergetool undoes it)
 yadiff --add-file-manager-menu   "Compare with yadiff" in Dolphin or Explorer (--remove-file-manager-menu)
 yadiff ... --export FILE    write an HTML report of the comparison instead of opening a window
 
@@ -201,6 +203,19 @@ path looks like a revision.
   window, and switching files quickly only shows the last one. "All changes" searches show
   progress and can be stopped. Diffs over 100,000 lines ask before showing, and files over 30,000
   lines skip syntax highlighting.
+- **Three-way merge.** File → Resolve conflict (Ctrl+Shift+R), or right-click a conflicted (U)
+  file, opens the merge window: ours, the base and theirs side by side, and the editable result
+  below. Changes made on one side only, or the same on both, are merged automatically; each
+  conflict starts as git-style markers (with the base, diff3 style) on a red background. Take ours
+  (Ctrl+1), base (Ctrl+2), theirs (Ctrl+3), both with ours first (Ctrl+4) or theirs first (Ctrl+5),
+  or edit the result by hand; Ctrl+0 puts the markers back. Alt+Up and Alt+Down step between
+  conflicts, and taking a side moves on to the next one. The Merge menu can also take ours or
+  theirs for every remaining conflict. Saving with nothing unresolved stages the file, as
+  `git add` would. The result keeps our side's line endings.
+- **git mergetool:** `yadiff --register-mergetool`, or Help → Register as git mergetool, sets
+  `mergetool.yadiff.cmd` (`yadiff --merge "$BASE" "$LOCAL" "$REMOTE" "$MERGED"`) with
+  `trustExitCode`, and makes yadiff the default merge tool. yadiff exits 0 only when the result was
+  saved with every conflict resolved, so `git mergetool` knows whether the file is done.
 - **git difftool:** `yadiff --register-difftool`, or File → Register as git difftool, sets
   `difftool.yadiff.cmd` in `~/.gitconfig` and makes yadiff the default tool. Then
   `git difftool` opens yadiff file by file, and `git difftool -d` compares whole directories.
@@ -253,7 +268,7 @@ computed by yadiff.
   - Compare commits, Change window title, and Export HTML report.
   - Globbing ignore patterns (`.gitignore` syntax), which can be turned off.
   - Stage, unstage or revert the selected files. Revert asks first and moves deleted files to the
-    trash.
+    trash. Resolve conflict opens a conflicted file in the merge window.
   - Rescan files (Ctrl+F5), Refresh list (F5), and Download files again. For PRs, that fetches
     the PR again and picks up new pushes.
   - Swap right and left (Ctrl+Shift+X). For working-tree comparisons, this puts the working tree
@@ -289,8 +304,8 @@ computed by yadiff.
 - **Marking:** see above.
 - **Review:** for pull requests only.
 - **Help:**
-  - Register and Unregister as git difftool, and add yadiff to (or remove it from) the file
-    manager's menu.
+  - Register and Unregister as git difftool and as git mergetool, and add yadiff to (or remove it
+    from) the file manager's menu.
   - Automatically install updates, and Check for update now (see Updates below).
   - Usage, which is the command-line summary, and About.
 
@@ -397,11 +412,11 @@ ctest --test-dir build --output-on-failure
 - `test_diffmodel` covers the diff parser, moves, pairing and word highlights. It also checks
   yadiff's own algorithms: Myers LCS against a brute-force LCS on random input, and Heckel. It also
   covers comment stripping, unimportant lines, alignment around manual anchors, reading and
-  applying patch files, hex dumps, CSV parsing and table comparison, and the structural (token)
-  algorithm.
+  applying patch files, hex dumps, CSV parsing and table comparison, the structural (token)
+  algorithm, and three-way merge regions.
 - `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
   applying a change to a file, line-ending preservation, sessions, the file manager menu, and
-  difftool registration. That last one uses a temporary git config.
+  difftool and mergetool registration. That last one uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
   files, a repository with no commits, revision mode, path filters, all-changes mode, diff
   options (including ignore case and leading/trailing whitespace with every algorithm, comments,
@@ -421,7 +436,8 @@ ctest --test-dir build --output-on-failure
   keyboard shortcut. Background loading is tested too, including switching files quickly. So are
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
   ignoring comments, manual alignment, staging the current change, stepping through commits, and
-  dropped files, patches, sessions, recent comparisons, and the hex and table views.
+  dropped files, patches, sessions, recent comparisons, the hex and table views, and the merge
+  window, including resolving a real `git merge` conflict.
   The other GUI
   tests run with `YADIFF_SYNCHRONOUS=1`, so loads finish before the next line.
 
@@ -453,6 +469,8 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/Difftool.*` | git difftool registration |
 | `src/FileFilter.*` | File list filter terms |
 | `src/ImageDiffView.*` | Image comparison modes |
+| `src/Merge3.*`, `src/MergeWindow.*` | Three-way merge (diff3 regions) and the merge window |
+| `src/StructuralDiff.*` | The Structural algorithm: tokenizer and token-level comparison |
 | `src/HexDiff.*` | Binary files as hex rows, aligned with content-defined chunks |
 | `src/TableDiff.*`, `src/TableDiffView.*` | CSV/TSV parsing, row and cell comparison, and the table view |
 | `src/Report.*` | HTML report |

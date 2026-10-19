@@ -12,6 +12,7 @@
 #include "AdoPr.h"
 #include "CodeView.h"
 #include "GitHubPr.h"
+#include "MergeWindow.h"
 #include "NewComparisonDialog.h"
 #include "PrReview.h"
 #include "Report.h"
@@ -431,6 +432,9 @@ void MainWindow::createActions()
     m_stageAct->setStatusTip(tr("git add the selected files"));
     m_unstageAct = fileMenu->addAction(tr("U&nstage files"), this, [this] { stageSelected(false); });
     m_revertAct = fileMenu->addAction(tr("Re&vert files…"), this, &MainWindow::revertSelected);
+    m_resolveAct = fileMenu->addAction(tr("Resolve &conflict\u2026"), this, &MainWindow::resolveConflict);
+    m_resolveAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R));
+    m_resolveAct->setStatusTip(tr("Open the conflicted file in the three-way merge window"));
     m_revertAct->setStatusTip(tr("Make the selected files' right side match their left side (asks first)"));
     fileMenu->addSeparator();
     QAction *rescan = fileMenu->addAction(tr("Rescan &files"), this, [this] {
@@ -944,6 +948,21 @@ void MainWindow::createActions()
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(tr("&Register as git difftool…"), this, &MainWindow::registerDifftool);
     helpMenu->addAction(tr("U&nregister as git difftool"), this, &MainWindow::unregisterDifftool);
+    helpMenu->addAction(tr("Register as git &mergetool\u2026"), this, [this] {
+        QString summary, error;
+        if (Difftool::registerMergeTool(Difftool::preferredExecutable(), true, &summary, &error))
+            QMessageBox::information(this, tr("Registered"),
+                                     tr("git mergetool now opens yadiff's merge window:\n\n%1").arg(summary));
+        else
+            QMessageBox::warning(this, tr("Register"), error);
+    });
+    helpMenu->addAction(tr("Unregister as git mergetool"), this, [this] {
+        QString summary, error;
+        if (Difftool::unregisterMergeTool(&summary, &error))
+            QMessageBox::information(this, tr("Unregistered"), tr("Done:\n\n%1").arg(summary));
+        else
+            QMessageBox::warning(this, tr("Unregister"), error);
+    });
     helpMenu->addAction(tr("Add to the &file manager's menu"), this, [this] {
         QString summary, error;
         if (ShellMenu::install(Difftool::stableExecutable(), &summary, &error))
@@ -1249,6 +1268,8 @@ void MainWindow::updateViewToggle()
 void MainWindow::updateEditActions()
 {
     const bool editing = m_pane->isEditing();
+    m_resolveAct->setEnabled(m_shownIndex >= 0 && m_shownIndex < m_changes.size() && m_changes[m_shownIndex].status == u'U'
+                             && m_repo.isRepository() && !m_repo.isBare());
     m_editAct->setEnabled(m_pane->canEdit());
     m_editAct->setChecked(editing);
     m_saveAct->setEnabled(editing && m_pane->isModified());
@@ -1260,6 +1281,47 @@ void MainWindow::updateEditActions()
     m_stageLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Stage));
     m_unstageLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Unstage));
     m_discardLinesAct->setEnabled(m_pane->canLineOp(GitRepo::LineOp::Discard));
+}
+
+void MainWindow::resolveConflict()
+{
+    if (m_shownIndex < 0 || m_shownIndex >= m_changes.size() || m_changes[m_shownIndex].status != u'U') {
+        statusBar()->showMessage(tr("Pick a conflicted file (U) first"), 3000);
+        return;
+    }
+    const FileChange fc = m_changes[m_shownIndex];
+    // The index holds the three versions of a conflicted file: 1 base, 2 ours, 3 theirs.
+    auto stage = [&](int n) {
+        QByteArray out;
+        m_repo.run({QStringLiteral("show"), QStringLiteral(":%1:%2").arg(n).arg(fc.path)}, &out, nullptr);
+        return out;
+    };
+    MergeWindow::Input in;
+    in.base = stage(1);
+    in.ours = stage(2);
+    in.theirs = stage(3);
+    if (in.ours.left(8000).contains('\0') || in.theirs.left(8000).contains('\0')) {
+        QMessageBox::information(this, tr("Resolve conflict"), tr("%1 is a binary file; yadiff merges text files only.").arg(fc.path));
+        return;
+    }
+    in.outputPath = QDir(m_repo.root()).filePath(fc.path);
+    in.fileName = fc.path;
+    in.oursLabel = tr("Ours (HEAD)");
+    in.theirsLabel = tr("Theirs");
+    auto *w = new MergeWindow(in);
+    w->setAttribute(Qt::WA_DeleteOnClose);
+    connect(w, &MergeWindow::saved, this, [this, fc](bool resolved) {
+        if (!resolved)
+            return;
+        // Resolved and saved: mark it so, as git add would after a merge tool.
+        QString error;
+        if (!m_repo.stage({fc}, &error))
+            QMessageBox::warning(this, tr("Resolve conflict"), error);
+        m_diffCache.clear();
+        reload();
+        statusBar()->showMessage(tr("Resolved %1 (staged)").arg(fc.path), 5000);
+    });
+    w->show();
 }
 
 void MainWindow::applyLineOp(GitRepo::LineOp op, const QVector<int> &lines)
@@ -2509,6 +2571,12 @@ void MainWindow::showFileContextMenu(const QPoint &globalPos)
     stage->setEnabled(working && anyUnstaged && m_cmp.mode != Comparison::Mode::Paths);
     if (anyStaged)
         menu.addAction(tr("&Unstage file"), this, [this] { stageSelected(false); })->setEnabled(working);
+    if (sel.size() == 1 && m_changes.value(sel.first()).status == u'U')
+        menu.addAction(tr("Resolve &conflict\u2026"), this, [this, index = sel.first()] {
+            if (m_shownIndex != index)
+                m_files->selectIndex(index);
+            resolveConflict();
+        });
     QAction *revert = menu.addAction(tr("&Revert file…"), this, &MainWindow::revertSelected);
     revert->setEnabled(m_revertAct->isEnabled());
     QAction *download = menu.addAction(tr("&Download file again"), this, [this] { downloadAgain(true); });

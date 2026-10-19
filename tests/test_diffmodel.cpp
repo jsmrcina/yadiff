@@ -1,6 +1,7 @@
 #include "Comments.h"
 #include "DiffModel.h"
 #include "LineDiff.h"
+#include "Merge3.h"
 #include "HexDiff.h"
 #include "PatchFile.h"
 #include "StructuralDiff.h"
@@ -370,6 +371,46 @@ private slots:
         const FileDiff same = StructuralDiff::build({QStringLiteral("a=b;")}, {QStringLiteral("a = b ;")}, opt);
         QVERIFY(same.chunks.isEmpty());
         QVERIFY(same.lines[0].unimportant);
+    }
+
+    void threeWayMerge()
+    {
+        auto L = [](const char *s) { return QString::fromLatin1(s).split(u' ', Qt::SkipEmptyParts); };
+        const QStringList base = L("a b c d e f");
+        // Different places: merges cleanly.
+        int conflicts = -1;
+        auto r = Merge3::regions(base, L("a B c d e f"), L("a b c d E f x"));
+        QCOMPARE(Merge3::merge(r, base, L("a B c d e f"), L("a b c d E f x"), &conflicts), L("a B c d E f x"));
+        QCOMPARE(conflicts, 0);
+        // The same change on both sides isn't a conflict.
+        r = Merge3::regions(base, L("a b C d e f"), L("a b C d e f"));
+        QCOMPARE(Merge3::merge(r, base, L("a b C d e f"), L("a b C d e f"), &conflicts), L("a b C d e f"));
+        QCOMPARE(conflicts, 0);
+        // Both changed c: a conflict, with markers and the base.
+        const QStringList ours = L("a b X d e f"), theirs = L("a b Y d e f");
+        r = Merge3::regions(base, ours, theirs);
+        const QStringList merged = Merge3::merge(r, base, ours, theirs, &conflicts);
+        QCOMPARE(conflicts, 1);
+        QCOMPARE(merged, (QStringList{QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("<<<<<<< ours"), QStringLiteral("X"),
+                                      QStringLiteral("||||||| base"), QStringLiteral("c"), QStringLiteral("======="),
+                                      QStringLiteral("Y"), QStringLiteral(">>>>>>> theirs"), QStringLiteral("d"),
+                                      QStringLiteral("e"), QStringLiteral("f")}));
+        Merge3::Region conflict;
+        for (const auto &x : r)
+            if (x.kind == Merge3::Region::Kind::Conflict)
+                conflict = x;
+        QCOMPARE(Merge3::take(conflict, Merge3::Pick::TheirsThenOurs, base, ours, theirs), L("Y X"));
+        QCOMPARE(Merge3::take(conflict, Merge3::Pick::Base, base, ours, theirs), L("c"));
+        // Insertions at the same place on both sides conflict; deletions on one side merge.
+        r = Merge3::regions(base, L("a b c d e f 1"), L("a b c d e f 2"));
+        Merge3::merge(r, base, L("a b c d e f 1"), L("a b c d e f 2"), &conflicts);
+        QCOMPARE(conflicts, 1);
+        r = Merge3::regions(base, L("a c d e f"), L("a b c d e F"));
+        QCOMPARE(Merge3::merge(r, base, L("a c d e f"), L("a b c d e F"), &conflicts), L("a c d e F"));
+        // Empty base (both added the file).
+        r = Merge3::regions({}, L("x y"), L("x y"));
+        QCOMPARE(Merge3::merge(r, {}, L("x y"), L("x y"), &conflicts), L("x y"));
+        QCOMPARE(conflicts, 0);
     }
 
     void stripsComments()

@@ -6,6 +6,7 @@
 #include "GitHubPr.h"
 #include "GitRepo.h"
 #include "MainWindow.h"
+#include "MergeWindow.h"
 #include "Report.h"
 #include "ReviewStore.h"
 #include "Scratch.h"
@@ -108,13 +109,19 @@ int main(int argc, char *argv[])
     const QCommandLineOption compareLeftOpt(QStringLiteral("compare-to-left"),
                                             QStringLiteral("Compare the remembered left side with <path>."),
                                             QStringLiteral("path"));
+    const QCommandLineOption mergeOpt(QStringLiteral("merge"),
+                                      QStringLiteral("Three-way merge: yadiff --merge BASE LOCAL REMOTE MERGED (git mergetool)."));
+    const QCommandLineOption registerMergeOpt(QStringLiteral("register-mergetool"),
+                                              QStringLiteral("Register yadiff as the default git mergetool and exit."));
+    const QCommandLineOption unregisterMergeOpt(QStringLiteral("unregister-mergetool"),
+                                                QStringLiteral("Remove yadiff's git mergetool registration and exit."));
     const QCommandLineOption shellMenuOpt(QStringLiteral("add-file-manager-menu"),
                                           QStringLiteral("Add yadiff to the file manager's right-click menu and exit."));
     const QCommandLineOption noShellMenuOpt(QStringLiteral("remove-file-manager-menu"),
                                             QStringLiteral("Remove yadiff from the file manager's right-click menu and exit."));
     parser.addOptions({dirOpt, waitOpt, allOpt, prOpt, adoOpt, adoLoginOpt, adoLogoutOpt, algoOpt, inlineOpt, sideOpt,
                        noIndexOpt, registerOpt, unregisterOpt, exportOpt, titleOpt, patchOpt, sessionOpt, selectLeftOpt,
-                       compareLeftOpt, shellMenuOpt, noShellMenuOpt});
+                       compareLeftOpt, shellMenuOpt, noShellMenuOpt, mergeOpt, registerMergeOpt, unregisterMergeOpt});
     parser.addPositionalArgument(QStringLiteral("args"), QStringLiteral("Revisions and/or paths (see above)."),
                                  QStringLiteral("[REV [REV]] [[--] PATH...]"));
     parser.process(app);
@@ -137,6 +144,47 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    if (parser.isSet(registerMergeOpt) || parser.isSet(unregisterMergeOpt)) {
+        QString summary, toolError;
+        const bool ok = parser.isSet(registerMergeOpt)
+                            ? Difftool::registerMergeTool(Difftool::preferredExecutable(), true, &summary, &toolError)
+                            : Difftool::unregisterMergeTool(&summary, &toolError);
+        if (!ok)
+            return fail(toolError);
+        std::fprintf(stdout, "%s", qPrintable(summary));
+        return 0;
+    }
+    if (parser.isSet(mergeOpt)) {
+        // git mergetool waits for us, and trusts the exit status: 0 = resolved and saved.
+        const QStringList files = parser.positionalArguments();
+        if (files.size() != 4)
+            return fail(QStringLiteral("--merge needs four files: BASE LOCAL REMOTE MERGED"));
+        auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray(); // a missing base: added on both sides
+        };
+        const QString cwd = parser.isSet(dirOpt) ? QDir(parser.value(dirOpt)).absolutePath() : QDir::currentPath();
+        MergeWindow::Input in;
+        in.base = read(QDir(cwd).absoluteFilePath(files[0]));
+        in.ours = read(QDir(cwd).absoluteFilePath(files[1]));
+        in.theirs = read(QDir(cwd).absoluteFilePath(files[2]));
+        in.outputPath = QDir(cwd).absoluteFilePath(files[3]);
+        in.fileName = files[3];
+        in.oursLabel = QStringLiteral("Local");
+        in.theirsLabel = QStringLiteral("Remote");
+        if (in.ours.left(8000).contains('\0') || in.theirs.left(8000).contains('\0'))
+            return fail(QStringLiteral("%1 is a binary file; yadiff merges text files only").arg(files[3]));
+        MergeWindow w(in);
+        w.show();
+        if (const QString grab = qEnvironmentVariable("YADIFF_GRAB"); !grab.isEmpty()) {
+            w.resize(1300, 800);
+            QApplication::processEvents();
+            w.grab().save(grab + QStringLiteral("-merge.png"));
+            return 1;
+        }
+        app.exec();
+        return w.resolvedAndSaved() ? 0 : 1;
+    }
     if (parser.isSet(shellMenuOpt) || parser.isSet(noShellMenuOpt)) {
         QString summary, menuError;
         const bool ok = parser.isSet(shellMenuOpt) ? ShellMenu::install(Difftool::stableExecutable(), &summary, &menuError)

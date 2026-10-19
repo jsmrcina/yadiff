@@ -207,8 +207,9 @@ CodeView *DiffPane::activeView() const
     return m_mode == Mode::Inline ? m_inline : m_right;
 }
 
-ViewPalette DiffPane::makePalette() const
+ViewPalette diffPalette(const QWidget *w)
 {
+    const QPalette &pal = w->palette();
     const DiffColors c = Settings::colors();
     ViewPalette p;
     p.added = c.added;
@@ -216,26 +217,31 @@ ViewPalette DiffPane::makePalette() const
     p.moved = c.moved;
     {
         // Unimportant differences: a faint grey, whatever the colour theme.
-        const QColor text = palette().color(QPalette::Text), bg = palette().color(QPalette::Base);
+        const QColor text = pal.color(QPalette::Text), bg = pal.color(QPalette::Base);
         p.unimportant = QColor((text.red() + 9 * bg.red()) / 10, (text.green() + 9 * bg.green()) / 10,
                                (text.blue() + 9 * bg.blue()) / 10);
     }
     p.addedEmph = Settings::emphasis(c.added);
     p.removedEmph = Settings::emphasis(c.removed);
     p.movedEmph = Settings::emphasis(c.moved);
-    QColor hatch = palette().color(QPalette::Text);
+    QColor hatch = pal.color(QPalette::Text);
     hatch.setAlpha(45);
     p.filler = QBrush(hatch, Qt::BDiagPattern);
-    const QColor base = palette().color(QPalette::Base);
+    const QColor base = pal.color(QPalette::Base);
     const bool dark = Settings::isDarkTheme();
     p.fold = dark ? base.lighter(140) : base.darker(110);
     p.gutterBg = dark ? base.lighter(125) : base.darker(106);
-    p.gutterText = palette().color(QPalette::PlaceholderText);
-    p.current = palette().color(QPalette::Highlight);
+    p.gutterText = pal.color(QPalette::PlaceholderText);
+    p.current = pal.color(QPalette::Highlight);
     p.comment = dark ? QColor(0x3a, 0x36, 0x1c) : QColor(0xff, 0xf8, 0xc5);
     p.match = QColor(0xff, 0xe0, 0x66);
     p.currentMatch = QColor(0xff, 0x96, 0x32);
     return p;
+}
+
+ViewPalette DiffPane::makePalette() const
+{
+    return diffPalette(this);
 }
 
 Row DiffPane::makeRow(int i) const
