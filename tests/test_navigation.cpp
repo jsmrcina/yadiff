@@ -641,6 +641,21 @@ private slots:
         }
         QString error;
         auto repo = GitRepo::open(d, &error);
+        {
+            // For real, the list loads in the background: the dialog is up at once with a
+            // "Loading…" row, and closing it while git runs is fine.
+            qunsetenv("YADIFF_SYNCHRONOUS");
+            HistoryDialog async(*repo);
+            auto *asyncList = async.findChild<QTreeWidget *>();
+            QVERIFY(async.isLoading());
+            QCOMPARE(asyncList->topLevelItemCount(), 1);
+            QVERIFY(asyncList->topLevelItem(0)->text(1).startsWith(QStringLiteral("Loading")));
+            QTRY_VERIFY(!async.isLoading());
+            QCOMPARE(asyncList->topLevelItemCount(), 3);
+            auto *closedEarly = new HistoryDialog(*repo);
+            delete closedEarly;
+            qputenv("YADIFF_SYNCHRONOUS", "1");
+        }
         HistoryDialog dlg(*repo);
         dlg.show();
         auto *list = dlg.findChild<QTreeWidget *>();

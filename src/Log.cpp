@@ -72,6 +72,7 @@ State &state()
 std::atomic<int> g_crashFd{-1};
 thread_local int t_quiet = 0;
 std::atomic<bool> g_stopping{false};
+thread_local std::shared_ptr<std::atomic_bool> t_cancelled;
 
 const char *typeName(QtMsgType type)
 {
@@ -477,6 +478,16 @@ bool stopping()
     return g_stopping;
 }
 
+CancelScope::CancelScope(std::shared_ptr<std::atomic_bool> cancelled)
+    : m_previous(std::exchange(t_cancelled, std::move(cancelled)))
+{
+}
+
+CancelScope::~CancelScope()
+{
+    t_cancelled = std::move(m_previous);
+}
+
 bool ProcessTrace::wait(QProcess &p, int timeoutMs)
 {
     QElapsedTimer waited;
@@ -491,10 +502,12 @@ bool ProcessTrace::wait(QProcess &p, int timeoutMs)
             return true;
         if (p.state() == QProcess::NotRunning)
             return false; // failed to start, or already collected
-        if (g_stopping) {
+        const bool cancelled = t_cancelled && *t_cancelled;
+        if (g_stopping || cancelled) {
             if (m_category.isInfoEnabled())
                 QMessageLogger(nullptr, 0, nullptr, m_category.categoryName()).info().noquote()
-                    << "stopping (yadiff is exiting):" << commandLine(p.program(), p.arguments());
+                    << (cancelled ? "stopping (no longer wanted):" : "stopping (yadiff is exiting):")
+                    << commandLine(p.program(), p.arguments());
             p.kill();
             p.waitForFinished(5000);
             return false;

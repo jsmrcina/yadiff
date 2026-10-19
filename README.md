@@ -115,7 +115,9 @@ path looks like a revision.
   Ctrl+Alt+Left. This rewrites the file on disk. That works for the working-tree side in a Git
   comparison, and both sides in a directory or file comparison. It refuses if the file changed
   since it was diffed.
-- **Compare commits** with File → Compare commits (Ctrl+L) or the toolbar button. It lists recent
+- **Compare commits** with File → Compare commits (Ctrl+L) or the toolbar button. The list loads in
+  the background, so the dialog opens at once even in a very large repository; closing it stops
+  the loading. It lists recent
   history, optionally from all branches, with a filter. Pick one commit to see its changes, two to
   compare them, or one to compare with the working tree. The drop-down at the top switches to the
   tips of branches and tags, where Changes since HEAD shows what a branch has that HEAD doesn't,

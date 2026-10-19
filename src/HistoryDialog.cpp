@@ -1,8 +1,12 @@
 #include "HistoryDialog.h"
 
+#include "Log.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFutureWatcher>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -103,21 +107,69 @@ HistoryDialog::HistoryDialog(const GitRepo &repo, QWidget *parent) : QDialog(par
     load(false);
 }
 
+HistoryDialog::~HistoryDialog()
+{
+    if (m_cancel)
+        *m_cancel = true; // a load still running stops its git command
+}
+
 void HistoryDialog::load(bool more)
 {
-    QString error;
+    if (m_cancel)
+        *m_cancel = true;
+    m_cancel = std::make_shared<std::atomic_bool>(false);
+    const quint64 gen = ++m_loadGen;
     const int skip = more ? int(m_commits.size()) : 0;
     const int source = m_source->currentIndex();
-    const QVector<CommitInfo> page = source == 1 ? m_repo.refTips(&error)
-                                     : source == 2 ? m_repo.stashes(&error)
-                                                   : m_repo.log(kPageSize, skip, m_allRefs->isChecked(), &error);
-    if (!error.isEmpty()) {
-        QMessageBox::warning(this, tr("Compare commits"), tr("git log failed:\n%1").arg(error));
-        return;
-    }
+    const bool allRefs = m_allRefs->isChecked();
+    m_loading = true;
+    m_more->setEnabled(false);
     if (!more) {
         m_commits.clear();
         m_list->clear();
+    }
+    auto *placeholder = new QTreeWidgetItem(m_list);
+    placeholder->setText(1, source == 1 ? tr("Loading branches and tags…") : source == 2 ? tr("Loading stashes…") : tr("Loading commits…"));
+    placeholder->setFlags(Qt::NoItemFlags);
+    placeholder->setData(0, kIndexRole, -1);
+    m_list->scrollToItem(placeholder);
+
+    struct Page {
+        QVector<CommitInfo> commits;
+        QString error;
+    };
+    auto job = [repo = m_repo, cancel = m_cancel, source, skip, allRefs] {
+        const Log::CancelScope scope(cancel);
+        Page p;
+        p.commits = source == 1 ? repo.refTips(&p.error)
+                  : source == 2 ? repo.stashes(&p.error)
+                                : repo.log(kPageSize, skip, allRefs, &p.error);
+        return p;
+    };
+    auto done = [this, gen, source, placeholder](const Page &p) {
+        if (gen != m_loadGen)
+            return; // a newer load replaced this one
+        m_loading = false;
+        delete placeholder;
+        showPage(p.commits, p.error, source);
+    };
+    if (qEnvironmentVariableIsSet("YADIFF_SYNCHRONOUS")) { // tests: in order, at once
+        done(job());
+        return;
+    }
+    auto *watcher = new QFutureWatcher<Page>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [watcher, done] {
+        done(watcher->result());
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run(job));
+}
+
+void HistoryDialog::showPage(const QVector<CommitInfo> &page, const QString &error, int source)
+{
+    if (!error.isEmpty()) {
+        QMessageBox::warning(this, tr("Compare commits"), tr("git log failed:\n%1").arg(error));
+        return;
     }
     for (const CommitInfo &c : page) {
         auto *item = new QTreeWidgetItem(m_list);
@@ -142,7 +194,10 @@ void HistoryDialog::applyFilter()
     const QString f = m_filter->text().trimmed();
     for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
         QTreeWidgetItem *item = m_list->topLevelItem(i);
-        const CommitInfo &c = m_commits[item->data(0, kIndexRole).toInt()];
+        const int index = item->data(0, kIndexRole).toInt();
+        if (index < 0)
+            continue; // "Loading…"
+        const CommitInfo &c = m_commits[index];
         const bool show = f.isEmpty() || c.subject.contains(f, Qt::CaseInsensitive) || c.author.contains(f, Qt::CaseInsensitive)
                        || c.oid.startsWith(f, Qt::CaseInsensitive) || c.refs.contains(f, Qt::CaseInsensitive);
         item->setHidden(!show);

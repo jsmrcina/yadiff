@@ -6,6 +6,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
+#include <memory>
 #include <optional>
 
 class QProcess;
@@ -102,6 +104,20 @@ public:
 // yadiff (or a git fetch) running in the background.
 void stopChildProcesses();
 bool stopping();
+
+// While one exists, the commands this thread waits on are killed once `cancelled` turns
+// true: for background work the user can abandon (closing a dialog that is loading).
+class CancelScope
+{
+public:
+    explicit CancelScope(std::shared_ptr<std::atomic_bool> cancelled);
+    ~CancelScope();
+    CancelScope(const CancelScope &) = delete;
+    CancelScope &operator=(const CancelScope &) = delete;
+
+private:
+    std::shared_ptr<std::atomic_bool> m_previous;
+};
 
 // Logs a detached start (a new window, an editor, gitk).
 void launched(const QLoggingCategory &category, const QString &program, const QStringList &args, bool ok);

@@ -2,7 +2,9 @@
 #include "Log.h"
 
 #include <QFile>
+#include <QElapsedTimer>
 #include <QProcess>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUrl>
@@ -109,6 +111,27 @@ private slots:
             p.kill();
             p.waitForFinished();
         }
+        {
+            // A command waited on under a CancelScope is killed once it is cancelled.
+            auto cancel = std::make_shared<std::atomic_bool>(false);
+            QElapsedTimer timer;
+            timer.start();
+            auto future = QtConcurrent::run([cancel] {
+                const Log::CancelScope scope(cancel);
+                QProcess p;
+                Log::ProcessTrace trace(lcGit());
+                p.start(QStringLiteral("git"), {QStringLiteral("hash-object"), QStringLiteral("--stdin")});
+                p.waitForStarted();
+                const bool finished = trace.wait(p);
+                trace.done(p);
+                return finished;
+            });
+            QTest::qWait(300);
+            *cancel = true;
+            future.waitForFinished();
+            QVERIFY(!future.result());
+            QVERIFY(timer.elapsed() < 5000);
+        }
         Log::setLevel(Log::Level::Debug);
         qCDebug(lcDiff) << "now debug shows";
         Log::shutdown();
@@ -124,6 +147,7 @@ private slots:
         QVERIFY(log.contains(QStringLiteral("stderr: fatal: Needed a single revision")));
         QVERIFY(!log.contains(QStringLiteral("git --version")));
         QVERIFY(log.contains(QStringLiteral("git hash-object --stdin -> FAILED: still running (timed out)")));
+        QVERIFY(log.contains(QStringLiteral("stopping (no longer wanted): git hash-object --stdin")));
         QVERIFY(log.contains(QStringLiteral("DEBUG yadiff.diff   now debug shows")));
         // Back to quiet, as in the other tests.
         Log::init(QStringLiteral("off"));
