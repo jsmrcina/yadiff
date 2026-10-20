@@ -242,6 +242,7 @@ std::optional<Result> resolve(const Request &req, QString *errorOut)
         cmp.prProject = str("project");
         cmp.prWebUrl = str("webUrl");
         cmp.prNumber = handed.value(QStringLiteral("number")).toInt();
+        cmp.prHead = str("head");
         pathArgs = positional; // anything else limits the PR to those paths
     } else {
         repo = GitRepo::open(cwd, &error);

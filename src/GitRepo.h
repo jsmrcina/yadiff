@@ -121,6 +121,7 @@ struct Comparison {
     // Part of a pull request's history: from version prFromVersion (0: its merge base) to
     // prToVersion (0: its latest). Versions are Azure DevOps pushes or GitHub commits.
     int prFromVersion = 0, prToVersion = 0;
+    QString prHead; // the PR's head commit when it was opened
 
     // Swapped sides for comparisons that involve the working tree (git diff -R): the
     // working tree is on the left. (Other comparisons swap rev1/rev2 or the paths.)

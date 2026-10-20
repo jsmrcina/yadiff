@@ -3,6 +3,7 @@
 #include "Difftool.h"
 #include "FileFilter.h"
 #include "GitHubReview.h"
+#include "PrInbox.h"
 #include "PrOverview.h"
 #include "Report.h"
 #include "ReviewStore.h"
@@ -22,6 +23,31 @@ class TestFormat : public QObject
 {
     Q_OBJECT
 private slots:
+    void findsPullRequestsToReview()
+    {
+        auto src = PrInbox::parseSource(QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/4"));
+        QVERIFY(src && src->collection == QUrl(QStringLiteral("https://dev.azure.com/contoso")) && src->project == QStringLiteral("My Project"));
+        src = PrInbox::parseSource(QStringLiteral("https://dev.azure.com/contoso/Proj/_boards"));
+        QVERIFY(src && src->project == QStringLiteral("Proj"));
+        src = PrInbox::parseSource(QStringLiteral("https://contoso.visualstudio.com/DefaultCollection/Proj"));
+        QVERIFY(src && src->collection == QUrl(QStringLiteral("https://contoso.visualstudio.com/DefaultCollection")));
+        src = PrInbox::parseSource(QStringLiteral("https://tfs.example.com/tfs/Main/Proj/_git/Repo"));
+        QVERIFY(src && src->collection == QUrl(QStringLiteral("https://tfs.example.com/tfs/Main")) && src->project == QStringLiteral("Proj"));
+        QVERIFY(!PrInbox::parseSource(QStringLiteral("https://dev.azure.com/contoso")));
+        QVERIFY(!PrInbox::parseSource(QStringLiteral("https://dev.azure.com/contoso/_settings")));
+        QVERIFY(!PrInbox::parseSource(QStringLiteral("not a url")));
+
+        const auto items = PrInbox::parseGitHubSearch(R"({"data":{
+            "asked":{"nodes":[{"number":3,"title":"A","url":"pr-3","isDraft":false,"createdAt":"2026-01-02T00:00:00Z",
+                               "author":{"login":"al"},"repository":{"nameWithOwner":"o/r"},"headRefOid":"h3","viewerLatestReview":null}]},
+            "reviewed":{"nodes":[{"number":3,"title":"A","url":"pr-3"},
+                                 {"number":4,"title":"B","url":"pr-4","repository":{"nameWithOwner":"o/r"},"viewerLatestReview":{"state":"APPROVED"}}]}}})");
+        QCOMPARE(items.size(), 2);
+        QVERIFY(!items[0].reviewed && items[0].headCommit == QLatin1String("h3"));
+        QVERIFY(items[1].reviewed && items[1].myVote == GitHubReview::Vote::Approved);
+
+    }
+
     void readsGitHubOverviews()
     {
         const auto o = PrOverview::parseGitHubPullRequest(R"({"title":"T","body":"Body","author":{"login":"al"},"state":"OPEN",

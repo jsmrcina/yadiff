@@ -17,6 +17,8 @@
 #include "MergeWindow.h"
 #include "NewComparisonDialog.h"
 #include "PrReview.h"
+#include "PrInbox.h"
+#include "PrListDialog.h"
 #include "PrOverviewPanel.h"
 #include "Report.h"
 #include "TextFile.h"
@@ -423,6 +425,9 @@ void MainWindow::createActions()
                                        this, &MainWindow::openHistory);
     m_historyAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     m_historyAct->setToolTip(tr("Pick commits from the history to compare (Ctrl+L)"));
+    QAction *prAct = fileMenu->addAction(tr("Open &pull request\u2026"), this, &MainWindow::openPullRequest);
+    prAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+    prAct->setStatusTip(tr("The pull requests waiting for your review on Azure DevOps and GitHub, or any PR's link"));
     m_recentMenu = fileMenu->addMenu(tr("&Recent comparisons"));
     connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
     fileMenu->addAction(tr("Compare &text\u2026"), this, &MainWindow::compareText)
@@ -3213,6 +3218,22 @@ void MainWindow::submitReview(GitHubReview::Verdict verdict)
         });
 }
 
+void MainWindow::openPullRequest()
+{
+    PrListDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted || dlg.link().isEmpty())
+        return;
+    // From the repository shown (the user's clone, where a PR is fetched into), else home.
+    QString dir = QDir::homePath();
+    if (!m_cmp.empty && m_repo.isRepository() && !m_repo.isBare() && !m_cmp.readOnly)
+        dir = m_repo.root();
+    else if (m_cmp.empty && m_repo.isRepository())
+        dir = m_repo.root();
+    qCInfo(lcApp).noquote() << "opening" << dlg.link() << "from the pull request list";
+    openArguments({QStringLiteral("-C"), dir, dlg.host() == QLatin1String("ado") ? QStringLiteral("-ado") : QStringLiteral("-ghpr"),
+                   dlg.link()});
+}
+
 void MainWindow::loadOverview()
 {
     if (m_cmp.prNumber <= 0 || !m_overviewAct->isChecked())
@@ -4700,6 +4721,11 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
         m_prWhole = m_cmp;
         m_prWholeRoot = m_repo.root();
     }
+    // For File > Open pull request: where to look next time, and what was seen.
+    if (!key.isEmpty() && m_cmp.prToVersion == 0)
+        PrInbox::markSeen(key, m_cmp.prHead);
+    if (m_cmp.prHost == QLatin1String("ado") && m_cmp.prNumber > 0)
+        PrInbox::addSource({QUrl(m_cmp.prCollectionUrl), m_cmp.prProject});
     fillVersionCombo();
     qCInfo(lcApp).noquote() << "showing" << m_cmp.describe() << "in" << QDir::toNativeSeparators(m_repo.root());
     updateModeUi();

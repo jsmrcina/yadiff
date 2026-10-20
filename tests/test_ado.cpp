@@ -3,6 +3,7 @@
 #include "AdoPr.h"
 #include "GitRepo.h"
 #include "Http.h"
+#include "PrInbox.h"
 #include "PrReview.h"
 #include "SecretStore.h"
 
@@ -174,6 +175,20 @@ private:
                 code = 404;
                 body = R"({"message":"no such blob"})";
             }
+        } else if (r.path.contains("/_apis/projects/My Project/teams")) {
+            body = R"({"value":[{"id":"team-1","name":"Core"}]})";
+        } else if (r.path.contains("/My Project/_apis/git/pullrequests?")) {
+            const QByteArray me = R"({"id":"user-1","displayName":"Test User","vote":5})";
+            const QByteArray team = R"({"id":"team-1","displayName":"Core","isRequired":true})";
+            auto pr = [&](int id, const QByteArray &reviewers) {
+                return "{\"pullRequestId\":" + QByteArray::number(id) + ",\"title\":\"PR " + QByteArray::number(id)
+                     + "\",\"creationDate\":\"2026-01-0" + QByteArray::number(id % 9) + "T00:00:00Z\",\"createdBy\":{\"displayName\":\"Alice\"},"
+                       "\"repository\":{\"name\":\"repo\",\"project\":{\"name\":\"My Project\"}},"
+                       "\"lastMergeSourceCommit\":{\"commitId\":\"head" + QByteArray::number(id) + "\"},\"reviewers\":[" + reviewers + "]}";
+            };
+            body = r.path.contains("reviewerId=user-1") ? "{\"value\":[" + pr(7, me + "," + team) + "]}"
+                 : r.path.contains("reviewerId=team-1") ? "{\"value\":[" + pr(7, me + "," + team) + "," + pr(8, team) + "]}"
+                                                        : QByteArray(R"({"value":[]})");
         } else if (r.path.contains("/_apis/policy/evaluations")) {
             body = R"({"value":[
               {"status":"approved","configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Minimum number of reviewers"},"settings":{}}},
@@ -622,6 +637,23 @@ private slots:
             policyAsked |= r.path.contains("artifactId=vstfs:///CodeReview/CodeReviewId/proj-guid/7");
         QVERIFY(policyAsked);
 
+        // Pull requests waiting for review: those asking the user, and their teams.
+        const PrInbox::AdoSource project{ref->collectionUrl, ref->project};
+        auto inboxRun = QtConcurrent::run([&] { return PrInbox::fetchAll({project}, false); });
+        while (!inboxRun.isFinished())
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        const PrInbox::Listing inbox = inboxRun.result();
+        QVERIFY2(inbox.problems.isEmpty(), qPrintable(inbox.problems.join(u';')));
+        QCOMPARE(inbox.items.size(), 2); // PR 7 once
+        const PrInbox::Item &seven = inbox.items[0].number == 7 ? inbox.items[0] : inbox.items[1];
+        const PrInbox::Item &eight = inbox.items[0].number == 8 ? inbox.items[0] : inbox.items[1];
+        QCOMPARE(seven.myVote, GitHubReview::Vote::ApprovedWithSuggestions);
+        QVERIFY(seven.via.isEmpty() && seven.required);
+        QCOMPARE(eight.via, QStringLiteral("Core"));
+        QCOMPARE(eight.headCommit, QStringLiteral("head8"));
+        QVERIFY(AdoPr::parse(seven.link) && AdoPr::parse(seven.link)->id == 7);
+        QCOMPARE(AdoPr::parse(seven.link)->project, QStringLiteral("My Project"));
+
         // Pushes: the PR's iterations, and the one the user last voted on (iteration 1:
         // they voted on 2026-01-03, before iteration 2 was pushed).
         const auto history = PrReview::history(cmp, &error);
@@ -713,6 +745,7 @@ private slots:
         env.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
         env.insert(QStringLiteral("XDG_CACHE_HOME"), tmp.filePath(QStringLiteral("cache")));
         env.insert(QStringLiteral("LOCALAPPDATA"), tmp.filePath(QStringLiteral("cache")));
+        env.insert(QStringLiteral("XDG_CONFIG_HOME"), tmp.filePath(QStringLiteral("config"))); // not the user's settings
         yadiff.setProcessEnvironment(env);
         yadiff.setWorkingDirectory(tmp.path());
         yadiff.start(QStringLiteral(YADIFF_BINARY),

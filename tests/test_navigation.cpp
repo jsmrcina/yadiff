@@ -2,6 +2,8 @@
 #include "ComparisonArgs.h"
 #include "CodeView.h"
 #include "DiffPane.h"
+#include "PrInbox.h"
+#include "PrListDialog.h"
 #include "PrOverviewPanel.h"
 #include "FileList.h"
 #include "HistoryDialog.h"
@@ -954,6 +956,63 @@ private slots:
             panel.show();
             QApplication::processEvents();
             panel.grab().save(out + QStringLiteral("/overview.png"));
+        }
+    }
+
+    void pullRequestListShowsWhatsNew()
+    {
+        // What was seen: the same however the link is spelled.
+        PrInbox::markSeen(QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/4"), QStringLiteral("abc"));
+        QCOMPARE(PrInbox::lastSeen(QStringLiteral("https://dev.azure.com/Contoso/My Project/_git/web/pullrequest/4/")), QStringLiteral("abc"));
+        QVERIFY(PrInbox::lastSeen(QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/5")).isEmpty());
+        PrInbox::markSeen(QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/6"), QStringLiteral("old"));
+
+        PrInbox::Listing listing;
+        auto item = [](int n, const QString &head) {
+            PrInbox::Item it;
+            it.host = QStringLiteral("ado");
+            it.number = n;
+            it.link = QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/%1").arg(n);
+            it.repo = QStringLiteral("My Project/web");
+            it.title = QStringLiteral("Change %1").arg(n);
+            it.author = QStringLiteral("Alice");
+            it.headCommit = head;
+            return it;
+        };
+        listing.items = {item(4, QStringLiteral("abc")), item(5, QStringLiteral("x")), item(6, QStringLiteral("new"))};
+        listing.items[2].via = QStringLiteral("Core");
+        listing.items[2].myVote = GitHubReview::Vote::WaitingForAuthor;
+        listing.problems << QStringLiteral("GitHub: the GitHub CLI (gh) is not installed");
+        PrListDialog dlg(nullptr, false);
+        dlg.showListing(listing);
+        QTreeWidget *tree = dlg.tree();
+        QCOMPARE(tree->topLevelItemCount(), 3);
+        QCOMPARE(tree->topLevelItem(0)->text(5), QString()); // seen at its head
+        QCOMPARE(tree->topLevelItem(1)->text(5), QStringLiteral("new"));
+        QCOMPARE(tree->topLevelItem(2)->text(5), QStringLiteral("new push, via Core"));
+        QCOMPARE(tree->topLevelItem(2)->text(3), QStringLiteral("Waiting for author"));
+        QVERIFY(tree->topLevelItem(2)->font(0).bold() && !tree->topLevelItem(0)->font(0).bold());
+        QVERIFY(dlg.findChildren<QLabel *>().size() > 0);
+        bool problemShown = false;
+        for (QLabel *l : dlg.findChildren<QLabel *>())
+            problemShown |= l->text().contains(QStringLiteral("gh) is not installed"));
+        QVERIFY(problemShown);
+        // The filter, then opening a row.
+        auto *filter = dlg.findChild<QLineEdit *>();
+        filter->setText(QStringLiteral("change 5"));
+        QVERIFY(tree->topLevelItem(0)->isHidden() && !tree->topLevelItem(1)->isHidden());
+        filter->clear();
+        tree->setCurrentItem(tree->topLevelItem(2));
+        emit tree->itemActivated(tree->topLevelItem(2), 0);
+        QCOMPARE(dlg.result(), int(QDialog::Accepted));
+        QCOMPARE(dlg.host(), QStringLiteral("ado"));
+        QVERIFY(dlg.link().endsWith(QStringLiteral("/pullrequest/6")));
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            PrListDialog shot(nullptr, false);
+            shot.showListing(listing);
+            shot.show();
+            QApplication::processEvents();
+            shot.grab().save(out + QStringLiteral("/pr-list.png"));
         }
     }
 

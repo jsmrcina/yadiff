@@ -219,6 +219,8 @@ private:
     void fillVersionCombo();
     void showPrVersions(int from, int to);
     void choosePrVersions();
+    // File > Open pull request: the PRs waiting for the user's review.
+    void openPullRequest();
 
     GitRepo m_repo;
     Comparison m_cmp;
