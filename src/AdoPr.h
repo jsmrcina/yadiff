@@ -79,6 +79,13 @@ constexpr qint64 kReplyBase = 100000;
 QVector<GitHubReview::Comment> parseThreads(const QByteArray &json, const QUrl &webUrl);
 QByteArray threadPayload(const QString &path, const QString &side, int line, int startLine, const QString &body);
 
+// Thread status in the API's words ("active", "fixed", "wontFix", "closed", "byDesign",
+// "pending"), and back.
+GitHubReview::ThreadStatus parseThreadStatus(const QString &name);
+QString threadStatusName(GitHubReview::ThreadStatus status);
+bool setThreadStatus(const Ref &ref, const AdoAuth::Credential &cred, qint64 threadId, GitHubReview::ThreadStatus status,
+                     QString *error);
+
 std::optional<QVector<GitHubReview::Comment>> fetchComments(const Ref &ref, const AdoAuth::Credential &cred, QString *error);
 std::optional<GitHubReview::Comment> post(const Ref &ref, const AdoAuth::Credential &cred, const QString &path,
                                           const QString &side, int line, int startLine, const QString &body, QString *error);

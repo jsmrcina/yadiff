@@ -71,6 +71,59 @@ GitHubReview::Comment fromJson(const QJsonObject &o)
 
 namespace GitHubReview {
 
+bool isOpen(ThreadStatus status)
+{
+    return status == ThreadStatus::None || status == ThreadStatus::Active || status == ThreadStatus::Pending;
+}
+
+QString statusName(ThreadStatus status)
+{
+    switch (status) {
+    case ThreadStatus::Active:
+        return QStringLiteral("Active");
+    case ThreadStatus::Pending:
+        return QStringLiteral("Pending");
+    case ThreadStatus::Resolved:
+        return QStringLiteral("Resolved");
+    case ThreadStatus::WontFix:
+        return QStringLiteral("Won't fix");
+    case ThreadStatus::ByDesign:
+        return QStringLiteral("By design");
+    case ThreadStatus::Closed:
+        return QStringLiteral("Closed");
+    case ThreadStatus::None:
+        break;
+    }
+    return {};
+}
+
+QHash<qint64, ThreadState> parseThreadStates(const QByteArray &json, QString *nextCursor)
+{
+    QHash<qint64, ThreadState> out;
+    const QJsonObject threads = QJsonDocument::fromJson(json)
+                                    .object()
+                                    .value(QStringLiteral("data"))
+                                    .toObject()
+                                    .value(QStringLiteral("repository"))
+                                    .toObject()
+                                    .value(QStringLiteral("pullRequest"))
+                                    .toObject()
+                                    .value(QStringLiteral("reviewThreads"))
+                                    .toObject();
+    for (const QJsonValue &v : threads.value(QStringLiteral("nodes")).toArray()) {
+        const QJsonObject t = v.toObject();
+        const QJsonArray first = t.value(QStringLiteral("comments")).toObject().value(QStringLiteral("nodes")).toArray();
+        const qint64 id = first.isEmpty() ? 0 : qint64(first.first().toObject().value(QStringLiteral("databaseId")).toDouble());
+        if (id > 0)
+            out.insert(id, {t.value(QStringLiteral("id")).toString(), t.value(QStringLiteral("isResolved")).toBool()});
+    }
+    if (nextCursor) {
+        const QJsonObject page = threads.value(QStringLiteral("pageInfo")).toObject();
+        *nextCursor = page.value(QStringLiteral("hasNextPage")).toBool() ? page.value(QStringLiteral("endCursor")).toString() : QString();
+    }
+    return out;
+}
+
 QString displayTime(const QString &iso)
 {
     QDateTime t = QDateTime::fromString(iso, Qt::ISODateWithMs);
@@ -186,13 +239,78 @@ std::optional<Vote> myVote(const PrId &pr, QString *error)
     return latestVote(out, login);
 }
 
+namespace {
+
+// Whether each thread is resolved: only GitHub's GraphQL API says. Empty when it fails
+// (the comments still show, without their state).
+QHash<qint64, ThreadState> fetchThreadStates(const PrId &pr)
+{
+    static const QString query = QStringLiteral(
+        "query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){"
+        "pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}"
+        "nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}");
+    QHash<qint64, ThreadState> all;
+    QString cursor;
+    for (int page = 0; page < 50; ++page) {
+        QStringList args{QStringLiteral("api"), QStringLiteral("graphql"), QStringLiteral("-f"), QStringLiteral("query=") + query,
+                         QStringLiteral("-f"), QStringLiteral("owner=") + pr.owner, QStringLiteral("-f"),
+                         QStringLiteral("repo=") + pr.repo, QStringLiteral("-F"), QStringLiteral("number=%1").arg(pr.number)};
+        if (!cursor.isEmpty())
+            args << QStringLiteral("-f") << QStringLiteral("after=") + cursor;
+        QByteArray out;
+        QString error;
+        if (!gh(args, {}, &out, &error)) {
+            qCWarning(lcGitHub).noquote() << "could not read which review threads are resolved:" << error;
+            return {};
+        }
+        all.insert(parseThreadStates(out, &cursor));
+        if (cursor.isEmpty())
+            break;
+    }
+    return all;
+}
+
+} // namespace
+
 std::optional<QVector<Comment>> fetch(const PrId &pr, QString *error)
 {
     QByteArray out;
     if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/comments")},
             {}, &out, error))
         return std::nullopt;
-    return parseComments(out);
+    QVector<Comment> comments = parseComments(out);
+    const QHash<qint64, ThreadState> states = fetchThreadStates(pr);
+    for (Comment &c : comments) {
+        if (const auto it = states.constFind(c.id); it != states.constEnd() && c.inReplyTo == 0) {
+            c.threadNode = it->node;
+            c.status = it->resolved ? ThreadStatus::Resolved : ThreadStatus::Active;
+        }
+    }
+    return comments;
+}
+
+bool setResolved(const QString &threadNode, bool resolved, QString *error)
+{
+    if (threadNode.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("GitHub did not say which thread this is; reload the comments and try again.");
+        return false;
+    }
+    const QString mutation = resolved
+                                 ? QStringLiteral("mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}")
+                                 : QStringLiteral("mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}");
+    QByteArray out;
+    if (!gh({QStringLiteral("api"), QStringLiteral("graphql"), QStringLiteral("-f"), QStringLiteral("query=") + mutation,
+             QStringLiteral("-f"), QStringLiteral("id=") + threadNode},
+            {}, &out, error))
+        return false;
+    const QJsonArray errors = QJsonDocument::fromJson(out).object().value(QStringLiteral("errors")).toArray();
+    if (!errors.isEmpty()) {
+        if (error)
+            *error = errors.first().toObject().value(QStringLiteral("message")).toString();
+        return false;
+    }
+    return true;
 }
 
 std::optional<Comment> post(const PrId &pr, const QString &commitId, const QString &path, const QString &side, int line,

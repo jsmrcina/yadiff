@@ -74,6 +74,8 @@ Http::Response call(const QByteArray &method, const QUrl &url, const AdoAuth::Cr
     }
     if (!r.error.isEmpty())
         qCInfo(lcAdo).noquote() << method << "failed, credential from" << cred.source << "(" + cred.kindName() + "):" << r.error;
+    if ((r.status == 401 || r.status == 203) && !cred.collection.isEmpty())
+        AdoAuth::rejected(cred.collection, cred);
     return r;
 }
 
@@ -580,11 +582,13 @@ QVector<GitHubReview::Comment> parseThreads(const QByteArray &json, const QUrl &
         if (context.value(QStringLiteral("filePath")).toString().isEmpty())
             continue; // pull-request-level discussion, not attached to a line
         const qint64 threadId = qint64(t.value(QStringLiteral("id")).toDouble());
+        const GitHubReview::ThreadStatus status = parseThreadStatus(t.value(QStringLiteral("status")).toString());
         for (const QJsonValue &cv : t.value(QStringLiteral("comments")).toArray()) {
             const QJsonObject c = cv.toObject();
             if (c.value(QStringLiteral("isDeleted")).toBool() || c.value(QStringLiteral("commentType")).toString() == QLatin1String("system"))
                 continue;
             out.push_back(commentFrom(c, threadId, context, webUrl));
+            out.back().status = status;
         }
     }
     return out;
@@ -603,6 +607,55 @@ QByteArray threadPayload(const QString &path, const QString &side, int line, int
     if (!path.isEmpty())
         o.insert(QStringLiteral("threadContext"), context);
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
+}
+
+GitHubReview::ThreadStatus parseThreadStatus(const QString &name)
+{
+    using S = GitHubReview::ThreadStatus;
+    const QString n = name.toLower();
+    if (n == QLatin1String("active"))
+        return S::Active;
+    if (n == QLatin1String("pending"))
+        return S::Pending;
+    if (n == QLatin1String("fixed"))
+        return S::Resolved;
+    if (n == QLatin1String("wontfix"))
+        return S::WontFix;
+    if (n == QLatin1String("bydesign"))
+        return S::ByDesign;
+    if (n == QLatin1String("closed"))
+        return S::Closed;
+    return S::None;
+}
+
+QString threadStatusName(GitHubReview::ThreadStatus status)
+{
+    using S = GitHubReview::ThreadStatus;
+    switch (status) {
+    case S::Active:
+        return QStringLiteral("active");
+    case S::Pending:
+        return QStringLiteral("pending");
+    case S::Resolved:
+        return QStringLiteral("fixed");
+    case S::WontFix:
+        return QStringLiteral("wontFix");
+    case S::ByDesign:
+        return QStringLiteral("byDesign");
+    case S::Closed:
+        return QStringLiteral("closed");
+    case S::None:
+        break;
+    }
+    return QStringLiteral("unknown");
+}
+
+bool setThreadStatus(const Ref &ref, const AdoAuth::Credential &cred, qint64 threadId, GitHubReview::ThreadStatus status,
+                     QString *error)
+{
+    qCInfo(lcAdo).noquote() << "PR" << ref.id << ": thread" << threadId << "->" << threadStatusName(status);
+    const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("status"), threadStatusName(status)}}).toJson(QJsonDocument::Compact);
+    return call("PATCH", apiUrl(ref, QStringLiteral("/threads/%1").arg(threadId)), cred, payload, error).error.isEmpty();
 }
 
 std::optional<QVector<GitHubReview::Comment>> fetchComments(const Ref &ref, const AdoAuth::Credential &cred, QString *error)

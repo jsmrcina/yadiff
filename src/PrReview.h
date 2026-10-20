@@ -18,6 +18,14 @@ std::optional<GitHubReview::Comment> post(const Comparison &cmp, const QString &
 std::optional<GitHubReview::Comment> reply(const Comparison &cmp, qint64 threadId, const QString &body, QString *error);
 bool submit(const Comparison &cmp, GitHubReview::Verdict verdict, const QString &body, QString *error);
 
+// Thread status. The states this host offers, in menu order (GitHub: unresolved and
+// resolved; Azure DevOps: active, pending, resolved, won't fix, by design, closed).
+using ThreadStatus = GitHubReview::ThreadStatus;
+QVector<ThreadStatus> threadStatuses(const Comparison &cmp);
+QString threadStatusName(const Comparison &cmp, ThreadStatus status); // GitHub's Active is "Unresolved"
+// `root` is the thread's first comment (as fetched).
+bool setThreadStatus(const Comparison &cmp, const GitHubReview::Comment &root, ThreadStatus status, QString *error);
+
 // Voting. The votes this host offers, in menu order: GitHub approves or requests
 // changes; Azure DevOps also approves with suggestions, waits for the author, rejects,
 // and resets (Vote::None).

@@ -220,10 +220,10 @@ void CodeView::setRows(const QVector<Row> &rows, const ViewPalette &palette, con
         if (r.fold || r.comment || r.filler)
             f.setProperty(Syntax::kPlainBlockProperty, true);
         c.setBlockFormat(f);
-        if (r.fold) {
+        if (r.fold || (r.comment && r.commentDone && !r.commentExpanded)) {
             QTextCharFormat cf;
             cf.setForeground(m_pal.gutterText);
-            cf.setFontItalic(true);
+            cf.setFontItalic(r.fold);
             c.setPosition(b.position());
             c.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
             c.mergeCharFormat(cf);

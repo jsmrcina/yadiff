@@ -204,6 +204,9 @@ private:
     QVector<GitHubReview::Thread> threadsFor(const FileChange &fc) const;
     void addComment(const QString &path, const QString &side, int line, int startLine);
     void replyToThread(qint64 threadId);
+    void setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus status);
+    // The file list's comment counts, and the shown file's threads, after a change.
+    void refreshThreads();
     void submitReview(GitHubReview::Verdict verdict);
 
     GitRepo m_repo;
@@ -221,6 +224,7 @@ private:
     std::function<void()> m_afterFileLoad; // runs after the next file finishes loading
     std::shared_ptr<std::atomic_bool> m_searchCancel;
     QSet<int> m_showLarge; // files the user chose to show despite their size
+    QHash<QString, quint64> m_markGen; // marks being saved (the latest toggle per path wins)
 
     FileList *m_files = nullptr;
     DiffPane *m_pane = nullptr;
@@ -286,6 +290,7 @@ private:
     QString m_customTitle;
     QHash<QString, DiffPane::ScrollState> m_scrollMemory;
     QAction *m_collapseCommentsAct = nullptr;
+    QAction *m_hideResolvedAct = nullptr;
 
     QToolButton *m_viewToggle = nullptr;
     QToolButton *m_whitespaceToggle = nullptr;

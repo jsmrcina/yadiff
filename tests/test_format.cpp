@@ -21,6 +21,24 @@ class TestFormat : public QObject
 {
     Q_OBJECT
 private slots:
+    void parsesGitHubThreadStates()
+    {
+        QString next;
+        const auto states = GitHubReview::parseThreadStates(R"({"data":{"repository":{"pullRequest":{"reviewThreads":{
+            "pageInfo":{"hasNextPage":true,"endCursor":"Y3Vy"},
+            "nodes":[{"id":"PRRT_a","isResolved":true,"comments":{"nodes":[{"databaseId":11}]}},
+                     {"id":"PRRT_b","isResolved":false,"comments":{"nodes":[{"databaseId":12}]}},
+                     {"id":"PRRT_c","isResolved":false,"comments":{"nodes":[]}}]}}}}})", &next);
+        QCOMPARE(states.size(), 2);
+        QCOMPARE(states.value(11).node, QStringLiteral("PRRT_a"));
+        QVERIFY(states.value(11).resolved);
+        QVERIFY(!states.value(12).resolved);
+        QCOMPARE(next, QStringLiteral("Y3Vy"));
+        GitHubReview::parseThreadStates(R"({"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}})", &next);
+        QVERIFY(next.isEmpty());
+        QCOMPARE(GitHubReview::statusName(GitHubReview::ThreadStatus::WontFix), QStringLiteral("Won't fix"));
+    }
+
     void singleChunkWithContext()
     {
         // 10 lines, line 5 edited, line 9 edited (a second chunk that must not leak in).

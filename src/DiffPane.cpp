@@ -466,7 +466,13 @@ Row DiffPane::makeCommentRow(const GitHubReview::Thread &t) const
         return r;
     }
     // Collapsed: one line. Click it (or the arrow in the gutter) to read the thread.
+    // Resolved threads are greyed, and say so first.
+    r.commentDone = !GitHubReview::isOpen(first.status);
     QString summary = QStringLiteral("\U0001F4AC %1 · %2").arg(first.author, GitHubReview::displayTime(first.createdAt));
+    if (r.commentDone || first.status == GitHubReview::ThreadStatus::Pending)
+        summary = QStringLiteral("%1%2 · ").arg(r.commentDone ? QStringLiteral("\u2713 ") : QString(),
+                                                 GitHubReview::statusName(first.status))
+                + summary;
     if (t.size() > 1)
         summary += t.size() == 2 ? tr(" · 1 reply") : tr(" · %1 replies").arg(t.size() - 1);
     QString gist = firstLine(first.body);
@@ -507,6 +513,10 @@ QString DiffPane::threadHtml(const GitHubReview::Thread &t) const
         if (i == 0 && cm.startLine > 0 && cm.startLine < cm.line)
             line += QStringLiteral(" <span style=\"color:%1\">· %2</span>")
                         .arg(muted, tr("lines %1–%2").arg(cm.startLine).arg(cm.line));
+        if (i == 0 && cm.status != GitHubReview::ThreadStatus::None)
+            line += QStringLiteral(" · <b style=\"color:%1\">%2</b>")
+                        .arg(GitHubReview::isOpen(cm.status) ? palette().color(QPalette::Link).name() : muted,
+                             GitHubReview::statusName(cm.status).toHtmlEscaped());
         c.insertHtml(line);
         // The body, indented like its header.
         QTextBlockFormat bodyFormat;
@@ -1463,6 +1473,23 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
         if (r && r->comment) {
             const qint64 id = r->threadId;
             menu.addAction(tr("&Reply to this comment\u2026"), this, [this, id] { emit replyRequested(id); });
+            GitHubReview::ThreadStatus current = GitHubReview::ThreadStatus::None;
+            for (const GitHubReview::Thread &t : std::as_const(m_file.threads))
+                if (t.first().id == id)
+                    current = t.first().status;
+            if (!m_file.threadStatuses.isEmpty()) {
+                QMenu *status = menu.addMenu(tr("Thread &status"));
+                for (const auto &[s, name] : std::as_const(m_file.threadStatuses)) {
+                    QAction *a = status->addAction(name, this, [this, id, s] { emit threadStatusRequested(id, s); });
+                    a->setCheckable(true);
+                    a->setChecked(s == current);
+                }
+                // The usual two, one click away.
+                const bool open = GitHubReview::isOpen(current);
+                const auto target = open ? GitHubReview::ThreadStatus::Resolved : GitHubReview::ThreadStatus::Active;
+                menu.addAction(open ? tr("Resol&ve thread") : tr("Reacti&vate thread"), this,
+                               [this, id, target] { emit threadStatusRequested(id, target); });
+            }
             for (const GitHubReview::Thread &t : std::as_const(m_file.threads))
                 if (t.first().id == id && !t.first().url.isEmpty()) {
                     const QString url = t.first().url;

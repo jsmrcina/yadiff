@@ -54,6 +54,7 @@ public:
     QString remoteUrl;
     QString sourceCommit, targetCommit;
     int vote = 5; // user-1's vote, as PUT to the reviewers endpoint
+    QHash<qint64, QString> threadStatus;  // as PATCHed
     QByteArray changesJson;              // the latest iteration's changes
     QHash<QByteArray, QByteArray> blobs; // blob id -> content
     quint16 port = 0;
@@ -109,6 +110,10 @@ private:
             body = R"({"authenticatedUser":{"id":"user-1","providerDisplayName":"Test User"}})";
         } else if (r.path.contains("/pullRequests/7/threads/5/comments")) {
             body = R"({"id":3,"parentCommentId":1,"content":"thanks","author":{"displayName":"Test User"},"publishedDate":"2026-01-03T00:00:00Z"})";
+        } else if (r.path.contains("/pullRequests/7/threads/") && r.method == "PATCH") {
+            const qint64 id = QString::fromLatin1(r.path).section(u'/', -1).section(u'?', 0, 0).toLongLong();
+            threadStatus[id] = QJsonDocument::fromJson(r.body).object().value(QStringLiteral("status")).toString();
+            body = QJsonDocument(QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("status"), threadStatus[id]}}).toJson();
         } else if (r.path.contains("/pullRequests/7/threads") && r.method == "POST") {
             const QJsonObject in = QJsonDocument::fromJson(r.body).object();
             QJsonObject t{{QStringLiteral("id"), 99},
@@ -124,12 +129,12 @@ private:
             body = QJsonDocument(t).toJson();
         } else if (r.path.contains("/pullRequests/7/threads")) {
             body = R"({"value":[
-              {"id":5,"isDeleted":false,"threadContext":{"filePath":"/a.txt","rightFileStart":{"line":2,"offset":1},"rightFileEnd":{"line":2,"offset":5}},
+              {"id":5,"isDeleted":false,"status":"active","threadContext":{"filePath":"/a.txt","rightFileStart":{"line":2,"offset":1},"rightFileEnd":{"line":2,"offset":5}},
                "comments":[{"id":1,"parentCommentId":0,"content":"Why TWO?","commentType":"text","author":{"displayName":"Alice"},"publishedDate":"2026-01-01T00:00:00Z"},
                            {"id":2,"parentCommentId":1,"content":"Because.","commentType":"text","author":{"displayName":"Bob"},"publishedDate":"2026-01-01T01:00:00Z"},
                            {"id":3,"parentCommentId":0,"content":"Bob changed the status","commentType":"system","author":{"displayName":"Bob"}}]},
               {"id":6,"isDeleted":false,"comments":[{"id":1,"parentCommentId":0,"content":"Overall fine","commentType":"text","author":{"displayName":"Carol"}}]},
-              {"id":8,"isDeleted":false,"threadContext":{"filePath":"/a.txt","leftFileStart":{"line":1,"offset":1},"leftFileEnd":{"line":3,"offset":1}},
+              {"id":8,"isDeleted":false,"status":"fixed","threadContext":{"filePath":"/a.txt","leftFileStart":{"line":1,"offset":1},"leftFileEnd":{"line":3,"offset":1}},
                "comments":[{"id":1,"parentCommentId":0,"content":"old side","author":{"displayName":"Dan"},"publishedDate":"2026-01-01T02:00:00Z"}]}]})";
         } else if (r.path.contains("/pullRequests/7/reviewers/user-1")) {
             if (r.method == "PUT")
@@ -486,6 +491,22 @@ private slots:
         QCOMPARE(threads[0].size(), 2);
         QCOMPARE(threads[1].first().side, QStringLiteral("LEFT"));
         QCOMPARE(threads[1].first().startLine, 1);
+
+        // Thread status: read with the threads, changed with a PATCH of the thread.
+        using TS = GitHubReview::ThreadStatus;
+        QCOMPARE(threads[0].first().status, TS::Active);
+        QCOMPARE(threads[0][1].status, TS::Active); // replies carry it too
+        QCOMPARE(threads[1].first().status, TS::Resolved);
+        QVERIFY(GitHubReview::isOpen(TS::Active) && !GitHubReview::isOpen(TS::Resolved) && GitHubReview::isOpen(TS::None));
+        QCOMPARE(PrReview::threadStatuses(cmp).size(), 6);
+        QVERIFY2(PrReview::setThreadStatus(cmp, threads[0].first(), TS::WontFix, &error), qPrintable(error));
+        QCOMPARE(ado.requests.last().method, QByteArray("PATCH"));
+        QVERIFY(ado.requests.last().path.contains("/pullRequests/7/threads/5?"));
+        QCOMPARE(ado.threadStatus.value(5), QStringLiteral("wontFix"));
+        QVERIFY(PrReview::setThreadStatus(cmp, threads[1].first(), TS::Active, &error));
+        QCOMPARE(ado.threadStatus.value(8), QStringLiteral("active"));
+        for (TS st : PrReview::threadStatuses(cmp))
+            QCOMPARE(AdoPr::parseThreadStatus(AdoPr::threadStatusName(st)), st);
 
         const auto posted = PrReview::post(cmp, QStringLiteral("a.txt"), QStringLiteral("RIGHT"), 2, 0, QStringLiteral("Nice"), &error);
         QVERIFY2(posted, qPrintable(error));

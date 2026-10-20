@@ -19,6 +19,7 @@ struct Row {
     qint64 threadId = 0;    // comment rows: id of the thread's first comment
     bool commentExpanded = false; // shown in full (rich text over the row) instead of one summary line
     QString commentHtml;          // expanded comment rows: the rendered thread
+    bool commentDone = false;     // the thread is resolved (or closed): its summary is greyed
     int foldFirstLine = -1; // fold rows: first hidden FileDiff line
     int foldCount = 0;      // fold rows: number of hidden lines
     int oldNo = 0;

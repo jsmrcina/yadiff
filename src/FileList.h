@@ -43,6 +43,9 @@ public:
     // While the list itself is loading: a single greyed row with `text` (empty removes it).
     void setPlaceholder(const QString &text);
 
+    // Review threads per file: (open, total). Shown at the row's right edge.
+    void setThreadCounts(const QHash<int, std::pair<int, int>> &counts);
+
     // Search across all files: bold the files that contain matches (empty map clears).
     void setMatchCounts(const QHash<int, int> &counts);
     QVector<int> displayOrder(bool includeHidden = false) const; // change indices in list order

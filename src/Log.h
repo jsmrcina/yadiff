@@ -119,6 +119,28 @@ private:
     std::shared_ptr<std::atomic_bool> m_previous;
 };
 
+// The watchdog: once started (by the application, after its first window), a warning
+// is logged whenever the UI thread hasn't handled events for `thresholdMs` (the window
+// isn't responding), naming the command it is waiting for and the user's last action,
+// then again when it responds. So a freeze shows in the log even when nobody reports it.
+void startWatchdog(int thresholdMs = 1000);
+void stopWatchdog();
+// The user's latest action (a menu item, shortcut or button), for the watchdog's report.
+void noteAction(const QString &what);
+// While one exists on the UI thread, a freeze is reported as waiting for `what`.
+class UiWait
+{
+public:
+    explicit UiWait(const QString &what);
+    ~UiWait();
+    UiWait(const UiWait &) = delete;
+    UiWait &operator=(const UiWait &) = delete;
+
+private:
+    bool m_active = false;
+    QString m_previous;
+};
+
 // Logs a detached start (a new window, an editor, gitk).
 void launched(const QLoggingCategory &category, const QString &program, const QStringList &args, bool ok);
 

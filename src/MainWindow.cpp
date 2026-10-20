@@ -305,6 +305,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     });
     connect(m_pane, &DiffPane::commentRequested, this, &MainWindow::addComment);
     connect(m_pane, &DiffPane::replyRequested, this, &MainWindow::replyToThread);
+    connect(m_pane, &DiffPane::threadStatusRequested, this, &MainWindow::setThreadStatus);
     connect(m_search, &SearchBar::stopRequested, this, [this] {
         if (m_searchCancel)
             *m_searchCancel = true;
@@ -745,6 +746,14 @@ void MainWindow::createActions()
     m_collapseCommentsAct = viewMenu->addAction(tr("Collapse all review comments"), this,
                                                 [this] { m_pane->setCommentsExpanded(false); });
     m_collapseCommentsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_O));
+    m_hideResolvedAct = viewMenu->addAction(tr("&Hide resolved review threads"));
+    m_hideResolvedAct->setCheckable(true);
+    m_hideResolvedAct->setChecked(Settings::hideResolvedThreads());
+    m_hideResolvedAct->setStatusTip(tr("Show only the threads still to deal with: active, pending, or without a status"));
+    connect(m_hideResolvedAct, &QAction::toggled, this, [this](bool on) {
+        Settings::setHideResolvedThreads(on);
+        refreshThreads();
+    });
     m_trimPrefixAct = viewMenu->addAction(tr("Trim common &prefix from long folder names"));
     m_trimPrefixAct->setCheckable(true);
     m_trimPrefixAct->setChecked(Settings::trimFolderPrefix());
@@ -1163,6 +1172,7 @@ void MainWindow::updateModeUi()
     m_reviewMenuAction->setVisible(m_cmp.prNumber > 0);
     m_expandCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_collapseCommentsAct->setVisible(m_cmp.prNumber > 0);
+    m_hideResolvedAct->setVisible(m_cmp.prNumber > 0);
     m_reviewToolAction->setVisible(m_cmp.prNumber > 0);
     rebuildVoteActions();
     const bool workingTree = m_repo.isRepository() && !m_repo.isBare()
@@ -1620,6 +1630,8 @@ void MainWindow::reload(std::function<void()> afterFile)
             m_files->setProperty("folderRoot", folderRoot);
             m_files->setFolderDisplay(folderRoot, Settings::trimFolderPrefix());
             m_files->setChanges(m_changes, groups, reviewed);
+            if (!m_comments.isEmpty())
+                refreshThreads();
             applyFilter();
             updateSummary();
             if (m_cmp.prNumber > 0) {
@@ -1911,9 +1923,17 @@ void MainWindow::onReviewToggled(int index, bool reviewed)
 {
     if (index < 0 || index >= m_changes.size())
         return;
-    const FileChange &fc = m_changes[index];
-    m_reviews->setReviewed(fc.path, m_repo.fingerprint(fc, m_cmp), reviewed);
-    updateSummary();
+    const FileChange fc = m_changes[index];
+    // The fingerprint asks git for both versions' ids: in the background, latest toggle wins.
+    const quint64 gen = ++m_markGen[fc.path];
+    runJob<QByteArray>([repo = m_repo, cmp = m_cmp, fc] { return repo.fingerprint(fc, cmp); },
+                       [this, fc, reviewed, gen, store = m_reviews.get()](QByteArray fingerprint) {
+                           if (m_markGen.value(fc.path) != gen || store != m_reviews.get())
+                               return; // toggled again since, or another comparison
+                           m_markGen.remove(fc.path);
+                           m_reviews->setReviewed(fc.path, fingerprint, reviewed);
+                           updateSummary();
+                       });
 }
 
 void MainWindow::reloadCurrentFile()
@@ -2132,6 +2152,8 @@ void MainWindow::showFile(int index)
             view.newBytes = r.newBytes;
             view.reviewEnabled = m_cmp.prNumber > 0;
             view.threads = threadsFor(fc);
+            for (const GitHubReview::ThreadStatus s : PrReview::threadStatuses(m_cmp))
+                view.threadStatuses.push_back({s, PrReview::threadStatusName(m_cmp, s)});
             view.oldBlame = r.oldBlame;
             view.newBlame = r.newBlame;
             view.lineOps = r.diff.hexDump ? QVector<GitRepo::LineOp>() : m_repo.lineOps(fc, m_cmp);
@@ -2328,10 +2350,7 @@ void MainWindow::openHistory()
         const CommitInfo commit = dlg.first();
         c.mode = Comparison::Mode::Revisions;
         if (commit.parents.isEmpty()) {
-            QByteArray out;
-            m_repo.run({QStringLiteral("hash-object"), QStringLiteral("-t"), QStringLiteral("tree"), QStringLiteral("--stdin")},
-                       &out, nullptr);
-            c.rev1 = QString::fromUtf8(out).trimmed();
+            c.rev1 = m_repo.emptyTree();
             c.rev1Name = tr("(no parent)");
         } else {
             c.rev1 = commit.parents.first();
@@ -2355,21 +2374,34 @@ void MainWindow::openHistory()
         c.rev1Name = dlg.first().shortOid;
         break;
     case HistoryDialog::Choice::BranchChanges: {
+        // The merge base can take a long walk through history: in the background.
         const CommitInfo tip = dlg.first();
-        QString error;
-        const auto base = m_repo.mergeBase(QStringLiteral("HEAD"), tip.oid, &error);
-        if (!base) {
-            QMessageBox::warning(this, tr("Compare commits"), tr("No merge base with HEAD:\n%1").arg(error));
-            return;
-        }
-        const QString name = tip.refs.split(QStringLiteral(", ")).value(0).remove(QStringLiteral("tag: "));
-        c.mode = Comparison::Mode::Revisions;
-        c.rev1 = *base;
-        c.rev1Name = tr("merge base %1").arg(base->left(7));
-        c.rev2 = tip.oid;
-        c.rev2Name = name.isEmpty() ? tip.shortOid : name;
-        c.title = tr("Changes on %1 since HEAD").arg(c.rev2Name);
-        break;
+        c.paths = m_cmp.paths;
+        statusBar()->showMessage(tr("Finding the merge base with HEAD…"));
+        using Result = std::pair<std::optional<QString>, QString>;
+        runJob<Result>(
+            [repo = m_repo, oid = tip.oid] {
+                QString error;
+                auto base = repo.mergeBase(QStringLiteral("HEAD"), oid, &error);
+                return Result{base, error};
+            },
+            [this, c, tip](Result r) mutable {
+                statusBar()->clearMessage();
+                if (!r.first) {
+                    QMessageBox::warning(this, tr("Compare commits"), tr("No merge base with HEAD:\n%1").arg(r.second));
+                    return;
+                }
+                const QString base = *r.first;
+                const QString name = tip.refs.split(QStringLiteral(", ")).value(0).remove(QStringLiteral("tag: "));
+                c.mode = Comparison::Mode::Revisions;
+                c.rev1 = base;
+                c.rev1Name = tr("merge base %1").arg(base.left(7));
+                c.rev2 = tip.oid;
+                c.rev2Name = name.isEmpty() ? tip.shortOid : name;
+                c.title = tr("Changes on %1 since HEAD").arg(c.rev2Name);
+                setComparison(c);
+            });
+        return;
     }
     }
     c.paths = m_cmp.paths;
@@ -2741,7 +2773,68 @@ QVector<GitHubReview::Thread> MainWindow::threadsFor(const FileChange &fc) const
     for (const GitHubReview::Comment &c : m_comments)
         if (c.path == fc.path || c.path == fc.oldPath)
             mine << c;
-    return GitHubReview::threads(mine);
+    QVector<GitHubReview::Thread> out = GitHubReview::threads(mine);
+    if (m_hideResolvedAct && m_hideResolvedAct->isChecked())
+        out.removeIf([](const GitHubReview::Thread &t) { return !GitHubReview::isOpen(t.first().status); });
+    return out;
+}
+
+void MainWindow::refreshThreads()
+{
+    // Per file: open threads and all of them (outdated ones aren't shown, so not counted).
+    QHash<QString, std::pair<int, int>> byPath;
+    for (const GitHubReview::Thread &t : GitHubReview::threads(m_comments)) {
+        if (t.first().outdated())
+            continue;
+        auto &n = byPath[t.first().path];
+        n.first += GitHubReview::isOpen(t.first().status);
+        ++n.second;
+    }
+    QHash<int, std::pair<int, int>> counts;
+    for (int i = 0; i < m_changes.size(); ++i) {
+        auto n = byPath.value(m_changes[i].path);
+        if (m_changes[i].oldPath != m_changes[i].path) {
+            const auto o = byPath.value(m_changes[i].oldPath);
+            n = {n.first + o.first, n.second + o.second};
+        }
+        if (n.second > 0)
+            counts.insert(i, n);
+    }
+    m_files->setThreadCounts(counts);
+    if (m_shownIndex >= 0 && m_shownIndex < m_changes.size())
+        m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
+}
+
+void MainWindow::setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus status)
+{
+    std::optional<GitHubReview::Comment> root;
+    for (const GitHubReview::Comment &c : std::as_const(m_comments))
+        if (c.id == threadId && c.inReplyTo == 0)
+            root = c;
+    if (!root)
+        return;
+    const QString name = PrReview::threadStatusName(m_cmp, status);
+    statusBar()->showMessage(tr("Setting the thread to %1…").arg(name));
+    runJob<QString>(
+        [cmp = m_cmp, root = *root, status] {
+            QString error;
+            return PrReview::setThreadStatus(cmp, root, status, &error) ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
+        },
+        [this, threadId, status, name](QString error) {
+            if (!error.isEmpty()) {
+                statusBar()->clearMessage();
+                QMessageBox::warning(this, tr("Thread status"), tr("%1 refused the change:\n%2").arg(PrReview::hostName(m_cmp), error));
+                return;
+            }
+            // Every comment of the thread carries it (Azure DevOps); GitHub's on the first.
+            const qint64 adoThread = m_cmp.prHost == QLatin1String("ado") ? threadId : -1;
+            for (GitHubReview::Comment &c : m_comments)
+                if (c.id == threadId || c.inReplyTo == threadId
+                    || (adoThread > 0 && c.id >= AdoPr::kReplyBase && c.id / AdoPr::kReplyBase == adoThread))
+                    c.status = status;
+            statusBar()->showMessage(tr("Thread set to %1").arg(name), 3000);
+            refreshThreads();
+        });
 }
 
 void MainWindow::loadComments()
@@ -2760,13 +2853,19 @@ void MainWindow::loadComments()
                 return;
             }
             m_comments = r.first;
-            int outdated = 0;
+            int outdated = 0, open = 0;
             const auto all = GitHubReview::threads(m_comments);
-            for (const auto &t : all)
+            for (const auto &t : all) {
                 outdated += t.first().outdated();
-            statusBar()->showMessage(tr("%1 review threads (%2 outdated, not shown)").arg(all.size()).arg(outdated), 5000);
-            if (m_shownIndex >= 0 && m_shownIndex < m_changes.size())
-                m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
+                open += !t.first().outdated() && GitHubReview::isOpen(t.first().status);
+            }
+            statusBar()->showMessage(tr("%1 review threads: %2 open, %3 resolved (%4 outdated, not shown)")
+                                         .arg(all.size())
+                                         .arg(open)
+                                         .arg(all.size() - outdated - open)
+                                         .arg(outdated),
+                                     5000);
+            refreshThreads();
         });
 }
 
@@ -2795,8 +2894,7 @@ void MainWindow::addComment(const QString &path, const QString &side, int line, 
             }
             m_comments << *r.first;
             statusBar()->showMessage(tr("Comment posted"), 3000);
-            if (m_shownIndex >= 0)
-                m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
+            refreshThreads();
         });
 }
 
@@ -2832,8 +2930,7 @@ void MainWindow::replyToThread(qint64 threadId)
             }
             m_comments << c;
             statusBar()->showMessage(tr("Reply posted"), 3000);
-            if (m_shownIndex >= 0)
-                m_pane->setThreads(threadsFor(m_changes[m_shownIndex]));
+            refreshThreads();
         });
 }
 
@@ -3134,14 +3231,24 @@ void MainWindow::stageSelected(bool stage)
     }
     if (!maybeKeepEdits())
         return;
-    QString error;
-    if (!(stage ? m_repo.stage(picked, &error) : m_repo.unstage(picked, &error))) {
-        QMessageBox::warning(this, stage ? tr("Stage") : tr("Unstage"), error);
-        return;
-    }
-    const QString files = picked.size() == 1 ? picked.first().path : tr("%1 files").arg(picked.size());
-    statusBar()->showMessage(stage ? tr("Staged %1").arg(files) : tr("Unstaged %1").arg(files), 3000);
-    reload();
+    // git add in a large repository can take a while: in the background.
+    statusBar()->showMessage(stage ? tr("Staging…") : tr("Unstaging…"));
+    runJob<QString>(
+        [repo = m_repo, picked, stage] {
+            QString error;
+            const bool ok = stage ? repo.stage(picked, &error) : repo.unstage(picked, &error);
+            return ok ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
+        },
+        [this, picked, stage](QString error) {
+            if (!error.isEmpty()) {
+                statusBar()->clearMessage();
+                QMessageBox::warning(this, stage ? tr("Stage") : tr("Unstage"), error);
+                return;
+            }
+            const QString files = picked.size() == 1 ? picked.first().path : tr("%1 files").arg(picked.size());
+            statusBar()->showMessage(stage ? tr("Staged %1").arg(files) : tr("Unstaged %1").arg(files), 3000);
+            reload();
+        });
 }
 
 void MainWindow::revertSelected()
@@ -3171,12 +3278,21 @@ void MainWindow::revertSelected()
     box.exec();
     if (box.clickedButton() != revert)
         return;
-    QString error;
-    if (!m_repo.revert(picked, m_cmp, &error))
-        QMessageBox::warning(this, tr("Revert files"), error);
-    else
-        statusBar()->showMessage(tr("Reverted %1").arg(picked.size() == 1 ? names.first() : tr("%1 files").arg(picked.size())), 4000);
-    reload();
+    statusBar()->showMessage(tr("Reverting…"));
+    runJob<QString>(
+        [repo = m_repo, picked, cmp = m_cmp] {
+            QString error;
+            return repo.revert(picked, cmp, &error) ? QString() : (error.isEmpty() ? QStringLiteral("?") : error);
+        },
+        [this, picked, names](QString error) {
+            if (!error.isEmpty()) {
+                statusBar()->clearMessage();
+                QMessageBox::warning(this, tr("Revert files"), error);
+            } else {
+                statusBar()->showMessage(tr("Reverted %1").arg(picked.size() == 1 ? names.first() : tr("%1 files").arg(picked.size())), 4000);
+            }
+            reload();
+        });
 }
 
 void MainWindow::swapSides()
@@ -3331,17 +3447,21 @@ void MainWindow::copyCommitHash()
     if (sel.size() != 1 || !m_repo.isRepository())
         return;
     // The commit the right side comes from; for the working tree, the file's last commit.
-    QString hash;
-    if (m_cmp.mode == Comparison::Mode::Revisions && !m_cmp.rev2.isEmpty() && !m_cmp.reversed)
-        hash = m_cmp.rev2;
-    else
-        hash = m_repo.lastCommit(sel.first().oldPath);
-    if (hash.isEmpty()) {
-        statusBar()->showMessage(tr("%1 has no commits yet").arg(sel.first().path), 3000);
+    auto copy = [this, path = sel.first().path](const QString &hash) {
+        if (hash.isEmpty()) {
+            statusBar()->showMessage(tr("%1 has no commits yet").arg(path), 3000);
+            return;
+        }
+        QApplication::clipboard()->setText(hash);
+        statusBar()->showMessage(tr("Copied %1").arg(hash.left(12)), 3000);
+    };
+    if (m_cmp.mode == Comparison::Mode::Revisions && !m_cmp.rev2.isEmpty() && !m_cmp.reversed) {
+        copy(m_cmp.rev2);
         return;
     }
-    QApplication::clipboard()->setText(hash);
-    statusBar()->showMessage(tr("Copied %1").arg(hash.left(12)), 3000);
+    // A file's last commit walks history: slow in a large repository.
+    statusBar()->showMessage(tr("Finding the last commit of %1…").arg(sel.first().path));
+    runJob<QString>([repo = m_repo, path = sel.first().oldPath] { return repo.lastCommit(path); }, copy);
 }
 
 void MainWindow::openInGitk()
@@ -3708,16 +3828,26 @@ void MainWindow::saveAsPatch()
                                                       tr("Patches (*.patch *.diff)"));
     if (path.isEmpty())
         return;
-    QString error;
-    const auto patch = m_repo.patch(m_cmp, &error);
-    QFile f(path);
-    if (!patch || !f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(*patch) != patch->size()) {
-        qCWarning(lcFile).noquote() << "could not save the patch" << path << ":" << (patch ? f.errorString() : error);
-        QMessageBox::warning(this, tr("Save as patch"), patch ? f.errorString() : error);
-        return;
-    }
-    qCInfo(lcFile).noquote() << "saved the patch" << path << "(" << patch->size() << "bytes)";
-    statusBar()->showMessage(tr("Wrote %1").arg(path), 4000);
+    statusBar()->showMessage(tr("Writing the patch…"));
+    using Result = std::pair<std::optional<QByteArray>, QString>;
+    runJob<Result>(
+        [repo = m_repo, cmp = m_cmp] {
+            QString error;
+            auto patch = repo.patch(cmp, &error);
+            return Result{patch, error};
+        },
+        [this, path](Result r) {
+            const auto &patch = r.first;
+            QFile f(path);
+            if (!patch || !f.open(QIODevice::WriteOnly | QIODevice::Truncate) || f.write(*patch) != patch->size()) {
+                qCWarning(lcFile).noquote() << "could not save the patch" << path << ":" << (patch ? f.errorString() : r.second);
+                statusBar()->clearMessage();
+                QMessageBox::warning(this, tr("Save as patch"), patch ? f.errorString() : r.second);
+                return;
+            }
+            qCInfo(lcFile).noquote() << "saved the patch" << path << "(" << patch->size() << "bytes)";
+            statusBar()->showMessage(tr("Wrote %1").arg(path), 4000);
+        });
 }
 
 // ---- Drag and drop -----------------------------------------------------------------

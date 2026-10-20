@@ -14,11 +14,17 @@
 #include <QThread>
 #include <QUrl>
 
+#include <QTimer>
+
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <exception>
+#include <mutex>
+#include <thread>
 
 #ifdef Q_OS_WIN
 #include <io.h>
@@ -490,6 +496,7 @@ CancelScope::~CancelScope()
 
 bool ProcessTrace::wait(QProcess &p, int timeoutMs)
 {
+    const UiWait busy(commandLine(p.program(), p.arguments()));
     QElapsedTimer waited;
     waited.start();
     qint64 nextReport = 10000;
@@ -568,6 +575,134 @@ void ProcessTrace::done(const QProcess &p, qint64 outputBytes, const QByteArray 
         logger.debug().noquote() << line;
     else
         logger.info().noquote() << line;
+}
+
+namespace {
+
+struct Watchdog {
+    std::mutex mutex; // the strings and the thread
+    std::condition_variable wake;
+    std::thread thread;
+    bool stop = false;
+    QString waitingFor, lastAction;
+    std::atomic<qint64> beat{0}; // ms on the steady clock, when the UI thread last ran its timer
+    QTimer *timer = nullptr;
+};
+
+Watchdog &watchdog()
+{
+    static Watchdog *w = new Watchdog; // never destroyed, like the log
+    return *w;
+}
+
+qint64 steadyMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool onUiThread()
+{
+    return QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread();
+}
+
+void watch(int thresholdMs)
+{
+    Watchdog &w = watchdog();
+    bool frozen = false;
+    qint64 nextReport = 0;
+    QString blockedIn;
+    std::unique_lock lock(w.mutex);
+    while (!w.stop) {
+        w.wake.wait_for(lock, std::chrono::milliseconds(100));
+        if (w.stop)
+            break;
+        const qint64 since = steadyMs() - w.beat.load();
+        if (since >= thresholdMs) {
+            if (!frozen || since >= nextReport) {
+                const QString what = w.waitingFor.isEmpty() ? QStringLiteral("not waiting for a command (working, or in a system call)")
+                                                            : QStringLiteral("waiting for: ") + w.waitingFor;
+                const QString action = w.lastAction.isEmpty() ? QString() : QStringLiteral("; last action: ") + w.lastAction;
+                lock.unlock();
+                qCWarning(lcApp).noquote() << QStringLiteral("%1 the window has not responded for %2 s, %3%4")
+                                                  .arg(frozen ? QStringLiteral("still frozen:") : QStringLiteral("FROZEN:"))
+                                                  .arg(double(since) / 1000.0, 0, 'f', 1)
+                                                  .arg(what, action);
+                lock.lock();
+                if (!frozen)
+                    blockedIn = w.waitingFor;
+                frozen = true;
+                nextReport = since < 10000 ? 10000 : since < 30000 ? 30000 : since + 60000;
+            }
+        } else if (frozen) {
+            frozen = false;
+            const QString in = blockedIn;
+            lock.unlock();
+            qCWarning(lcApp).noquote() << "the window responds again" << (in.isEmpty() ? QString() : QStringLiteral("(it was waiting for: %1)").arg(in));
+            lock.lock();
+        }
+    }
+}
+
+} // namespace
+
+void startWatchdog(int thresholdMs)
+{
+    Watchdog &w = watchdog();
+    if (w.timer || !onUiThread())
+        return;
+    w.beat = steadyMs();
+    w.timer = new QTimer(QCoreApplication::instance());
+    w.timer->setInterval(100);
+    QObject::connect(w.timer, &QTimer::timeout, [] { watchdog().beat = steadyMs(); });
+    w.timer->start();
+    {
+        std::lock_guard lock(w.mutex);
+        w.stop = false;
+    }
+    w.thread = std::thread(watch, thresholdMs);
+    qCInfo(lcApp).noquote() << "watching for the window freezing (over" << thresholdMs << "ms)";
+}
+
+void stopWatchdog()
+{
+    Watchdog &w = watchdog();
+    if (!w.timer)
+        return;
+    {
+        std::lock_guard lock(w.mutex);
+        w.stop = true;
+    }
+    w.wake.notify_all();
+    if (w.thread.joinable())
+        w.thread.join();
+    delete w.timer;
+    w.timer = nullptr;
+}
+
+void noteAction(const QString &what)
+{
+    Watchdog &w = watchdog();
+    std::lock_guard lock(w.mutex);
+    w.lastAction = what;
+}
+
+UiWait::UiWait(const QString &what)
+    : m_active(onUiThread())
+{
+    if (!m_active)
+        return;
+    Watchdog &w = watchdog();
+    std::lock_guard lock(w.mutex);
+    m_previous = std::exchange(w.waitingFor, what);
+}
+
+UiWait::~UiWait()
+{
+    if (!m_active)
+        return;
+    Watchdog &w = watchdog();
+    std::lock_guard lock(w.mutex);
+    w.waitingFor = m_previous;
 }
 
 void launched(const QLoggingCategory &category, const QString &program, const QStringList &args, bool ok)

@@ -885,6 +885,17 @@ private slots:
         QVERIFY(!right->findChild<QTextBrowser *>());
         pane.setCommentsExpanded(true);
         QVERIFY(right->findChild<QTextBrowser *>());
+
+        // A resolved thread says so first, greyed; its expanded header names the state.
+        root.status = GitHubReview::ThreadStatus::Resolved;
+        v.threads = GitHubReview::threads({root, reply});
+        pane.setCommentsExpanded(false);
+        pane.setFile(v);
+        const Row &resolved = right->rows()[2];
+        QVERIFY(resolved.comment && resolved.commentDone);
+        QVERIFY2(resolved.text.startsWith(QStringLiteral("\u2713 Resolved · ")), qPrintable(resolved.text));
+        pane.setCommentsExpanded(true);
+        QVERIFY(right->findChild<QTextBrowser *>()->toPlainText().contains(QStringLiteral("Resolved")));
     }
 
     void largeDiffsAskFirst()

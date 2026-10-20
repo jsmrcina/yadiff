@@ -3,8 +3,6 @@
 #include "AdoAuth.h"
 #include "AdoPr.h"
 
-#include <QHash>
-#include <QMutex>
 
 namespace {
 
@@ -29,18 +27,11 @@ AdoPr::Ref ado(const Comparison &cmp)
     return r;
 }
 
-// Looking a credential up can run programs (keyring, az), so do it once per organisation.
+// AdoAuth remembers what it found, so this is cheap after the first time.
 std::optional<AdoAuth::Credential> adoCredential(const Comparison &cmp, QString *error)
 {
-    static QMutex mutex;
-    static QHash<QString, AdoAuth::Credential> cache;
-    QMutexLocker lock(&mutex);
-    if (const auto it = cache.constFind(cmp.prCollectionUrl); it != cache.constEnd())
-        return *it;
     auto c = AdoAuth::find(QUrl(cmp.prCollectionUrl), error);
-    if (c)
-        cache.insert(cmp.prCollectionUrl, *c);
-    else if (error)
+    if (!c && error)
         *error += QStringLiteral(" Run `yadiff --ado-login` to sign in.");
     return c;
 }
@@ -91,6 +82,36 @@ std::optional<GitHubReview::Comment> reply(const Comparison &cmp, qint64 threadI
     // Reply ids encode their thread (see AdoPr::kReplyBase); roots are the thread id.
     const qint64 thread = threadId >= AdoPr::kReplyBase ? threadId / AdoPr::kReplyBase : threadId;
     return cred ? AdoPr::reply(ado(cmp), *cred, thread, body, error) : std::nullopt;
+}
+
+QVector<ThreadStatus> threadStatuses(const Comparison &cmp)
+{
+    if (!isAdo(cmp))
+        return {ThreadStatus::Active, ThreadStatus::Resolved};
+    return {ThreadStatus::Active,  ThreadStatus::Pending,  ThreadStatus::Resolved,
+            ThreadStatus::WontFix, ThreadStatus::ByDesign, ThreadStatus::Closed};
+}
+
+QString threadStatusName(const Comparison &cmp, ThreadStatus status)
+{
+    if (!isAdo(cmp) && status == ThreadStatus::Active)
+        return QStringLiteral("Unresolved");
+    return GitHubReview::statusName(status);
+}
+
+bool setThreadStatus(const Comparison &cmp, const GitHubReview::Comment &root, ThreadStatus status, QString *error)
+{
+    if (!isAdo(cmp)) {
+        if (status != ThreadStatus::Active && status != ThreadStatus::Resolved) {
+            if (error)
+                *error = QStringLiteral("GitHub threads are only resolved or unresolved.");
+            return false;
+        }
+        return GitHubReview::setResolved(root.threadNode, status == ThreadStatus::Resolved, error);
+    }
+    const auto cred = adoCredential(cmp, error);
+    const qint64 thread = root.id >= AdoPr::kReplyBase ? root.id / AdoPr::kReplyBase : root.id;
+    return cred && AdoPr::setThreadStatus(ado(cmp), *cred, thread, status, error);
 }
 
 QVector<Vote> votes(const Comparison &cmp)

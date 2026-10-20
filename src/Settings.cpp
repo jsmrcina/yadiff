@@ -200,6 +200,8 @@ bool autoUpdate() { return flag("update/automatic", false); }
 void setAutoUpdate(bool on) { setFlag("update/automatic", on); }
 qint64 lastUpdateCheck() { return QSettings().value(QStringLiteral("update/lastCheck"), 0).toLongLong(); }
 void setLastUpdateCheck(qint64 secs) { QSettings().setValue(QStringLiteral("update/lastCheck"), secs); }
+bool hideResolvedThreads() { return flag("review/hideResolved", false); }
+void setHideResolvedThreads(bool on) { setFlag("review/hideResolved", on); }
 bool showBlame() { return flag("view/blame", false); }
 void setShowBlame(bool on) { setFlag("view/blame", on); }
 bool showLineNumbers() { return flag("view/lineNumbers", true); }

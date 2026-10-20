@@ -4,11 +4,15 @@
 #include "Log.h"
 #include "SecretStore.h"
 
+#include <QDateTime>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QTimeZone>
 
 namespace {
 
@@ -53,15 +57,17 @@ std::optional<AdoAuth::Credential> fromAzureCli()
     QByteArray out;
     if (!run(az,
              {QStringLiteral("account"), QStringLiteral("get-access-token"), QStringLiteral("--resource"),
-              QString::fromLatin1(kAdoResource), QStringLiteral("--query"), QStringLiteral("accessToken"), QStringLiteral("-o"),
-              QStringLiteral("tsv")},
+              QString::fromLatin1(kAdoResource), QStringLiteral("-o"), QStringLiteral("json")},
              {}, &out, 60000))
         return std::nullopt;
-    const QString token = QString::fromUtf8(out).trimmed();
-    Log::addSecret(token);
+    const QJsonObject o = QJsonDocument::fromJson(out).object();
+    const QString token = o.value(QStringLiteral("accessToken")).toString().trimmed();
     if (token.isEmpty())
         return std::nullopt;
-    return AdoAuth::Credential{AdoAuth::Credential::Kind::Bearer, token, QStringLiteral("Azure CLI")};
+    Log::addSecret(token);
+    AdoAuth::Credential c{AdoAuth::Credential::Kind::Bearer, token, QStringLiteral("Azure CLI")};
+    c.expires = AdoAuth::parseAzureCliExpiry(o);
+    return c;
 }
 
 std::optional<AdoAuth::Credential> fromGitCredential(const QUrl &org)
@@ -136,26 +142,26 @@ namespace {
 std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *diagnostics);
 }
 
-std::optional<Credential> find(const QUrl &collectionUrl, QString *diagnostics)
+namespace {
+
+// Credentials that cost a program run to find (the keyring, az, git's helper), per
+// organisation, so opening a PR, its comments and votes find one once. Environment
+// variables are read every time: they are free, and tests change them.
+struct Cached {
+    Credential credential;
+    QDateTime until;
+};
+QMutex g_cacheMutex;
+QHash<QString, Cached> g_cache;
+
+bool fromEnvironment(const Credential &c)
 {
-    QString why;
-    auto c = findCredential(collectionUrl, &why);
-    if (c) {
-        Log::addSecret(c->secret);
-        qCInfo(lcAuth).noquote() << "credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << c->kindName()
-                                 << "from" << c->source;
-    } else {
-        qCInfo(lcAuth).noquote() << "no credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << why;
-    }
-    if (diagnostics)
-        *diagnostics = why;
-    return c;
+    return c.source.startsWith(QLatin1String("YADIFF_")) || c.source == QLatin1String("SYSTEM_ACCESSTOKEN")
+        || c.source == QLatin1String("AZURE_DEVOPS_EXT_PAT");
 }
 
-namespace {
-std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *diagnostics)
+std::optional<Credential> environmentCredential()
 {
-    QStringList tried;
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     for (const char *name : {"YADIFF_ADO_TOKEN", "SYSTEM_ACCESSTOKEN"}) {
         if (const QString v = env.value(QLatin1String(name)); !v.isEmpty())
@@ -165,6 +171,113 @@ std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *dia
         if (const QString v = env.value(QLatin1String(name)); !v.isEmpty())
             return Credential{Credential::Kind::Pat, v, QLatin1String(name)};
     }
+    return std::nullopt;
+}
+
+std::optional<Credential> findCached(const QUrl &collectionUrl, QString *diagnostics);
+
+} // namespace
+
+std::optional<Credential> find(const QUrl &collectionUrl, QString *diagnostics)
+{
+    auto c = findCached(collectionUrl, diagnostics);
+    if (c)
+        c->collection = collectionUrl;
+    return c;
+}
+
+namespace {
+std::optional<Credential> findCached(const QUrl &collectionUrl, QString *diagnostics)
+{
+    if (auto env = environmentCredential()) {
+        Log::addSecret(env->secret);
+        qCDebug(lcAuth).noquote() << "credential for" << Log::url(organizationUrl(collectionUrl)) << ": " + env->kindName()
+                                  << "from" << env->source;
+        return env;
+    }
+    const QString key = keyFor(collectionUrl);
+    {
+        QMutexLocker lock(&g_cacheMutex);
+        if (const auto it = g_cache.constFind(key); it != g_cache.constEnd()) {
+            if (QDateTime::currentDateTimeUtc() < it->until) {
+                qCDebug(lcAuth).noquote() << "credential for" << Log::url(organizationUrl(collectionUrl)) << ": the"
+                                          << it->credential.kindName() << "from" << it->credential.source << "found earlier";
+                return it->credential;
+            }
+            qCInfo(lcAuth).noquote() << "the" << it->credential.kindName() << "from" << it->credential.source << "for"
+                                     << Log::url(organizationUrl(collectionUrl)) << "has expired; looking again";
+            g_cache.erase(it);
+        }
+    }
+    QString why;
+    auto c = findCredential(collectionUrl, &why);
+    if (c) {
+        Log::addSecret(c->secret);
+        qCInfo(lcAuth).noquote() << "credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << c->kindName()
+                                 << "from" << c->source
+                                 << (c->expires.isValid() ? QStringLiteral("(valid until %1)").arg(c->expires.toLocalTime().toString(Qt::ISODate))
+                                                          : QString());
+        if (!fromEnvironment(*c)) {
+            // Tokens are reused until five minutes before they expire; others for an hour
+            // (or until rejected).
+            const QDateTime now = QDateTime::currentDateTimeUtc();
+            QDateTime until = c->expires.isValid() ? c->expires.addSecs(-300) : now.addSecs(3600);
+            if (until > now.addSecs(3600))
+                until = now.addSecs(3600);
+            if (until > now) {
+                QMutexLocker lock(&g_cacheMutex);
+                g_cache.insert(key, {*c, until});
+            }
+        }
+    } else {
+        qCInfo(lcAuth).noquote() << "no credential for" << Log::url(organizationUrl(collectionUrl)) << ":" << why;
+    }
+    if (diagnostics)
+        *diagnostics = why;
+    return c;
+}
+} // namespace
+
+void rejected(const QUrl &collectionUrl, const Credential &cred)
+{
+    QMutexLocker lock(&g_cacheMutex);
+    const auto it = g_cache.find(keyFor(collectionUrl));
+    if (it != g_cache.end() && it->credential.secret == cred.secret) {
+        qCInfo(lcAuth).noquote() << "forgetting the rejected" << cred.kindName() << "from" << cred.source << "for"
+                                 << Log::url(organizationUrl(collectionUrl));
+        g_cache.erase(it);
+    }
+}
+
+void clearCache()
+{
+    QMutexLocker lock(&g_cacheMutex);
+    g_cache.clear();
+}
+
+QDateTime parseAzureCliExpiry(const QJsonObject &o)
+{
+    // Newer az: "expires_on" (seconds since the epoch). Older: "expiresOn", local time.
+    const QJsonValue epoch = o.value(QStringLiteral("expires_on"));
+    if (epoch.isDouble() && epoch.toDouble() > 0)
+        return QDateTime::fromSecsSinceEpoch(qint64(epoch.toDouble()), QTimeZone::UTC);
+    if (epoch.isString() && epoch.toString().toLongLong() > 0)
+        return QDateTime::fromSecsSinceEpoch(epoch.toString().toLongLong(), QTimeZone::UTC);
+    QString local = o.value(QStringLiteral("expiresOn")).toString();
+    if (local.isEmpty())
+        return {};
+    local = local.section(u'.', 0, 0); // "2026-10-19 15:03:11.000000"
+    QDateTime t = QDateTime::fromString(local, QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    t.setTimeZone(QTimeZone::LocalTime);
+    return t.isValid() ? t.toUTC() : QDateTime();
+}
+
+namespace {
+std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *diagnostics)
+{
+    QStringList tried;
+    if (auto env = environmentCredential())
+        return env;
     tried << QStringLiteral("environment variables");
 
     if (SecretStore::available()) {
@@ -187,6 +300,7 @@ std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *dia
 bool savePat(const QUrl &collectionUrl, const QString &pat, QString *error)
 {
     Log::addSecret(pat);
+    clearCache();
     qCInfo(lcAuth).noquote() << "saving a token for" << Log::url(organizationUrl(collectionUrl)) << "in the" << SecretStore::backendName();
     return SecretStore::write(keyFor(collectionUrl),
                               QStringLiteral("yadiff: Azure DevOps token for %1")
@@ -197,6 +311,7 @@ bool savePat(const QUrl &collectionUrl, const QString &pat, QString *error)
 bool forget(const QUrl &collectionUrl, QString *error)
 {
     qCInfo(lcAuth).noquote() << "forgetting the token for" << Log::url(organizationUrl(collectionUrl));
+    clearCache();
     return SecretStore::remove(keyFor(collectionUrl), error);
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QHash>
 #include <QString>
 #include <QVector>
 
@@ -15,6 +16,13 @@ struct PrId {
     bool isValid() const { return number > 0 && !owner.isEmpty() && !repo.isEmpty(); }
 };
 
+// A review thread's state. GitHub only resolves threads (Active or Resolved); Azure
+// DevOps has them all. None: the host didn't say.
+enum class ThreadStatus { None, Active, Pending, Resolved, WontFix, ByDesign, Closed };
+// Still to be dealt with: no status, active or pending.
+bool isOpen(ThreadStatus status);
+QString statusName(ThreadStatus status); // "Active", "Resolved", "Won't fix", ...
+
 struct Comment {
     qint64 id = 0;
     qint64 inReplyTo = 0;  // 0 for the first comment of a thread
@@ -23,6 +31,10 @@ struct Comment {
     int line = 0;          // last line the comment covers; 0 when outdated
     int startLine = 0;     // first line of a multi-line comment, 0 when single-line
     QString author, body, createdAt, url;
+    // The thread's state, on its first comment; threadNode is GitHub's id for the thread
+    // (needed to resolve it).
+    ThreadStatus status = ThreadStatus::None;
+    QString threadNode;
     bool outdated() const { return line <= 0; }
 };
 
@@ -46,6 +58,14 @@ QVector<Comment> parseComments(const QByteArray &json);
 // Groups replies under their first comment, threads in creation order.
 QVector<Thread> threads(const QVector<Comment> &comments);
 
+// GitHub's GraphQL reviewThreads page: the first comment's id -> (thread id, resolved).
+// `nextCursor` is set when there's another page.
+struct ThreadState {
+    QString node;
+    bool resolved = false;
+};
+QHash<qint64, ThreadState> parseThreadStates(const QByteArray &json, QString *nextCursor = nullptr);
+
 // Request bodies (exposed for tests).
 QByteArray commentPayload(const QString &commitId, const QString &path, const QString &side, int line, int startLine,
                           const QString &body);
@@ -55,6 +75,8 @@ std::optional<QVector<Comment>> fetch(const PrId &pr, QString *error);
 std::optional<Comment> post(const PrId &pr, const QString &commitId, const QString &path, const QString &side, int line,
                             int startLine, const QString &body, QString *error);
 std::optional<Comment> reply(const PrId &pr, qint64 threadId, const QString &body, QString *error);
+// Resolves or unresolves a thread (`threadNode` from the fetched comments).
+bool setResolved(const QString &threadNode, bool resolved, QString *error);
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error);
 // The signed-in gh user's current vote on the PR.
 std::optional<Vote> myVote(const PrId &pr, QString *error);

@@ -1,5 +1,7 @@
 #include "FileList.h"
 
+#include <QRegularExpression>
+
 #include <QContextMenuEvent>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -23,6 +25,7 @@ constexpr int kStatsRole = Qt::UserRole + 3;
 constexpr int kPathRole = Qt::UserRole + 4; // QPoint(added, removed); absent when unknown
 constexpr int kLoadRole = Qt::UserRole + 6;   // FileList::LoadState
 constexpr int kPlaceholderRole = Qt::UserRole + 7;
+constexpr int kThreadsRole = Qt::UserRole + 8; // QPoint(open, total) review threads; absent when none
 
 // Draws the file name as usual, plus "+12 −3" in green and red at the right edge
 // when there is room for both (the name always wins when the pane is narrow).
@@ -65,41 +68,67 @@ private:
             paintLoadState(p, option, index, load);
             return;
         }
+        // At the right edge, when there's room: review threads ("💬 2", bold while any is
+        // open), then the line counts.
         const QVariant v = index.data(kStatsRole);
-        if (!v.isValid()) {
+        const QVariant t = index.data(kThreadsRole);
+        if (!v.isValid() && !t.isValid()) {
             QStyledItemDelegate::paint(p, option, index);
             return;
         }
-        const QPoint st = v.toPoint();
-        const QString plus = QStringLiteral("+%1").arg(st.x());
-        const QString minus = QStringLiteral("\u2212%1").arg(st.y());
         const QFontMetrics fm(option.font);
         const int gap = fm.horizontalAdvance(u' ');
-        const int statsW = fm.horizontalAdvance(plus) + gap + fm.horizontalAdvance(minus) + 8;
+        QString plus, minus, threads;
+        int statsW = 0, threadsW = 0;
+        if (v.isValid()) {
+            const QPoint st = v.toPoint();
+            plus = QStringLiteral("+%1").arg(st.x());
+            minus = QStringLiteral("\u2212%1").arg(st.y());
+            statsW = fm.horizontalAdvance(plus) + gap + fm.horizontalAdvance(minus) + 8;
+        }
+        const QPoint tc = t.toPoint(); // (open, total)
+        QFont threadFont = option.font;
+        threadFont.setBold(tc.x() > 0);
+        if (t.isValid()) {
+            threads = QStringLiteral("\U0001F4AC%1").arg(tc.x() > 0 ? tc.x() : tc.y());
+            threadsW = QFontMetrics(threadFont).horizontalAdvance(threads) + 8;
+        }
+        const int extraW = statsW + threadsW;
         const int nameW = fm.horizontalAdvance(index.data(Qt::DisplayRole).toString());
-        const bool room = option.rect.width() >= statsW + nameW + 40; // 40: icon and padding
+        const bool room = option.rect.width() >= extraW + nameW + 40; // 40: icon and padding
 
         QStyleOptionViewItem opt = option;
         if (room)
-            opt.rect.setRight(opt.rect.right() - statsW);
+            opt.rect.setRight(opt.rect.right() - extraW);
         QStyledItemDelegate::paint(p, opt, index);
         if (!room)
             return;
         // Fill behind the numbers like the rest of the row (selection / hover).
         QStyleOptionViewItem bg = option;
         initStyleOption(&bg, index);
-        bg.rect = QRect(option.rect.right() - statsW + 1, option.rect.top(), statsW, option.rect.height());
+        bg.rect = QRect(option.rect.right() - extraW + 1, option.rect.top(), extraW, option.rect.height());
         bg.text.clear();
         bg.icon = QIcon();
         bg.features &= ~QStyleOptionViewItem::HasCheckIndicator;
         bg.widget->style()->drawControl(QStyle::CE_ItemViewItem, &bg, p, bg.widget);
-        const QRect r = bg.rect.adjusted(0, 0, -4, 0);
+        const bool selected = option.state & QStyle::State_Selected;
         p->save();
-        p->setFont(option.font);
-        p->setPen(QColor(0x2e, 0xa0, 0x43));
-        p->drawText(r.adjusted(0, 0, -(fm.horizontalAdvance(minus) + gap), 0), Qt::AlignRight | Qt::AlignVCenter, plus);
-        p->setPen(QColor(0xd1, 0x3b, 0x3b));
-        p->drawText(r, Qt::AlignRight | Qt::AlignVCenter, minus);
+        if (t.isValid()) {
+            const QRect r(bg.rect.left(), bg.rect.top(), threadsW - 4, bg.rect.height());
+            p->setFont(threadFont);
+            const QColor quiet = option.palette.color(QPalette::PlaceholderText);
+            const QColor loud = selected ? option.palette.color(QPalette::HighlightedText) : option.palette.color(QPalette::Link);
+            p->setPen(tc.x() > 0 ? loud : (selected ? option.palette.color(QPalette::HighlightedText) : quiet));
+            p->drawText(r, Qt::AlignRight | Qt::AlignVCenter, threads);
+        }
+        if (v.isValid()) {
+            const QRect r = bg.rect.adjusted(threadsW, 0, -4, 0);
+            p->setFont(option.font);
+            p->setPen(QColor(0x2e, 0xa0, 0x43));
+            p->drawText(r.adjusted(0, 0, -(fm.horizontalAdvance(minus) + gap), 0), Qt::AlignRight | Qt::AlignVCenter, plus);
+            p->setPen(QColor(0xd1, 0x3b, 0x3b));
+            p->drawText(r, Qt::AlignRight | Qt::AlignVCenter, minus);
+        }
         p->restore();
     }
 
@@ -604,6 +633,23 @@ bool FileList::selectPrev()
         }
     }
     return false;
+}
+
+void FileList::setThreadCounts(const QHash<int, std::pair<int, int>> &counts)
+{
+    for (QTreeWidgetItem *item : std::as_const(m_leaves)) {
+        const int idx = item->data(0, kIndexRole).toInt();
+        static const QRegularExpression previous(QStringLiteral("\n\\{[^}]*\\}"));
+        QString tip = item->toolTip(0).remove(previous);
+        if (const auto it = counts.constFind(idx); it != counts.constEnd()) {
+            item->setData(0, kThreadsRole, QPoint(it->first, it->second));
+            tip += it->first > 0 ? tr("\n{%1 of %2 review threads open}").arg(it->first).arg(it->second)
+                                 : tr("\n{%1 review threads, all resolved}").arg(it->second);
+        } else {
+            item->setData(0, kThreadsRole, QVariant());
+        }
+        item->setToolTip(0, tip);
+    }
 }
 
 void FileList::setMatchCounts(const QHash<int, int> &counts)

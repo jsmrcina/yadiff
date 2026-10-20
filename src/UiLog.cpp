@@ -60,12 +60,14 @@ protected:
             else if (auto *menu = qobject_cast<QMenu *>(obj))
                 once(menu, [](QMenu *m) {
                     QObject::connect(m, &QMenu::triggered, m, [](QAction *a) {
+                        Log::noteAction(QStringLiteral("menu ") + actionName(a));
                         qCDebug(lcApp).noquote() << "menu:" << actionName(a) << (a->isCheckable() ? (a->isChecked() ? "(on)" : "(off)") : "");
                     });
                 });
             else if (auto *bar = qobject_cast<QToolBar *>(obj))
                 once(bar, [](QToolBar *b) {
                     QObject::connect(b, &QToolBar::actionTriggered, b, [](QAction *a) {
+                        Log::noteAction(QStringLiteral("toolbar ") + actionName(a));
                         qCDebug(lcApp).noquote() << "toolbar:" << actionName(a) << (a->isCheckable() ? (a->isChecked() ? "(on)" : "(off)") : "");
                     });
                 });
@@ -78,15 +80,17 @@ protected:
                 });
             break;
         case QEvent::Shortcut:
-            if (auto *a = qobject_cast<QAction *>(obj))
+            if (auto *a = qobject_cast<QAction *>(obj)) {
+                Log::noteAction(QStringLiteral("shortcut %1 (%2)").arg(a->shortcut().toString(QKeySequence::PortableText), actionName(a)));
                 qCDebug(lcApp).noquote() << "shortcut" << a->shortcut().toString(QKeySequence::PortableText) << ":" << actionName(a);
+            }
             break;
         case QEvent::MouseButtonRelease:
-            if (!lcApp().isDebugEnabled())
-                break;
             if (auto *b = qobject_cast<QAbstractButton *>(obj); b && b->isEnabled() && !b->text().isEmpty()
-                && !qobject_cast<QMessageBox *>(b->window()))
+                && !qobject_cast<QMessageBox *>(b->window())) {
+                Log::noteAction(QStringLiteral("button %1").arg(b->text().remove(u'&')));
                 qCDebug(lcApp).noquote() << "button:" << b->text().remove(u'&') << "in" << b->window()->windowTitle();
+            }
             break;
         default:
             break;

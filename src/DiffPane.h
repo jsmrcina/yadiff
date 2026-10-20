@@ -40,6 +40,8 @@ struct FileView {
     // comments can be added.
     QVector<GitHubReview::Thread> threads;
     bool reviewEnabled = false;
+    // The thread states the host offers, with its names for them (for the context menu).
+    QVector<std::pair<GitHubReview::ThreadStatus, QString>> threadStatuses;
 
     // Git blame per line of each side; empty when blame is off or not available.
     QVector<BlameLine> oldBlame, newBlame;
@@ -177,6 +179,7 @@ signals:
     // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
     void replyRequested(qint64 threadId);
+    void threadStatusRequested(qint64 threadId, GitHubReview::ThreadStatus status);
 
 private:
     void rebuild();
