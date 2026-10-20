@@ -89,6 +89,8 @@ bool setResolved(const QString &threadNode, bool resolved, QString *error);
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error);
 // The signed-in gh user's current vote on the PR.
 std::optional<Vote> myVote(const PrId &pr, QString *error);
+// The PR's overview (gh pr view), as PrOverview::parseGitHubPullRequest reads it.
+std::optional<QByteArray> overviewJson(const PrId &pr, QString *error);
 // The PR's commits, and the one the signed-in user last reviewed (empty when none).
 std::optional<QVector<PrCommit>> commits(const PrId &pr, QString *error);
 std::optional<QString> myLastReviewedCommit(const PrId &pr, QString *error);

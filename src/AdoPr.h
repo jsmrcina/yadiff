@@ -2,6 +2,7 @@
 
 #include "AdoAuth.h"
 #include "GitHubReview.h"
+#include "PrOverview.h"
 
 #include <QDateTime>
 #include <QString>
@@ -119,6 +120,10 @@ std::optional<int> myVote(const Ref &ref, const AdoAuth::Credential &cred, QStri
 bool setVote(const Ref &ref, const AdoAuth::Credential &cred, int vote, QString *error);
 // A pull-request-level comment thread.
 bool postMessage(const Ref &ref, const AdoAuth::Credential &cred, const QString &body, QString *error);
+
+// The PR's overview: description, reviewers, policies and statuses, work items and the
+// comments on the PR itself. Parts that fail are listed in its problems.
+std::optional<PrOverview::Overview> overview(const Ref &ref, const AdoAuth::Credential &cred, QString *error);
 
 // Approve = vote 10; RequestChanges = vote -5 ("waiting for author"); a message becomes
 // a pull-request-level comment thread.

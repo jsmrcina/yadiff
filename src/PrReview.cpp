@@ -342,4 +342,14 @@ std::optional<Comparison> versionComparison(const Comparison &whole, const QStri
     return c;
 }
 
+std::optional<PrOverview::Overview> overview(const Comparison &cmp, QString *error)
+{
+    if (!isAdo(cmp)) {
+        const auto json = GitHubReview::overviewJson(gh(cmp), error);
+        return json ? std::optional<PrOverview::Overview>(PrOverview::parseGitHubPullRequest(*json)) : std::nullopt;
+    }
+    const auto cred = adoCredential(cmp, error);
+    return cred ? AdoPr::overview(ado(cmp), *cred, error) : std::nullopt;
+}
+
 } // namespace PrReview

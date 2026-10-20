@@ -2,6 +2,7 @@
 #include "ComparisonArgs.h"
 #include "CodeView.h"
 #include "DiffPane.h"
+#include "PrOverviewPanel.h"
 #include "FileList.h"
 #include "HistoryDialog.h"
 #include "ImageDiffView.h"
@@ -896,6 +897,64 @@ private slots:
         QVERIFY2(resolved.text.startsWith(QStringLiteral("\u2713 Resolved · ")), qPrintable(resolved.text));
         pane.setCommentsExpanded(true);
         QVERIFY(right->findChild<QTextBrowser *>()->toPlainText().contains(QStringLiteral("Resolved")));
+    }
+
+    void prOverviewShowsHowThePrStands()
+    {
+        PrOverview::Overview o;
+        o.title = QStringLiteral("Make two loud");
+        o.author = QStringLiteral("Alice");
+        o.description = QStringLiteral("Makes **two** loud.\n\n<!-- bot-marker -->\n\n```\ncode here\n```");
+        o.sourceBranch = QStringLiteral("feature");
+        o.targetBranch = QStringLiteral("main");
+        o.reviewers = {{QStringLiteral("Team X"), GitHubReview::Vote::Approved, true, true, false},
+                       {QStringLiteral("Bob"), GitHubReview::Vote::WaitingForAuthor, false, false, false}};
+        PrOverview::Check failed;
+        failed.name = QStringLiteral("CI build");
+        failed.state = PrOverview::CheckState::Failed;
+        failed.required = true;
+        o.checks = {failed};
+        o.workItems = {{QStringLiteral("1234"), QStringLiteral("Bug"), QStringLiteral("Loud numbers"), QStringLiteral("Active"), {}}};
+        GitHubReview::Comment c;
+        c.id = 6;
+        c.author = QStringLiteral("Carol");
+        c.body = QStringLiteral("Overall fine");
+        c.status = GitHubReview::ThreadStatus::Active;
+        o.discussion = {{c}};
+        PrOverviewPanel panel;
+        panel.resize(420, 600);
+        panel.setOverview(o, QStringLiteral("Azure DevOps"), true);
+        const QString text = panel.browser()->toPlainText();
+        for (const char *expected : {"Make two loud", "by Alice", "feature \u2192 main", "Team X", "(required)", "approved",
+                                     "waiting for author", "CI build", "failed", "Bug 1234: Loud numbers", "Overall fine", "Active",
+                                     "code here"})
+            QVERIFY2(text.contains(QString::fromUtf8(expected)), expected);
+        QVERIFY(!text.contains(QStringLiteral("bot-marker")));
+        QVERIFY(!text.contains(QStringLiteral("**")));
+        QVERIFY2(panel.summary().contains(QStringLiteral("1 approved")) && panel.summary().contains(QStringLiteral("1 check failed")),
+                 qPrintable(panel.summary()));
+        // Its links reply to and resolve the PR's threads, and add a comment.
+        qint64 replied = 0, resolved = 0;
+        bool commented = false;
+        connect(&panel, &PrOverviewPanel::replyRequested, [&](qint64 id) { replied = id; });
+        connect(&panel, &PrOverviewPanel::resolveRequested, [&](qint64 id, bool on) { resolved = on ? id : -id; });
+        connect(&panel, &PrOverviewPanel::commentRequested, [&] { commented = true; });
+        emit panel.browser()->anchorClicked(QUrl(QStringLiteral("yadiff:reply:6")));
+        emit panel.browser()->anchorClicked(QUrl(QStringLiteral("yadiff:resolve:6")));
+        emit panel.browser()->anchorClicked(QUrl(QStringLiteral("yadiff:comment")));
+        QCOMPARE(replied, qint64(6));
+        QCOMPARE(resolved, qint64(6));
+        QVERIFY(commented);
+        QVERIFY(panel.browser()->toHtml().contains(QStringLiteral("yadiff:resolve:6")));
+        // Folding keeps the header's summary.
+        panel.setFolded(true);
+        QVERIFY(panel.isFolded() && !panel.browser()->isVisibleTo(&panel));
+        panel.setFolded(false);
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            panel.show();
+            QApplication::processEvents();
+            panel.grab().save(out + QStringLiteral("/overview.png"));
+        }
     }
 
     void largeDiffsAskFirst()

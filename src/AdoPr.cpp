@@ -918,6 +918,87 @@ bool postMessage(const Ref &ref, const AdoAuth::Credential &cred, const QString 
     return call("POST", apiUrl(ref, QStringLiteral("/threads")), cred, threadPayload({}, {}, 0, 0, body), error).error.isEmpty();
 }
 
+std::optional<PrOverview::Overview> overview(const Ref &ref, const AdoAuth::Credential &cred, QString *error)
+{
+    const Http::Response pr = call("GET", apiUrl(ref, {}), cred, {}, error);
+    if (!pr.error.isEmpty())
+        return std::nullopt;
+    PrOverview::Overview o = PrOverview::parseAdoPullRequest(pr.body);
+    o.url = ref.webUrl.toString();
+    const QString collection = ref.collectionUrl.toString(QUrl::StripTrailingSlash);
+    const QString webBase = collection + u'/' + seg(ref.project);
+    const QString projectId = QJsonDocument::fromJson(pr.body)
+                                  .object()
+                                  .value(QStringLiteral("repository"))
+                                  .toObject()
+                                  .value(QStringLiteral("project"))
+                                  .toObject()
+                                  .value(QStringLiteral("id"))
+                                  .toString();
+
+    // The rest at once: each is its own request.
+    struct Part {
+        QUrl url;
+        Http::Response response;
+        QString error;
+    };
+    QVector<Part> parts(4);
+    parts[0].url = projectId.isEmpty()
+                       ? QUrl()
+                       : QUrl(QStringLiteral("%1/_apis/policy/evaluations?artifactId=%2&api-version=7.1-preview.1")
+                                  .arg(webBase, seg(QStringLiteral("vstfs:///CodeReview/CodeReviewId/%1/%2").arg(projectId).arg(ref.id))),
+                              QUrl::StrictMode);
+    parts[1].url = apiUrl(ref, QStringLiteral("/statuses"));
+    parts[2].url = apiUrl(ref, QStringLiteral("/workitems"));
+    parts[3].url = apiUrl(ref, QStringLiteral("/threads"));
+    QThreadPool pool;
+    pool.setMaxThreadCount(4);
+    QtConcurrent::blockingMap(&pool, parts, [&](Part &p) {
+        if (p.url.isValid())
+            p.response = call("GET", p.url, cred, {}, &p.error);
+    });
+    auto ok = [&](const Part &p, const QString &what) {
+        if (!p.url.isValid() || !p.response.error.isEmpty()) {
+            o.problems << QStringLiteral("%1: %2").arg(what, p.url.isValid() ? p.error : QStringLiteral("unknown project"));
+            return false;
+        }
+        return true;
+    };
+    if (ok(parts[0], QStringLiteral("policies")))
+        o.checks += PrOverview::parseAdoPolicies(parts[0].response.body, webBase);
+    if (ok(parts[1], QStringLiteral("statuses")))
+        o.checks += PrOverview::parseAdoStatuses(parts[1].response.body);
+    if (ok(parts[2], QStringLiteral("work items"))) {
+        QStringList ids;
+        for (const QJsonValue &v : QJsonDocument::fromJson(parts[2].response.body).object().value(QStringLiteral("value")).toArray())
+            if (const QString id = v.toObject().value(QStringLiteral("id")).toString(); !id.isEmpty() && ids.size() < 200)
+                ids << id;
+        if (!ids.isEmpty()) {
+            QString err;
+            const Http::Response items = call(
+                "GET",
+                QUrl(QStringLiteral("%1/_apis/wit/workitems?ids=%2&fields=System.Title,System.State,System.WorkItemType&api-version=7.1")
+                         .arg(collection, ids.join(u',')),
+                     QUrl::StrictMode),
+                cred, {}, &err);
+            if (items.error.isEmpty())
+                o.workItems = PrOverview::parseAdoWorkItems(items.body, webBase);
+            else
+                o.problems << QStringLiteral("work items: %1").arg(err);
+        }
+    }
+    if (ok(parts[3], QStringLiteral("comments")))
+        o.discussion = PrOverview::parseAdoDiscussion(parts[3].response.body, ref.webUrl);
+    qCInfo(lcAdo).noquote() << QStringLiteral("PR %1 overview: %2 reviewers, %3 checks, %4 work items, %5 discussions%6")
+                                   .arg(ref.id)
+                                   .arg(o.reviewers.size())
+                                   .arg(o.checks.size())
+                                   .arg(o.workItems.size())
+                                   .arg(o.discussion.size())
+                                   .arg(o.problems.isEmpty() ? QString() : QStringLiteral("; failed: ") + o.problems.join(QStringLiteral("; ")));
+    return o;
+}
+
 bool submit(const Ref &ref, const AdoAuth::Credential &cred, GitHubReview::Verdict verdict, const QString &body, QString *error)
 {
     if (verdict != GitHubReview::Verdict::Comment

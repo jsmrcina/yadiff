@@ -200,6 +200,10 @@ bool autoUpdate() { return flag("update/automatic", false); }
 void setAutoUpdate(bool on) { setFlag("update/automatic", on); }
 qint64 lastUpdateCheck() { return QSettings().value(QStringLiteral("update/lastCheck"), 0).toLongLong(); }
 void setLastUpdateCheck(qint64 secs) { QSettings().setValue(QStringLiteral("update/lastCheck"), secs); }
+bool showPrOverview() { return flag("review/overview", true); }
+void setShowPrOverview(bool on) { setFlag("review/overview", on); }
+bool prOverviewFolded() { return flag("review/overviewFolded", false); }
+void setPrOverviewFolded(bool on) { setFlag("review/overviewFolded", on); }
 bool openSinceLastReview() { return flag("review/sinceLastReview", true); }
 void setOpenSinceLastReview(bool on) { setFlag("review/sinceLastReview", on); }
 bool hideResolvedThreads() { return flag("review/hideResolved", false); }

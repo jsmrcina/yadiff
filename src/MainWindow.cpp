@@ -17,6 +17,7 @@
 #include "MergeWindow.h"
 #include "NewComparisonDialog.h"
 #include "PrReview.h"
+#include "PrOverviewPanel.h"
 #include "Report.h"
 #include "TextFile.h"
 #include "Theme.h"
@@ -747,6 +748,17 @@ void MainWindow::createActions()
     m_collapseCommentsAct = viewMenu->addAction(tr("Collapse all review comments"), this,
                                                 [this] { m_pane->setCommentsExpanded(false); });
     m_collapseCommentsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_O));
+    m_overviewAct = viewMenu->addAction(tr("Pull request o&verview"));
+    m_overviewAct->setCheckable(true);
+    m_overviewAct->setChecked(Settings::showPrOverview());
+    m_overviewAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_V));
+    m_overviewAct->setStatusTip(tr("Show the pull request's description, reviewers, checks and comments above the files"));
+    connect(m_overviewAct, &QAction::toggled, this, [this](bool on) {
+        Settings::setShowPrOverview(on);
+        updateOverviewVisibility();
+        if (on && !m_overview)
+            loadOverview();
+    });
     m_hideResolvedAct = viewMenu->addAction(tr("&Hide resolved review threads"));
     m_hideResolvedAct->setCheckable(true);
     m_hideResolvedAct->setChecked(Settings::hideResolvedThreads());
@@ -1193,6 +1205,8 @@ void MainWindow::updateModeUi()
     m_expandCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_collapseCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_hideResolvedAct->setVisible(m_cmp.prNumber > 0);
+    m_overviewAct->setVisible(m_cmp.prNumber > 0);
+    updateOverviewVisibility();
     m_reviewToolAction->setVisible(m_cmp.prNumber > 0);
     rebuildVoteActions();
     const bool workingTree = m_repo.isRepository() && !m_repo.isBare()
@@ -1658,6 +1672,8 @@ void MainWindow::reload(std::function<void()> afterFile)
                 loadComments();
                 if (!m_prHistory && !m_historyBusy)
                     loadPrHistory();
+                if (!m_overview)
+                    loadOverview();
                 if (!m_myVote && !m_voteBusy)
                     loadMyVote();
             }
@@ -2660,6 +2676,25 @@ void MainWindow::pollForChanges()
 
 QWidget *MainWindow::createFilePanel()
 {
+    // Pull requests: their overview above the files, in a splitter.
+    auto *split = new QSplitter(Qt::Vertical);
+    split->setChildrenCollapsible(false);
+    m_overviewPanel = new PrOverviewPanel;
+    m_overviewPanel->setVisible(false);
+    m_overviewPanel->setFolded(Settings::prOverviewFolded());
+    connect(m_overviewPanel, &PrOverviewPanel::foldedChanged, this, [this, split](bool folded) {
+        Settings::setPrOverviewFolded(folded);
+        const int total = split->height();
+        const int top = folded ? m_overviewPanel->minimumSizeHint().height() : total / 3;
+        split->setSizes({top, total - top});
+    });
+    connect(m_overviewPanel, &PrOverviewPanel::reloadRequested, this, &MainWindow::loadOverview);
+    connect(m_overviewPanel, &PrOverviewPanel::replyRequested, this, &MainWindow::replyToThread);
+    connect(m_overviewPanel, &PrOverviewPanel::resolveRequested, this, [this](qint64 id, bool resolve) {
+        setThreadStatus(id, resolve ? GitHubReview::ThreadStatus::Resolved : GitHubReview::ThreadStatus::Active);
+    });
+    connect(m_overviewPanel, &PrOverviewPanel::commentRequested, this, [this] { submitReview(GitHubReview::Verdict::Comment); });
+
     auto *panel = new QWidget;
     auto *v = new QVBoxLayout(panel);
     v->setContentsMargins(0, 0, 0, 0);
@@ -2676,6 +2711,10 @@ QWidget *MainWindow::createFilePanel()
     v->addWidget(m_filterEdit);
     v->addWidget(m_files, 1);
     v->addWidget(m_filterCount);
+    split->addWidget(m_overviewPanel);
+    split->addWidget(panel);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 2);
 
     auto *focus = new QAction(tr("Filter files"), this);
     focus->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
@@ -2684,7 +2723,7 @@ QWidget *MainWindow::createFilePanel()
         m_filterEdit->selectAll();
     });
     addAction(focus);
-    return panel;
+    return split;
 }
 
 void MainWindow::applyFilter()
@@ -2839,6 +2878,10 @@ void MainWindow::setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus sta
     for (const GitHubReview::Comment &c : std::as_const(m_comments))
         if (c.id == threadId && c.inReplyTo == 0)
             root = c;
+    if (!root && m_overview) // a comment on the PR itself
+        for (const GitHubReview::Thread &t : std::as_const(m_overview->discussion))
+            if (t.first().id == threadId)
+                root = t.first();
     if (!root)
         return;
     const QString name = PrReview::threadStatusName(m_cmp, status);
@@ -2860,6 +2903,13 @@ void MainWindow::setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus sta
                 if (c.id == threadId || c.inReplyTo == threadId
                     || (adoThread > 0 && c.id >= AdoPr::kReplyBase && c.id / AdoPr::kReplyBase == adoThread))
                     c.status = status;
+            if (m_overview) {
+                for (GitHubReview::Thread &t : m_overview->discussion)
+                    if (t.first().id == threadId)
+                        for (GitHubReview::Comment &c : t)
+                            c.status = status;
+                m_overviewPanel->setOverview(*m_overview, PrReview::hostName(m_cmp), m_cmp.prHost == QLatin1String("ado"));
+            }
             statusBar()->showMessage(tr("Thread set to %1").arg(name), 3000);
             refreshThreads();
         });
@@ -2955,6 +3005,11 @@ void MainWindow::replyToThread(qint64 threadId)
                         c.inReplyTo = root.id;
                     break;
                 }
+            }
+            if (c.path.isEmpty()) { // a comment on the PR itself: in the overview
+                statusBar()->showMessage(tr("Reply posted"), 3000);
+                loadOverview();
+                return;
             }
             m_comments << c;
             statusBar()->showMessage(tr("Reply posted"), 3000);
@@ -3123,6 +3178,7 @@ void MainWindow::castVote(GitHubReview::Vote vote)
             m_voteError.clear();
             updateVoteButton();
             statusBar()->showMessage(tr("%1: done").arg(action), 4000);
+            loadOverview(); // the reviewers' votes, and any message
         });
 }
 
@@ -3150,9 +3206,42 @@ void MainWindow::submitReview(GitHubReview::Verdict verdict)
         [this, what](QString error) {
             if (!error.isEmpty())
                 QMessageBox::warning(this, what, tr("%1 refused the review:\n%2").arg(PrReview::hostName(m_cmp), error));
-            else
+            else {
                 statusBar()->showMessage(tr("%1: submitted").arg(what), 4000);
+                loadOverview();
+            }
         });
+}
+
+void MainWindow::loadOverview()
+{
+    if (m_cmp.prNumber <= 0 || !m_overviewAct->isChecked())
+        return;
+    m_overviewPanel->setLoading(PrReview::hostName(m_cmp));
+    const quint64 gen = ++m_overviewGen;
+    using Result = std::pair<std::optional<PrOverview::Overview>, QString>;
+    runJob<Result>(
+        [cmp = m_cmp] {
+            QString error;
+            auto o = PrReview::overview(cmp, &error);
+            return Result{o, error};
+        },
+        [this, gen](Result r) {
+            if (gen != m_overviewGen)
+                return;
+            if (!r.first) {
+                if (!m_overview)
+                    m_overviewPanel->setError(r.second.section(u'\n', 0, 0));
+                return;
+            }
+            m_overview = r.first;
+            m_overviewPanel->setOverview(*m_overview, PrReview::hostName(m_cmp), m_cmp.prHost == QLatin1String("ado"));
+        });
+}
+
+void MainWindow::updateOverviewVisibility()
+{
+    m_overviewPanel->setVisible(m_cmp.prNumber > 0 && m_overviewAct->isChecked());
 }
 
 void MainWindow::loadPrHistory()
@@ -4599,6 +4688,9 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     const QString key = m_cmp.prNumber > 0 ? PrReview::webUrl(m_cmp) : QString();
     if (key != m_prKey) {
         m_prKey = key;
+        m_overview.reset();
+        ++m_overviewGen;
+        m_overviewPanel->clear();
         m_prHistory.reset();
         m_prAutoShown = false;
         m_historyBusy = false;

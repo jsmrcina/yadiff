@@ -32,6 +32,7 @@ add_library(yadiffcore STATIC
     src/GitRepo.cpp src/GitRepo.h
     src/Http.cpp src/Http.h
     src/Updater.cpp src/Updater.h
+    src/PrOverview.cpp src/PrOverview.h
     src/PrReview.cpp src/PrReview.h
     src/Report.cpp src/Report.h
     src/ReviewStore.cpp src/ReviewStore.h
@@ -61,6 +62,7 @@ add_library(yadiffui STATIC
     src/ComparisonArgs.cpp src/ComparisonArgs.h
     src/OverviewBar.cpp src/OverviewBar.h
     src/PreferencesDialog.cpp src/PreferencesDialog.h
+    src/PrOverviewPanel.cpp src/PrOverviewPanel.h
     src/SearchBar.cpp src/SearchBar.h
     src/Settings.cpp src/Settings.h
     src/Syntax.cpp src/Syntax.h

@@ -2,6 +2,7 @@
 
 #include "GitHubReview.h"
 #include "GitRepo.h"
+#include "PrOverview.h"
 
 #include <functional>
 #include <optional>
@@ -39,6 +40,9 @@ std::optional<Vote> myVote(const Comparison &cmp, QString *error);
 // Casts `vote`; a non-empty `message` goes with it (GitHub: the review's text; Azure
 // DevOps: a comment on the pull request).
 bool setVote(const Comparison &cmp, Vote vote, const QString &message, QString *error);
+// The pull request's overview page (in the background: several requests).
+std::optional<PrOverview::Overview> overview(const Comparison &cmp, QString *error);
+
 // The pull request's versions: Azure DevOps pushes (iterations), GitHub commits.
 struct Version {
     int number = 0;                 // 1, 2, ... (Azure DevOps: the iteration id)

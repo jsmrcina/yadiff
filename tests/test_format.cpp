@@ -3,6 +3,7 @@
 #include "Difftool.h"
 #include "FileFilter.h"
 #include "GitHubReview.h"
+#include "PrOverview.h"
 #include "Report.h"
 #include "ReviewStore.h"
 #include "Search.h"
@@ -21,6 +22,38 @@ class TestFormat : public QObject
 {
     Q_OBJECT
 private slots:
+    void readsGitHubOverviews()
+    {
+        const auto o = PrOverview::parseGitHubPullRequest(R"({"title":"T","body":"Body","author":{"login":"al"},"state":"OPEN",
+            "isDraft":true,"baseRefName":"main","headRefName":"f","createdAt":"2026-01-01T00:00:00Z","url":"pr-url",
+            "latestReviews":[{"author":{"login":"bo"},"state":"APPROVED"},{"author":{"login":"cy"},"state":"CHANGES_REQUESTED"}],
+            "reviewRequests":[{"__typename":"User","login":"di"},{"__typename":"Team","name":"core"},{"__typename":"User","login":"bo"}],
+            "statusCheckRollup":[{"__typename":"CheckRun","name":"build","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"u"},
+                                 {"__typename":"CheckRun","name":"test","status":"IN_PROGRESS"},
+                                 {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"TIMED_OUT"},
+                                 {"__typename":"StatusContext","context":"ext","state":"FAILURE","targetUrl":"t"}],
+            "closingIssuesReferences":[{"number":9,"url":"issue-url"}],
+            "comments":[{"author":{"login":"al"},"body":"first","createdAt":"2026-01-01T00:00:00Z"},
+                        {"author":{"login":"bo"},"body":"second","createdAt":"2026-01-02T00:00:00Z"}]})");
+        QCOMPARE(o.title, QStringLiteral("T"));
+        QVERIFY(o.draft);
+        QCOMPARE(o.reviewers.size(), 4); // bo once
+        QCOMPARE(o.reviewers[0].vote, GitHubReview::Vote::Approved);
+        QCOMPARE(o.reviewers[1].vote, GitHubReview::Vote::Rejected);
+        QVERIFY(o.reviewers[3].group);
+        QCOMPARE(o.checks.size(), 4);
+        QCOMPARE(o.checks[0].name, QStringLiteral("CI / build"));
+        QCOMPARE(o.checks[0].state, PrOverview::CheckState::Passed);
+        QCOMPARE(o.checks[1].state, PrOverview::CheckState::Running);
+        QCOMPARE(o.checks[2].state, PrOverview::CheckState::Failed);
+        QCOMPARE(o.checks[2].detail, QStringLiteral("timed out"));
+        QCOMPARE(o.checks[3].state, PrOverview::CheckState::Failed);
+        QCOMPARE(o.workItems.size(), 1);
+        QCOMPARE(o.workItems[0].id, QStringLiteral("9"));
+        QCOMPARE(o.discussion.size(), 2);
+        QCOMPARE(o.discussion[0].first().body, QStringLiteral("second")); // newest first
+    }
+
     void readsGitHubCommitsAndReviews()
     {
         const auto commits = GitHubReview::parseCommits(R"([[{"sha":"aaa","commit":{"message":"First\n\nbody","committer":{"date":"2026-01-01T00:00:00Z"}}}],

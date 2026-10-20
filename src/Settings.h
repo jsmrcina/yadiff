@@ -76,6 +76,10 @@ bool autoUpdate();
 void setAutoUpdate(bool on);
 qint64 lastUpdateCheck(); // seconds since the epoch, 0 never
 void setLastUpdateCheck(qint64 secs);
+bool showPrOverview();
+void setShowPrOverview(bool on);
+bool prOverviewFolded();
+void setPrOverviewFolded(bool on);
 bool openSinceLastReview();
 void setOpenSinceLastReview(bool on);
 bool hideResolvedThreads();

@@ -21,6 +21,7 @@
 
 class DiffPane;
 class FileList;
+class PrOverviewPanel;
 class QAction;
 class QPushButton;
 class QActionGroup;
@@ -212,6 +213,9 @@ private:
     // Versions of the pull request (pushes or commits): the toolbar's picker, which shows
     // the changes between any two, by default since the user's last review.
     void loadPrHistory();
+    // The pull request's overview above the file list (description, reviewers, checks).
+    void loadOverview();
+    void updateOverviewVisibility();
     void fillVersionCombo();
     void showPrVersions(int from, int to);
     void choosePrVersions();
@@ -298,6 +302,10 @@ private:
     QHash<QString, DiffPane::ScrollState> m_scrollMemory;
     QAction *m_collapseCommentsAct = nullptr;
     QAction *m_hideResolvedAct = nullptr;
+    PrOverviewPanel *m_overviewPanel = nullptr;
+    QAction *m_overviewAct = nullptr;
+    std::optional<PrOverview::Overview> m_overview;
+    quint64 m_overviewGen = 0;
     QComboBox *m_versionCombo = nullptr;
     QAction *m_versionComboAction = nullptr;
     QAction *m_sinceReviewAct = nullptr;        // Review > Open at the changes since my last review

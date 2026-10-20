@@ -298,6 +298,27 @@ std::optional<QString> myLastReviewedCommit(const PrId &pr, QString *error)
     return json ? std::optional<QString>(lastReviewedCommit(*json, *login)) : std::nullopt;
 }
 
+std::optional<QByteArray> overviewJson(const PrId &pr, QString *error)
+{
+    const QString url = QStringLiteral("https://github.com/%1/%2/pull/%3").arg(pr.owner, pr.repo).arg(pr.number);
+    QString fields = QStringLiteral("title,body,author,state,isDraft,baseRefName,headRefName,createdAt,url,reviewRequests,"
+                                    "latestReviews,statusCheckRollup,comments,closingIssuesReferences");
+    QByteArray out;
+    QString err;
+    if (gh({QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, &err))
+        return out;
+    // Older gh doesn't know closingIssuesReferences.
+    if (!err.contains(QLatin1String("closingIssuesReferences"))) {
+        if (error)
+            *error = err;
+        return std::nullopt;
+    }
+    fields.remove(QStringLiteral(",closingIssuesReferences"));
+    if (!gh({QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, error))
+        return std::nullopt;
+    return out;
+}
+
 std::optional<QVector<PrCommit>> commits(const PrId &pr, QString *error)
 {
     QByteArray out;

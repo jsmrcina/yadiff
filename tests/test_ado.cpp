@@ -174,15 +174,39 @@ private:
                 code = 404;
                 body = R"({"message":"no such blob"})";
             }
+        } else if (r.path.contains("/_apis/policy/evaluations")) {
+            body = R"({"value":[
+              {"status":"approved","configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Minimum number of reviewers"},"settings":{}}},
+              {"status":"rejected","configuration":{"isEnabled":true,"isBlocking":true,"type":{"displayName":"Build"},"settings":{"displayName":"CI build"}},"context":{"buildId":42}},
+              {"status":"approved","configuration":{"isEnabled":false,"type":{"displayName":"Off"}}}]})";
+        } else if (r.path.contains("/pullRequests/7/statuses")) {
+            body = R"({"value":[{"state":"pending","context":{"genre":"scan","name":"lint"}},
+              {"state":"succeeded","description":"clean","context":{"genre":"scan","name":"lint"},"targetUrl":"https://example.com/lint"}]})";
+        } else if (r.path.contains("/pullRequests/7/workitems")) {
+            body = R"({"value":[{"id":"1234","url":"x"}]})";
+        } else if (r.path.contains("/_apis/wit/workitems")) {
+            body = r.path.contains("ids=1234")
+                       ? QByteArray(R"({"value":[{"id":1234,"fields":{"System.Title":"Loud numbers","System.State":"Active","System.WorkItemType":"Bug"}}]})")
+                       : QByteArray(R"({"value":[]})");
         } else if (r.path.contains("/pullRequests/7")) {
             body = QJsonDocument(QJsonObject{
                                      {QStringLiteral("title"), QStringLiteral("Make two loud")},
+                                     {QStringLiteral("description"), QStringLiteral("Makes **two** loud.")},
+                                     {QStringLiteral("createdBy"), QJsonObject{{QStringLiteral("displayName"), QStringLiteral("Alice")}}},
+                                     {QStringLiteral("reviewers"),
+                                      QJsonArray{QJsonObject{{QStringLiteral("displayName"), QStringLiteral("Bob")}, {QStringLiteral("vote"), 0}},
+                                                 QJsonObject{{QStringLiteral("displayName"), QStringLiteral("Team X")},
+                                                             {QStringLiteral("vote"), 10},
+                                                             {QStringLiteral("isContainer"), true},
+                                                             {QStringLiteral("isRequired"), true}}}},
                                      {QStringLiteral("status"), QStringLiteral("active")},
                                      {QStringLiteral("sourceRefName"), QStringLiteral("refs/heads/feature")},
                                      {QStringLiteral("targetRefName"), QStringLiteral("refs/heads/main")},
                                      {QStringLiteral("lastMergeSourceCommit"), QJsonObject{{QStringLiteral("commitId"), sourceCommit}}},
                                      {QStringLiteral("lastMergeTargetCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}},
-                                     {QStringLiteral("repository"), QJsonObject{{QStringLiteral("remoteUrl"), remoteUrl}}}})
+                                     {QStringLiteral("repository"),
+                                      QJsonObject{{QStringLiteral("remoteUrl"), remoteUrl},
+                                                  {QStringLiteral("project"), QJsonObject{{QStringLiteral("id"), QStringLiteral("proj-guid")}}}}}})
                        .toJson();
         } else {
             code = 404;
@@ -563,6 +587,40 @@ private slots:
         QCOMPARE(ado.threadStatus.value(8), QStringLiteral("active"));
         for (TS st : PrReview::threadStatuses(cmp))
             QCOMPARE(AdoPr::parseThreadStatus(AdoPr::threadStatusName(st)), st);
+
+        // The overview: the PR's description and reviewers, policies and statuses, work
+        // items, and the discussion on the PR itself (not the vote record).
+        auto overviewRun = QtConcurrent::run([&] {
+            QString err;
+            auto o = PrReview::overview(cmp, &err);
+            return std::make_pair(o, err);
+        });
+        while (!overviewRun.isFinished())
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        const auto [ov, ovError] = overviewRun.result();
+        QVERIFY2(ov, qPrintable(ovError));
+        QVERIFY2(ov->problems.isEmpty(), qPrintable(ov->problems.join(u';')));
+        QCOMPARE(ov->author, QStringLiteral("Alice"));
+        QVERIFY(ov->description.contains(QStringLiteral("**two**")));
+        QCOMPARE(ov->reviewers.size(), 2);
+        QCOMPARE(ov->reviewers[0].name, QStringLiteral("Team X")); // required first
+        QVERIFY(ov->reviewers[0].group && ov->reviewers[0].vote == GitHubReview::Vote::Approved);
+        QCOMPARE(ov->checks.size(), 3); // two policies (the disabled one left out) and one status
+        QCOMPARE(ov->checks[1].name, QStringLiteral("CI build"));
+        QCOMPARE(ov->checks[1].state, PrOverview::CheckState::Failed);
+        QVERIFY(ov->checks[1].url.endsWith(QStringLiteral("/_build/results?buildId=42")));
+        QCOMPARE(ov->checks[2].name, QStringLiteral("scan/lint"));
+        QCOMPARE(ov->checks[2].state, PrOverview::CheckState::Passed); // the latest update
+        QCOMPARE(ov->workItems.size(), 1);
+        QCOMPARE(ov->workItems[0].title, QStringLiteral("Loud numbers"));
+        QVERIFY(ov->workItems[0].url.endsWith(QStringLiteral("/_workitems/edit/1234")));
+        QCOMPARE(ov->discussion.size(), 1);
+        QCOMPARE(ov->discussion[0].first().body, QStringLiteral("Overall fine"));
+        QCOMPARE(ov->discussion[0].first().id, qint64(6));
+        bool policyAsked = false;
+        for (const auto &r : ado.requests)
+            policyAsked |= r.path.contains("artifactId=vstfs:///CodeReview/CodeReviewId/proj-guid/7");
+        QVERIFY(policyAsked);
 
         // Pushes: the PR's iterations, and the one the user last voted on (iteration 1:
         // they voted on 2026-01-03, before iteration 2 was pushed).
