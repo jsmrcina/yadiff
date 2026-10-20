@@ -149,16 +149,55 @@ QVector<Comment> parseComments(const QByteArray &json)
     return out;
 }
 
+namespace {
+// A list, or gh --slurp's list of pages, as one list.
+QJsonArray flatten(const QByteArray &json)
+{
+    QJsonArray all;
+    for (const QJsonValue &v : QJsonDocument::fromJson(json).array()) {
+        if (v.isArray())
+            for (const QJsonValue &x : v.toArray())
+                all.append(x);
+        else
+            all.append(v);
+    }
+    return all;
+}
+} // namespace
+
+QString lastReviewedCommit(const QByteArray &reviewsJson, const QString &login)
+{
+    QString commit;
+    for (const QJsonValue &v : flatten(reviewsJson)) { // oldest first
+        const QJsonObject r = v.toObject();
+        if (r.value(QStringLiteral("user")).toObject().value(QStringLiteral("login")).toString().compare(login, Qt::CaseInsensitive) != 0
+            || r.value(QStringLiteral("state")).toString() == QLatin1String("PENDING"))
+            continue;
+        if (const QString c = r.value(QStringLiteral("commit_id")).toString(); !c.isEmpty())
+            commit = c;
+    }
+    return commit;
+}
+
+QVector<PrCommit> parseCommits(const QByteArray &json)
+{
+    QVector<PrCommit> out;
+    for (const QJsonValue &v : flatten(json)) {
+        const QJsonObject o = v.toObject();
+        const QJsonObject commit = o.value(QStringLiteral("commit")).toObject();
+        PrCommit c;
+        c.sha = o.value(QStringLiteral("sha")).toString();
+        c.subject = commit.value(QStringLiteral("message")).toString().section(u'\n', 0, 0);
+        c.date = commit.value(QStringLiteral("committer")).toObject().value(QStringLiteral("date")).toString();
+        if (!c.sha.isEmpty())
+            out.push_back(c);
+    }
+    return out;
+}
+
 Vote latestVote(const QByteArray &reviewsJson, const QString &login)
 {
-    QJsonArray reviews;
-    for (const QJsonValue &v : QJsonDocument::fromJson(reviewsJson).array()) {
-        if (v.isArray()) // --slurp: one array per page
-            for (const QJsonValue &r : v.toArray())
-                reviews.append(r);
-        else
-            reviews.append(v);
-    }
+    const QJsonArray reviews = flatten(reviewsJson);
     Vote vote = Vote::None;
     for (const QJsonValue &v : std::as_const(reviews)) { // oldest first
         const QJsonObject r = v.toObject();
@@ -217,26 +256,55 @@ QByteArray reviewPayload(Verdict verdict, const QString &body)
     return QJsonDocument(o).toJson(QJsonDocument::Compact);
 }
 
-std::optional<Vote> myVote(const PrId &pr, QString *error)
+namespace {
+
+// Who gh is signed in as doesn't change while yadiff runs: ask once.
+std::optional<QString> myLogin(QString *error)
 {
-    // Who gh is signed in as doesn't change while yadiff runs: ask once.
     static QMutex mutex;
     static QString login;
-    {
-        QMutexLocker lock(&mutex);
-        if (login.isEmpty()) {
-            QByteArray out;
-            if (!gh({QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")}, {}, &out,
-                    error))
-                return std::nullopt;
-            login = QString::fromUtf8(out).trimmed();
-        }
+    QMutexLocker lock(&mutex);
+    if (login.isEmpty()) {
+        QByteArray out;
+        if (!gh({QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")}, {}, &out, error))
+            return std::nullopt;
+        login = QString::fromUtf8(out).trimmed();
     }
+    return login;
+}
+
+std::optional<QByteArray> reviews(const PrId &pr, QString *error)
+{
     QByteArray out;
     if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/reviews")},
             {}, &out, error))
         return std::nullopt;
-    return latestVote(out, login);
+    return out;
+}
+
+} // namespace
+
+std::optional<Vote> myVote(const PrId &pr, QString *error)
+{
+    const auto login = myLogin(error);
+    const auto json = login ? reviews(pr, error) : std::nullopt;
+    return json ? std::optional<Vote>(latestVote(*json, *login)) : std::nullopt;
+}
+
+std::optional<QString> myLastReviewedCommit(const PrId &pr, QString *error)
+{
+    const auto login = myLogin(error);
+    const auto json = login ? reviews(pr, error) : std::nullopt;
+    return json ? std::optional<QString>(lastReviewedCommit(*json, *login)) : std::nullopt;
+}
+
+std::optional<QVector<PrCommit>> commits(const PrId &pr, QString *error)
+{
+    QByteArray out;
+    if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/commits")},
+            {}, &out, error))
+        return std::nullopt;
+    return parseCommits(out);
 }
 
 namespace {

@@ -58,6 +58,7 @@
 #include <QThread>
 #include <QUrl>
 #include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
@@ -970,6 +971,12 @@ void MainWindow::createActions()
                                                  [this] { submitReview(GitHubReview::Verdict::Comment); });
     m_reviewMenu->addSeparator();
     m_reviewMenu->addAction(tr("&Reload comments"), this, &MainWindow::loadComments);
+    m_reviewMenu->addAction(tr("Compare &pushes…"), this, &MainWindow::choosePrVersions);
+    m_sinceReviewAct = m_reviewMenu->addAction(tr("Open at the changes since my last &review"));
+    m_sinceReviewAct->setCheckable(true);
+    m_sinceReviewAct->setChecked(Settings::openSinceLastReview());
+    m_sinceReviewAct->setStatusTip(tr("When a pull request has new pushes since you last voted on it (or reviewed it on GitHub), show only those"));
+    connect(m_sinceReviewAct, &QAction::toggled, this, [](bool on) { Settings::setOpenSinceLastReview(on); });
     m_reviewMenu->addAction(tr("&Open pull request in browser"), this,
                             [this] { QDesktopServices::openUrl(QUrl(PrReview::webUrl(m_cmp))); });
 
@@ -1075,6 +1082,19 @@ void MainWindow::createToolBar()
     reviewButton->setPopupMode(QToolButton::InstantPopup);
     reviewButton->setToolTip(tr("Vote on the pull request, or comment on it"));
     m_reviewToolAction = tb->addWidget(reviewButton);
+    m_versionCombo = new QComboBox;
+    m_versionCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_versionCombo->setToolTip(tr("Which changes of the pull request to show: all of them, or those since an earlier push"));
+    connect(m_versionCombo, &QComboBox::activated, this, [this](int i) {
+        const QVariant v = m_versionCombo->itemData(i);
+        if (!v.isValid()) {
+            choosePrVersions();
+            return;
+        }
+        showPrVersions(v.toPoint().x(), v.toPoint().y());
+    });
+    m_versionComboAction = tb->addWidget(m_versionCombo);
+    m_versionComboAction->setVisible(false);
     m_scopeCombo = new QComboBox;
     m_scopeCombo->addItem(tr("Staged and unstaged"));
     m_scopeCombo->addItem(tr("All changes vs HEAD"));
@@ -1636,6 +1656,8 @@ void MainWindow::reload(std::function<void()> afterFile)
             updateSummary();
             if (m_cmp.prNumber > 0) {
                 loadComments();
+                if (!m_prHistory && !m_historyBusy)
+                    loadPrHistory();
                 if (!m_myVote && !m_voteBusy)
                     loadMyVote();
             }
@@ -2774,6 +2796,12 @@ QVector<GitHubReview::Thread> MainWindow::threadsFor(const FileChange &fc) const
         if (c.path == fc.path || c.path == fc.oldPath)
             mine << c;
     QVector<GitHubReview::Thread> out = GitHubReview::threads(mine);
+    // Comments are on the latest version (new side) and the merge base (old side): an
+    // earlier version has neither, and a later old side lacks the old-side ones.
+    if (m_cmp.prToVersion != 0)
+        return {};
+    if (m_cmp.prFromVersion != 0)
+        out.removeIf([](const GitHubReview::Thread &t) { return t.first().side == QLatin1String("LEFT"); });
     if (m_hideResolvedAct && m_hideResolvedAct->isChecked())
         out.removeIf([](const GitHubReview::Thread &t) { return !GitHubReview::isOpen(t.first().status); });
     return out;
@@ -3125,6 +3153,217 @@ void MainWindow::submitReview(GitHubReview::Verdict verdict)
             else
                 statusBar()->showMessage(tr("%1: submitted").arg(what), 4000);
         });
+}
+
+void MainWindow::loadPrHistory()
+{
+    if (m_cmp.prNumber <= 0)
+        return;
+    m_historyBusy = true;
+    const quint64 gen = ++m_historyGen;
+    using Result = std::pair<std::optional<PrReview::History>, QString>;
+    runJob<Result>(
+        [cmp = m_cmp] {
+            QString error;
+            auto h = PrReview::history(cmp, &error);
+            return Result{h, error};
+        },
+        [this, gen](Result r) {
+            if (gen != m_historyGen)
+                return;
+            m_historyBusy = false;
+            if (!r.first) {
+                qCInfo(lcApp).noquote() << "could not read the pull request's pushes:" << r.second;
+                return;
+            }
+            m_prHistory = r.first;
+            fillVersionCombo();
+            // New pushes since the user's last review: show just those (once per PR).
+            const PrReview::History &h = *m_prHistory;
+            const int latest = h.versions.isEmpty() ? 0 : h.versions.last().number;
+            const bool unknownCommit = h.lastReviewed == 0 && !h.lastReviewedCommit.isEmpty();
+            if (!m_prAutoShown && m_sinceReviewAct->isChecked() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0
+                && ((h.lastReviewed > 0 && h.lastReviewed < latest) || unknownCommit)) {
+                m_prAutoShown = true;
+                showPrVersions(unknownCommit ? -1 : h.lastReviewed, latest);
+            }
+        });
+}
+
+void MainWindow::fillVersionCombo()
+{
+    m_versionCombo->clear();
+    const bool show = m_cmp.prNumber > 0 && m_prHistory && m_prHistory->versions.size() >= 2;
+    m_versionComboAction->setVisible(show || (m_cmp.prNumber > 0 && m_prHistory && !m_prHistory->lastReviewedCommit.isEmpty()
+                                              && m_prHistory->lastReviewed == 0));
+    if (!m_prHistory || m_prHistory->versions.isEmpty())
+        return;
+    const PrReview::History &h = *m_prHistory;
+    const int latest = h.versions.last().number;
+    const bool ado = m_cmp.prHost == QLatin1String("ado");
+    auto add = [&](const QString &text, int from, int to, const QString &tip = {}) {
+        m_versionCombo->addItem(text, QPoint(from, to));
+        if (!tip.isEmpty())
+            m_versionCombo->setItemData(m_versionCombo->count() - 1, tip, Qt::ToolTipRole);
+    };
+    add(ado ? tr("All changes (%1 pushes)").arg(h.versions.size()) : tr("All changes (%1 commits)").arg(h.versions.size()), 0, latest);
+    if (h.lastReviewed > 0 && h.lastReviewed < latest) {
+        const int i = h.indexOf(h.lastReviewed);
+        add(tr("Since your last review (%1)").arg(PrReview::versionName(m_cmp, h.versions[i])), h.lastReviewed, latest,
+            tr("The changes pushed since the version you last voted on or reviewed"));
+    } else if (h.lastReviewed == 0 && !h.lastReviewedCommit.isEmpty()) {
+        add(tr("Since your last review (%1, pushed over since)").arg(h.lastReviewedCommit.left(7)), -1, latest);
+    }
+    // Since each earlier version, newest first (at most 30).
+    int listed = 0;
+    for (int i = int(h.versions.size()) - 2; i >= 0 && listed < 30; --i, ++listed) {
+        const PrReview::Version &v = h.versions[i];
+        QString text = tr("Since %1").arg(PrReview::versionName(m_cmp, v));
+        const QString when = GitHubReview::displayTime(v.date);
+        if (!v.subject.isEmpty())
+            text += QStringLiteral(": ") + (v.subject.size() > 50 ? v.subject.left(48) + QStringLiteral("…") : v.subject);
+        else if (!when.isEmpty())
+            text += QStringLiteral(" (%1)").arg(when);
+        add(text, v.number, latest, when);
+    }
+    m_versionCombo->addItem(ado ? tr("Compare two pushes…") : tr("Compare two commits…"));
+    // Select what's shown; a pair chosen in the dialog gets its own entry.
+    const QPoint shown(m_cmp.prFromVersion, m_cmp.prToVersion == 0 ? latest : m_cmp.prToVersion);
+    int found = -1;
+    for (int i = 0; i < m_versionCombo->count(); ++i)
+        if (m_versionCombo->itemData(i).isValid() && m_versionCombo->itemData(i).toPoint() == shown)
+            found = i;
+    if (found < 0) {
+        auto name = [&](int n) {
+            const int i = h.indexOf(n);
+            return n == 0 ? tr("merge base") : n == -1 ? tr("your last review") : i >= 0 ? PrReview::versionName(m_cmp, h.versions[i]) : QString::number(n);
+        };
+        m_versionCombo->insertItem(1, tr("%1 → %2").arg(name(shown.x()), name(shown.y())), shown);
+        found = 1;
+    }
+    m_versionCombo->setCurrentIndex(found);
+}
+
+void MainWindow::showPrVersions(int from, int to)
+{
+    if (!m_prHistory || m_prKey.isEmpty() || !maybeKeepEdits())
+        return;
+    const int latest = m_prHistory->versions.last().number;
+    if (from == m_cmp.prFromVersion && (to == latest ? 0 : to) == m_cmp.prToVersion) {
+        fillVersionCombo();
+        return;
+    }
+    m_resolving = true;
+    m_resolveStep = tr("Loading the pull request's pushes…");
+    updateBusy();
+    QPointer<MainWindow> self(this);
+    auto progress = [self](const QString &message) {
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, message] {
+                if (!self || !self->m_resolving)
+                    return;
+                self->m_resolveStep = message;
+                self->updateBusy();
+            },
+            Qt::QueuedConnection);
+    };
+    struct Result {
+        std::optional<Comparison> cmp;
+        QString root, error;
+    };
+    const quint64 gen = ++m_historyGen;
+    runJob<std::shared_ptr<Result>>(
+        [whole = m_prWhole, root = m_prWholeRoot, h = *m_prHistory, from, to, progress] {
+            auto r = std::make_shared<Result>();
+            r->cmp = PrReview::versionComparison(whole, root, h, from, to, &r->root, &r->error, progress);
+            return r;
+        },
+        [this, gen](std::shared_ptr<Result> r) {
+            m_resolving = false;
+            updateBusy();
+            if (gen != m_historyGen)
+                return;
+            if (!r->cmp) {
+                fillVersionCombo();
+                QMessageBox::warning(this, tr("Compare pushes"), r->error);
+                return;
+            }
+            QString error;
+            auto repo = r->cmp->mode == Comparison::Mode::Paths ? std::optional<GitRepo>(GitRepo::forPaths(r->root))
+                                                                 : GitRepo::open(r->root, &error);
+            if (!repo) {
+                fillVersionCombo();
+                QMessageBox::warning(this, tr("Compare pushes"), error);
+                return;
+            }
+            Comparison c = *r->cmp;
+            c.options = m_cmp.options;
+            const auto history = m_prHistory;
+            const auto myVote = m_myVote;
+            setComparison(std::move(*repo), c);
+            m_prHistory = history; // the same PR: keep what's known about it
+            m_myVote = myVote;
+            updateVoteButton();
+            fillVersionCombo();
+            if (c.prFromVersion != 0 || c.prToVersion != 0)
+                statusBar()->showMessage(tr("Showing %1 → %2. Choose \"All changes\" in the toolbar for the whole pull request.")
+                                             .arg(c.rev1Name, c.rev2Name),
+                                         8000);
+        });
+}
+
+void MainWindow::choosePrVersions()
+{
+    if (!m_prHistory || m_prHistory->versions.isEmpty()) {
+        fillVersionCombo();
+        statusBar()->showMessage(m_historyBusy ? tr("Still reading the pull request's pushes…")
+                                               : tr("This pull request's pushes aren't known"),
+                                 4000);
+        return;
+    }
+    const PrReview::History &h = *m_prHistory;
+    QDialog dlg(this);
+    const bool ado = m_cmp.prHost == QLatin1String("ado");
+    dlg.setWindowTitle(ado ? tr("Compare pushes") : tr("Compare commits of the pull request"));
+    auto *form = new QFormLayout(&dlg);
+    auto *fromBox = new QComboBox, *toBox = new QComboBox;
+    fromBox->addItem(tr("Merge base (the target branch)"), 0);
+    if (h.lastReviewed == 0 && !h.lastReviewedCommit.isEmpty())
+        fromBox->addItem(tr("Your last review (%1)").arg(h.lastReviewedCommit.left(7)), -1);
+    for (const PrReview::Version &v : h.versions) {
+        QString text = PrReview::versionName(m_cmp, v);
+        if (!v.subject.isEmpty())
+            text += QStringLiteral(": ") + v.subject.left(60);
+        else if (!v.date.isEmpty())
+            text += QStringLiteral(" (%1)").arg(GitHubReview::displayTime(v.date));
+        if (v.number == h.lastReviewed)
+            text += tr("  ← your last review");
+        fromBox->addItem(text, v.number);
+        toBox->addItem(text, v.number);
+    }
+    fromBox->setCurrentIndex(std::max(0, fromBox->findData(m_cmp.prFromVersion)));
+    toBox->setCurrentIndex(m_cmp.prToVersion == 0 ? toBox->count() - 1 : std::max(0, toBox->findData(m_cmp.prToVersion)));
+    form->addRow(tr("From (old side):"), fromBox);
+    form->addRow(tr("To (new side):"), toBox);
+    auto *note = new QLabel(tr("Review comments show only when the new side is the latest version."));
+    note->setWordWrap(true);
+    form->addRow(note);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+    if (dlg.exec() != QDialog::Accepted) {
+        fillVersionCombo();
+        return;
+    }
+    const int from = fromBox->currentData().toInt(), to = toBox->currentData().toInt();
+    if (from > 0 && from >= to) {
+        fillVersionCombo();
+        QMessageBox::information(this, dlg.windowTitle(), tr("Choose an older version on the left than on the right."));
+        return;
+    }
+    showPrVersions(from, to);
 }
 
 void MainWindow::grabAll(const QString &prefix)
@@ -4356,6 +4595,20 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_voteError.clear();
     m_voteBusy = false;
     ++m_voteGen;
+    // A pull request's versions stay while it's shown; the whole PR is what to come back to.
+    const QString key = m_cmp.prNumber > 0 ? PrReview::webUrl(m_cmp) : QString();
+    if (key != m_prKey) {
+        m_prKey = key;
+        m_prHistory.reset();
+        m_prAutoShown = false;
+        m_historyBusy = false;
+        ++m_historyGen;
+    }
+    if (!key.isEmpty() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0) {
+        m_prWhole = m_cmp;
+        m_prWholeRoot = m_repo.root();
+    }
+    fillVersionCombo();
     qCInfo(lcApp).noquote() << "showing" << m_cmp.describe() << "in" << QDir::toNativeSeparators(m_repo.root());
     updateModeUi();
     updateTitle();

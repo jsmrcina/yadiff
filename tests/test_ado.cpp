@@ -17,6 +17,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimeZone>
 #include <QtConcurrent/QtConcurrentRun>
 
 namespace {
@@ -134,6 +135,10 @@ private:
                            {"id":2,"parentCommentId":1,"content":"Because.","commentType":"text","author":{"displayName":"Bob"},"publishedDate":"2026-01-01T01:00:00Z"},
                            {"id":3,"parentCommentId":0,"content":"Bob changed the status","commentType":"system","author":{"displayName":"Bob"}}]},
               {"id":6,"isDeleted":false,"comments":[{"id":1,"parentCommentId":0,"content":"Overall fine","commentType":"text","author":{"displayName":"Carol"}}]},
+              {"id":9,"isDeleted":false,"publishedDate":"2026-01-03T00:00:00Z",
+               "properties":{"CodeReviewThreadType":{"$type":"System.String","$value":"VoteUpdate"},"CodeReviewVotedByIdentity":{"$value":"1"}},
+               "identities":{"1":{"id":"user-1","displayName":"Test User"}},
+               "comments":[{"id":1,"parentCommentId":0,"content":"Test User voted 5","commentType":"system","author":{"id":"user-1","displayName":"Test User"}}]},
               {"id":8,"isDeleted":false,"status":"fixed","threadContext":{"filePath":"/a.txt","leftFileStart":{"line":1,"offset":1},"leftFileEnd":{"line":3,"offset":1}},
                "comments":[{"id":1,"parentCommentId":0,"content":"old side","author":{"displayName":"Dan"},"publishedDate":"2026-01-01T02:00:00Z"}]}]})";
         } else if (r.path.contains("/pullRequests/7/reviewers/user-1")) {
@@ -153,9 +158,11 @@ private:
             body = QJsonDocument(
                        QJsonObject{{QStringLiteral("value"),
                                     QJsonArray{QJsonObject{{QStringLiteral("id"), 1},
+                                                           {QStringLiteral("createdDate"), QStringLiteral("2026-01-01T00:00:00Z")},
                                                            {QStringLiteral("sourceRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}},
                                                            {QStringLiteral("commonRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}}},
                                                QJsonObject{{QStringLiteral("id"), 2},
+                                                           {QStringLiteral("createdDate"), QStringLiteral("2026-01-05T00:00:00Z")},
                                                            {QStringLiteral("sourceRefCommit"), QJsonObject{{QStringLiteral("commitId"), sourceCommit}}},
                                                            {QStringLiteral("commonRefCommit"), QJsonObject{{QStringLiteral("commitId"), targetCommit}}}}}}})
                        .toJson();
@@ -287,6 +294,55 @@ private slots:
         AdoAuth::Credential c{AdoAuth::Credential::Kind::Pat, QStringLiteral("x"), {}};
         QVERIFY(!AdoAuth::validate(QUrl(QStringLiteral("http://tfs.example.com/tfs")), c, &error));
         QVERIFY(error.contains(QStringLiteral("unencrypted")));
+    }
+
+    void findsWhenTheUserVoted()
+    {
+        const QByteArray json = R"({"value":[
+            {"id":1,"publishedDate":"2026-02-01T10:00:00Z","properties":{"CodeReviewThreadType":{"$value":"VoteUpdate"},"CodeReviewVotedByIdentity":{"$value":"2"}},
+             "identities":{"2":{"id":"ME"}},"comments":[{"commentType":"system"}]},
+            {"id":2,"publishedDate":"2026-01-01T10:00:00Z","properties":{"CodeReviewThreadType":{"$value":"VoteUpdate"}},
+             "comments":[{"commentType":"system","author":{"id":"me"}}]},
+            {"id":3,"publishedDate":"2026-03-01T10:00:00Z","properties":{"CodeReviewThreadType":{"$value":"VoteUpdate"}},
+             "comments":[{"author":{"id":"someone-else"}}]},
+            {"id":4,"publishedDate":"2026-04-01T10:00:00Z","comments":[{"author":{"id":"me"},"content":"just a comment"}]}]})";
+        const auto times = AdoPr::parseVoteTimes(json, QStringLiteral("me"));
+        QCOMPARE(times.size(), 2);
+        QCOMPARE(times.last(), QDateTime(QDate(2026, 2, 1), QTime(10, 0), QTimeZone::UTC));
+        const auto its = AdoPr::parseIterations(R"({"value":[{"id":2,"sourceRefCommit":{"commitId":"b"},"commonRefCommit":{"commitId":"m"}},
+            {"id":1,"sourceRefCommit":{"commitId":"a"},"commonRefCommit":{"commitId":"m"},"createdDate":"2026-01-01T00:00:00Z"}]})");
+        QCOMPARE(its.size(), 2);
+        QCOMPARE(its.first().id, 1); // oldest first
+        QCOMPARE(its.first().created, QStringLiteral("2026-01-01T00:00:00Z"));
+    }
+
+    void reusesCredentialsUntilTheyExpire()
+    {
+        QCOMPARE(AdoAuth::parseAzureCliExpiry(QJsonObject{{QStringLiteral("expires_on"), 1767225600}}),
+                 QDateTime(QDate(2026, 1, 1), QTime(0, 0), QTimeZone::UTC));
+        QCOMPARE(AdoAuth::parseAzureCliExpiry(QJsonObject{{QStringLiteral("expires_on"), QStringLiteral("1767225600")}}),
+                 QDateTime(QDate(2026, 1, 1), QTime(0, 0), QTimeZone::UTC));
+        QDateTime local(QDate(2026, 1, 1), QTime(12, 30));
+        QCOMPARE(AdoAuth::parseAzureCliExpiry(QJsonObject{{QStringLiteral("expiresOn"), QStringLiteral("2026-01-01 12:30:00.000000")}}),
+                 local.toUTC());
+        QVERIFY(!AdoAuth::parseAzureCliExpiry(QJsonObject{}).isValid());
+
+        // A keyring token is looked up once, then remembered (here: removing it from the
+        // store doesn't matter) until the server rejects it.
+        const QUrl org(QStringLiteral("https://dev.azure.com/cachetest"));
+        QString error;
+        QVERIFY(AdoAuth::savePat(org, QStringLiteral("cached-token"), &error));
+        auto first = AdoAuth::find(org);
+        QVERIFY(first && first->secret == QLatin1String("cached-token"));
+        QCOMPARE(first->collection, org);
+        QVERIFY(SecretStore::remove(QStringLiteral("ado:https://dev.azure.com/cachetest"), &error));
+        auto again = AdoAuth::find(org);
+        QVERIFY(again && again->secret == QLatin1String("cached-token"));
+        AdoAuth::rejected(org, *again);
+        QString diag;
+        auto gone = AdoAuth::find(org, &diag);
+        QVERIFY(!gone || gone->secret != QLatin1String("cached-token"));
+        AdoAuth::clearCache();
     }
 
     void parsesTheRestApisView()
@@ -484,7 +540,7 @@ private slots:
         qputenv("YADIFF_ADO_PAT", kPat);
         const auto comments = PrReview::fetch(cmp, &error);
         QVERIFY2(comments, qPrintable(error));
-        QCOMPARE(comments->size(), 3); // two in thread 5 (system message skipped), one in thread 8; thread 6 has no file
+        QCOMPARE(comments->size(), 3); // two in thread 5 (system message skipped), one in thread 8; 6 and 9 have no file
         const auto threads = GitHubReview::threads(*comments);
         QCOMPARE(threads.size(), 2);
         QCOMPARE(threads[0].first().author, QStringLiteral("Alice"));
@@ -507,6 +563,45 @@ private slots:
         QCOMPARE(ado.threadStatus.value(8), QStringLiteral("active"));
         for (TS st : PrReview::threadStatuses(cmp))
             QCOMPARE(AdoPr::parseThreadStatus(AdoPr::threadStatusName(st)), st);
+
+        // Pushes: the PR's iterations, and the one the user last voted on (iteration 1:
+        // they voted on 2026-01-03, before iteration 2 was pushed).
+        const auto history = PrReview::history(cmp, &error);
+        QVERIFY2(history, qPrintable(error));
+        QCOMPARE(history->versions.size(), 2);
+        QCOMPARE(history->versions[1].headCommit, ado.sourceCommit);
+        QCOMPARE(history->lastReviewed, 1);
+        QCOMPARE(PrReview::versionName(cmp, history->versions[0]), QStringLiteral("Push 1"));
+        // Since push 1: the changes between the two iterations, downloaded on their own.
+        QString root;
+        Comparison whole = cmp;
+        whole.rev1Name = QStringLiteral("main (merge base)");
+        whole.rev2Name = QStringLiteral("PR 7 feature");
+        auto since = QtConcurrent::run([&] {
+            QString err;
+            QString r;
+            auto c = PrReview::versionComparison(whole, pr->repoPath, *history, 1, 2, &r, &err);
+            return std::make_tuple(c, r, err);
+        });
+        while (!since.isFinished())
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        const auto [sinceCmp, sinceRoot, sinceError] = since.result();
+        QVERIFY2(sinceCmp, qPrintable(sinceError));
+        QCOMPARE(sinceCmp->prFromVersion, 1);
+        QCOMPARE(sinceCmp->prToVersion, 0); // to the latest
+        QVERIFY(sinceRoot != pr->repoPath && sinceRoot.endsWith(QStringLiteral("-i1")));
+        QCOMPARE(sinceCmp->leftPath, sinceRoot + QStringLiteral("/base"));
+        QVERIFY(sinceCmp->rev1Name.startsWith(QStringLiteral("Push 1")));
+        QCOMPARE(sinceCmp->rev2Name, whole.rev2Name);
+        bool compared = false;
+        for (const auto &r : ado.requests)
+            compared |= r.path.contains("/iterations/2/changes?$compareTo=1&");
+        QVERIFY(compared);
+        QVERIFY(QFile::exists(sinceRoot + QStringLiteral("/head/a.txt")));
+        // The whole PR comes back as it was.
+        const auto all = PrReview::versionComparison(whole, pr->repoPath, *history, 0, 2, &root, &error);
+        QVERIFY(all && all->leftPath == whole.leftPath && root == pr->repoPath);
+        QVERIFY(!PrReview::versionComparison(whole, pr->repoPath, *history, 5, 2, &root, &error));
 
         const auto posted = PrReview::post(cmp, QStringLiteral("a.txt"), QStringLiteral("RIGHT"), 2, 0, QStringLiteral("Nice"), &error);
         QVERIFY2(posted, qPrintable(error));

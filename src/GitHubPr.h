@@ -36,6 +36,10 @@ std::optional<Ref> parse(const QString &link);
 std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString *error,
                                 const std::function<void(const QString &)> &progress = {});
 
+// Fetches these commits (of the PR, say ones pushed over since) into the repository at
+// `repoPath` from its remote for the PR's repository, unless it has them already.
+bool fetchCommits(const Ref &ref, const QString &repoPath, const QStringList &commits, QString *error);
+
 // True when a git remote URL points at github.com/OWNER/REPO.
 bool remoteMatches(const QString &url, const QString &owner, const QString &repo);
 

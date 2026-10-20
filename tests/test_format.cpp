@@ -21,6 +21,21 @@ class TestFormat : public QObject
 {
     Q_OBJECT
 private slots:
+    void readsGitHubCommitsAndReviews()
+    {
+        const auto commits = GitHubReview::parseCommits(R"([[{"sha":"aaa","commit":{"message":"First\n\nbody","committer":{"date":"2026-01-01T00:00:00Z"}}}],
+            [{"sha":"bbb","commit":{"message":"Second","committer":{"date":"2026-01-02T00:00:00Z"}}}]])");
+        QCOMPARE(commits.size(), 2);
+        QCOMPARE(commits[0].subject, QStringLiteral("First"));
+        QCOMPARE(commits[1].sha, QStringLiteral("bbb"));
+        const QByteArray reviews = R"([{"user":{"login":"me"},"state":"COMMENTED","commit_id":"aaa"},
+            {"user":{"login":"other"},"state":"APPROVED","commit_id":"bbb"},
+            {"user":{"login":"Me"},"state":"APPROVED","commit_id":"bbb"},
+            {"user":{"login":"me"},"state":"PENDING","commit_id":"ccc"}])";
+        QCOMPARE(GitHubReview::lastReviewedCommit(reviews, QStringLiteral("me")), QStringLiteral("bbb"));
+        QVERIFY(GitHubReview::lastReviewedCommit(reviews, QStringLiteral("nobody")).isEmpty());
+    }
+
     void parsesGitHubThreadStates()
     {
         QString next;

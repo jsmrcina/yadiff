@@ -3,6 +3,7 @@
 #include "AdoAuth.h"
 #include "GitHubReview.h"
 
+#include <QDateTime>
 #include <QString>
 #include <QUrl>
 #include <QVector>
@@ -49,9 +50,20 @@ struct Resolved {
 struct Iteration {
     int id = 0;
     QString headCommit, baseCommit; // the PR's head and its merge base with the target
+    QString created, description;   // ISO date; the push's description (often empty)
 };
 // The latest iteration in GET .../pullRequests/ID/iterations.
 std::optional<Iteration> parseLatestIteration(const QByteArray &json);
+// All of them, oldest first.
+QVector<Iteration> parseIterations(const QByteArray &json);
+std::optional<QVector<Iteration>> iterations(const Ref &ref, const AdoAuth::Credential &cred, QString *error);
+// When `userId` voted, from the threads JSON (Azure DevOps records each vote as a
+// system thread), oldest first.
+QVector<QDateTime> parseVoteTimes(const QByteArray &threadsJson, const QString &userId);
+// The iteration the signed-in user last voted on (the latest one pushed before their
+// latest vote); 0 when they haven't voted.
+std::optional<int> lastVotedIteration(const Ref &ref, const AdoAuth::Credential &cred, const QVector<Iteration> &its,
+                                      QString *error);
 struct Change {
     QString path, oldPath;          // repository-relative; path empty when deleted, oldPath when added
     QString objectId, oldObjectId;  // blob ids of the two versions
@@ -62,6 +74,15 @@ QVector<Change> parseChanges(const QByteArray &json, int *nextSkip = nullptr);
 // A path from the API ("/dir/file.txt") as one that is safe to write under a folder:
 // relative, without ".." or a drive letter. Empty when it isn't.
 QString safeRelativePath(const QString &apiPath);
+// Downloads the files that differ between two iterations (`from` 0: the merge base)
+// into yadiff's cache, as two folders. The names are left for the caller.
+std::optional<Resolved> downloadVersions(const Ref &ref, const AdoAuth::Credential &cred, const Iteration &from,
+                                         const Iteration &to, QString *error,
+                                         const std::function<void(const QString &)> &progress = {});
+// Fetches these commits into the clone at `repoPath` (from its remote for this
+// repository), unless it has them already.
+bool fetchCommits(const Ref &ref, const AdoAuth::Credential &cred, const QString &repoPath, const QStringList &commits,
+                  QString *error);
 // Downloads the files the PR changes (both versions) into yadiff's cache.
 std::optional<Resolved> download(const Ref &ref, const AdoAuth::Credential &cred, const QString &title,
                                  const QString &sourceRef, const QString &targetRef, QString *error,

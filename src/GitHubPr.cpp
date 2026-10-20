@@ -113,6 +113,35 @@ std::optional<Ref> parse(const QString &link)
     return std::nullopt;
 }
 
+bool fetchCommits(const Ref &ref, const QString &repoPath, const QStringList &commits, QString *error)
+{
+    auto repo = GitRepo::open(repoPath, error);
+    if (!repo)
+        return false;
+    QStringList missing;
+    for (const QString &c : commits)
+        if (!c.isEmpty() && !repo->hasCommit(c) && !missing.contains(c))
+            missing << c;
+    if (missing.isEmpty())
+        return true;
+    QString remote = matchingRemote(repo->root(), ref);
+    if (remote.isEmpty())
+        remote = QStringLiteral("origin"); // yadiff's cache
+    QStringList args{QStringLiteral("fetch"), QStringLiteral("--no-tags"), QStringLiteral("--quiet")};
+    if (repo->isBare())
+        args << QStringLiteral("--filter=blob:none");
+    args << remote << missing;
+    QString err;
+    runProcess(QStringLiteral("git"), args, repo->root(), nullptr, &err);
+    for (const QString &m : std::as_const(missing))
+        if (!repo->hasCommit(m)) {
+            if (error)
+                *error = QStringLiteral("Could not fetch commit %1 (pushed over since?): %2").arg(m.left(10), err);
+            return false;
+        }
+    return true;
+}
+
 bool remoteMatches(const QString &url, const QString &owner, const QString &repo)
 {
     // https://github.com/o/r(.git), git@github.com:o/r(.git), ssh://git@github.com/o/r(.git)

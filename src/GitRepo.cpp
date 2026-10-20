@@ -96,6 +96,8 @@ QString Comparison::describe() const
         s += QStringLiteral(", limited to %1").arg(paths.join(QStringLiteral(", ")));
     if (prNumber > 0)
         s += QStringLiteral(", %1 PR %2 (%3)").arg(prHost).arg(prNumber).arg(prWebUrl);
+    if (prFromVersion != 0 || prToVersion != 0)
+        s += QStringLiteral(", versions %1 to %2").arg(prFromVersion).arg(prToVersion == 0 ? QStringLiteral("latest") : QString::number(prToVersion));
     if (reversed)
         s += QStringLiteral(", reversed");
     if (readOnly)

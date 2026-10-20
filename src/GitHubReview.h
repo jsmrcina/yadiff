@@ -53,6 +53,15 @@ enum class Vote { None, Approved, ApprovedWithSuggestions, WaitingForAuthor, Rej
 // latest approval, change request or dismissal decides; plain comments don't change it.
 Vote latestVote(const QByteArray &reviewsJson, const QString &login);
 
+// The commit `login` last reviewed (their latest submitted review's commit_id), or empty.
+QString lastReviewedCommit(const QByteArray &reviewsJson, const QString &login);
+
+// A commit of the pull request (GET .../pulls/N/commits), oldest first.
+struct PrCommit {
+    QString sha, subject, date;
+};
+QVector<PrCommit> parseCommits(const QByteArray &json);
+
 // Parses GitHub's JSON (a list, or gh --slurp's list of pages).
 QVector<Comment> parseComments(const QByteArray &json);
 // Groups replies under their first comment, threads in creation order.
@@ -80,5 +89,8 @@ bool setResolved(const QString &threadNode, bool resolved, QString *error);
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error);
 // The signed-in gh user's current vote on the PR.
 std::optional<Vote> myVote(const PrId &pr, QString *error);
+// The PR's commits, and the one the signed-in user last reviewed (empty when none).
+std::optional<QVector<PrCommit>> commits(const PrId &pr, QString *error);
+std::optional<QString> myLastReviewedCommit(const PrId &pr, QString *error);
 
 } // namespace GitHubReview

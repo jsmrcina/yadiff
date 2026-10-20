@@ -5,6 +5,7 @@
 #include "FileFilter.h"
 #include "GitHubReview.h"
 #include "GitRepo.h"
+#include "PrReview.h"
 #include "Updater.h"
 #include "ReviewStore.h"
 #include "Session.h"
@@ -208,6 +209,12 @@ private:
     // The file list's comment counts, and the shown file's threads, after a change.
     void refreshThreads();
     void submitReview(GitHubReview::Verdict verdict);
+    // Versions of the pull request (pushes or commits): the toolbar's picker, which shows
+    // the changes between any two, by default since the user's last review.
+    void loadPrHistory();
+    void fillVersionCombo();
+    void showPrVersions(int from, int to);
+    void choosePrVersions();
 
     GitRepo m_repo;
     Comparison m_cmp;
@@ -291,6 +298,16 @@ private:
     QHash<QString, DiffPane::ScrollState> m_scrollMemory;
     QAction *m_collapseCommentsAct = nullptr;
     QAction *m_hideResolvedAct = nullptr;
+    QComboBox *m_versionCombo = nullptr;
+    QAction *m_versionComboAction = nullptr;
+    QAction *m_sinceReviewAct = nullptr;        // Review > Open at the changes since my last review
+    std::optional<PrReview::History> m_prHistory;
+    QString m_prKey;                            // the PR the history and m_prWhole belong to
+    Comparison m_prWhole;                       // the whole PR, to come back to
+    QString m_prWholeRoot;
+    bool m_prAutoShown = false;                 // the since-last-review view was opened for m_prKey
+    bool m_historyBusy = false;
+    quint64 m_historyGen = 0;
 
     QToolButton *m_viewToggle = nullptr;
     QToolButton *m_whitespaceToggle = nullptr;
