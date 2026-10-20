@@ -37,7 +37,7 @@ QString seenKey(const QString &link)
     // QSettings keys can't hold every character a URL can: hash it.
     // Spelled the same however the link was written (encoding, case).
     const QString canonical = QUrl(link).adjusted(QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash)
-                                  .toString(QUrl::FullyDecoded)
+                                  .toString()
                                   .toLower();
     return QStringLiteral("prSeen/") + QString::fromLatin1(QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha1).toHex());
 }

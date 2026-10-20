@@ -7,6 +7,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 #include <QUrl>
 
 class TestLog : public QObject
@@ -132,6 +133,21 @@ private slots:
             QVERIFY(!future.result());
             QVERIFY(timer.elapsed() < 5000);
         }
+        {
+            // The watchdog: the UI thread blocked (waiting for a command) is logged, and so
+            // is its recovery.
+            Log::startWatchdog(300);
+            Log::noteAction(QStringLiteral("menu Compare commits"));
+            {
+                const Log::UiWait busy(QStringLiteral("git log --all"));
+                QThread::msleep(900);
+            }
+            QElapsedTimer t;
+            t.start();
+            while (t.elapsed() < 500)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            Log::stopWatchdog();
+        }
         Log::setLevel(Log::Level::Debug);
         qCDebug(lcDiff) << "now debug shows";
         Log::shutdown();
@@ -149,6 +165,9 @@ private slots:
         QVERIFY(log.contains(QStringLiteral("git hash-object --stdin -> FAILED: still running (timed out)")));
         QVERIFY(log.contains(QStringLiteral("stopping (no longer wanted): git hash-object --stdin")));
         QVERIFY(log.contains(QStringLiteral("DEBUG yadiff.diff   now debug shows")));
+        QVERIFY2(log.contains(QStringLiteral("FROZEN: the window has not responded for")), qPrintable(log));
+        QVERIFY(log.contains(QStringLiteral("waiting for: git log --all; last action: menu Compare commits")));
+        QVERIFY(log.contains(QStringLiteral("the window responds again (it was waiting for: git log --all)")));
         // Back to quiet, as in the other tests.
         Log::init(QStringLiteral("off"));
     }

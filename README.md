@@ -195,6 +195,56 @@ path looks like a revision.
   website. HTML comments are hidden, and `<details>` sections fold to their summary. Comment rows
   never affect syntax highlighting, so a `/*` inside a comment can't turn the rest of the file
   into a comment.
+- **Thread status.** Each thread shows its state, and resolved ones are greyed with ✓ in front of
+  their line.
+  - Right-click a thread to resolve or reactivate it. The Thread status submenu has every state
+    the host knows: on GitHub, unresolved and resolved; on Azure DevOps, active, pending,
+    resolved, won't fix, by design and closed.
+  - View → Hide resolved review threads leaves only the threads still to deal with.
+  - The file list shows each file's thread count (💬 2) at the right of its row. It is bold while
+    any thread is open, and the tooltip says how many of them are.
+  - GitHub only reports resolved threads through its GraphQL API, which yadiff asks through `gh`
+    as well.
+- **Changes since your last review.** The toolbar's picker, next to Review, chooses which of a PR's
+  changes to show. A version is a push (an iteration) on Azure DevOps and a commit on GitHub.
+  - **All changes** shows the whole PR, as before.
+  - **Since your last review** shows only what was pushed after the version you last voted on.
+    On Azure DevOps, that's the latest push before your latest vote, from the vote records Azure
+    DevOps keeps, so votes cast in the browser count too. On GitHub, it's the commit of your
+    latest review, even when that commit has been pushed over since.
+  - **Since Push N** (or since a commit) is listed for each earlier version. Review → Compare
+    pushes (or "Compare two pushes…" at the end of the list) picks any two.
+  - When a PR has new pushes since your last review, it opens at them. Turn that off in Review →
+    Open at the changes since my last review.
+  - With a clone, missing commits are fetched first. Without one, Azure DevOps sends the files
+    that differ between the two pushes, which are downloaded on their own.
+  - Review comments are on the latest version. They show only when the new side is the latest,
+    and when the old side is a push, its old-side comments are left out too.
+  - Marks keep working: a file that didn't change since your last review keeps its mark in the
+    whole PR.
+- **Pull request overview.** Above the file list:
+  - the PR's title, author, branches and description, rendered as rich text;
+  - the reviewers, required ones first, with their votes;
+  - its checks: Azure DevOps policies (build, reviewers, work items) and statuses, or GitHub
+    check runs, each linked to its build;
+  - linked work items, or on GitHub the issues it closes;
+  - the comments on the PR itself, newest first, with reply and resolve links on Azure DevOps,
+    and a link to add a comment.
+
+  Its header sums it up ("2 approved · 1 waiting · 1 check failed") and stays when the overview
+  is folded with its arrow. ↻ reads the PR again, and voting re-reads it too. View → Pull request
+  overview (Ctrl+Alt+V) turns it off.
+- **Open pull request.** File → Open pull request (Ctrl+Shift+O) lists the PRs waiting for you:
+  - On Azure DevOps, the active PRs where you, or one of your teams, are a reviewer. yadiff looks in
+    every project you've opened a PR from, and in projects added with "Add Azure DevOps project".
+  - On GitHub (when `gh` is installed), open PRs that ask for your review, and ones you've
+    reviewed before that are still open.
+  - Each row shows your vote, and says **new** when you haven't opened it in yadiff and **new push**
+    when it has changed since you last did. Required reviews and the team a review was asked of
+    are noted too.
+  - Double-click a row to open it, or paste any PR's link at the bottom. The list loads in the
+    background; it opens in this window when the window is empty, otherwise in a new one, from
+    the repository this window shows (so a PR of your clone is fetched into it).
 - **GitHub review comments.** With `-ghpr`, review threads show under the lines they belong to.
   Right-click a line, or a selection for several lines, to add a comment. Right-click a thread to
   reply. The Review menu comments on the PR or votes on it (see Voting below). Everything goes
@@ -306,6 +356,7 @@ computed by yadiff.
   - New comparison: a repository, two revisions, two folders, two files, or a PR link. It opens
     in a new window, except in the empty window plain `yadiff` opens outside a repository, which
     shows it in place.
+  - Open pull request (Ctrl+Shift+O): the PRs waiting for your review, or any PR's link.
   - Recent comparisons, Compare text, Open patch, Apply patch, Save as patch, Open session and
     Save session.
   - Compare commits, Change window title, and Export HTML report.
@@ -332,8 +383,9 @@ computed by yadiff.
   - Inline or side by side, and Show both, left only or right only.
   - Language, syntax highlighting on or off, show whitespace, show line numbers, word wrap, tab
     width, and zoom (Ctrl++, Ctrl+-, and Ctrl+0 for 100%).
-  - Collapse unchanged regions, expand or collapse review comments, and trim the common prefix
-    from folder names, which are fully qualified otherwise.
+  - Collapse unchanged regions, expand or collapse review comments, hide resolved review
+    threads, the pull request overview, and trim the common prefix from folder names, which are
+    fully qualified otherwise.
   - CSV and TSV files as tables, and binary files as hex.
   - Git blame, Color theme, Fonts, and Diff colors and tab width.
 - **Options:**
@@ -345,7 +397,8 @@ computed by yadiff.
   - All changes in one list, and comparing unstaged changes against HEAD.
   - Automatic reload, and remembering scroll positions per file.
 - **Marking:** see above.
-- **Review:** for pull requests only.
+- **Review:** for pull requests only. Votes, a comment on the PR, Reload comments, Compare pushes,
+  Open at the changes since my last review, and Open in browser.
 - **Help:**
   - Register and Unregister as git difftool and as git mergetool, and add yadiff to (or remove it
     from) the file manager's menu.
@@ -398,6 +451,12 @@ scope. Read alone is enough to view; commenting and voting need write. yadiff ch
 Azure DevOps before saving it. With the Azure CLI installed, the dialog also offers a browser
 sign-in. Run `yadiff --ado-login ORG-URL` to sign in ahead of time.
 
+A credential found through a program (the keyring, `az` or git's helper) is remembered for the
+rest of the session, so the PR, its comments, votes, overview and pushes don't each wait for it.
+An Azure CLI token is kept until five minutes before it expires, anything else for an hour, and
+either is looked up again as soon as Azure DevOps rejects it. Environment variables are read
+every time.
+
 Tokens are never put on a command line. Git gets them through `GIT_CONFIG_*` environment variables
 as an `http.extraHeader`. yadiff refuses to send credentials over plain HTTP, except to
 `localhost`, which the tests use.
@@ -426,7 +485,12 @@ At the default level, `info`, the log has:
   commits, whether your clone or yadiff's cache is used, each fetch attempt, and where it failed;
 - files written: saves, merges, patches, sessions, reports, staging, reverts and deletions;
 - every message box and its answer, every status bar message, and diffs that took over 0.5 s;
-- a crash's signal and backtrace (Linux) or exception code (Windows).
+- a crash's signal and backtrace (Linux) or exception code (Windows);
+- **when the window stops responding.** A watchdog notices when the window hasn't handled events
+  for a second, and logs `FROZEN: the window has not responded for 1.0 s`, with the command it is
+  waiting for and your last action (menu item, toolbar button, shortcut or button). It logs again
+  while the freeze lasts (at 10 s, 30 s, then every minute) and when the window responds again.
+  So a freeze shows in the log even if yadiff is killed during it.
 
 **Help > Detailed logging**, or `--log-level debug`, adds:
 
@@ -507,7 +571,8 @@ ctest --test-dir build --output-on-failure
   covers comment stripping, unimportant lines, alignment around manual anchors, reading and
   applying patch files, hex dumps, CSV parsing and table comparison, the structural (token)
   algorithm, and three-way merge regions.
-- `test_format` covers the copied diff text and HTML, PR link parsing, the review store, search,
+- `test_format` covers the copied diff text and HTML, PR link parsing, GitHub's thread states,
+  commits, reviews, overview and PR search, Azure DevOps project links, the review store, search,
   applying a change to a file, line-ending preservation, sessions, the file manager menu, and
   difftool and mergetool registration. That last one uses a temporary git config.
 - `test_gitrepo` runs against a temporary repository. It covers staged, unstaged and untracked
@@ -518,14 +583,17 @@ ctest --test-dir build --output-on-failure
   unstaging and discarding single lines, patch comparisons, and saving comparisons as patches.
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
-  credentials, fetching, threads, comments, replies, every vote (set and read back), and the real
-  `yadiff -ado` command
+  credentials, reusing credentials until they expire or are rejected, fetching, threads, thread
+  status, comments, replies, every vote (set and read back), the PR's pushes and the last one
+  voted on, downloading the changes between two pushes, the overview (reviewers, policies,
+  statuses, work items, PR comments), the list of PRs waiting for review (yours and your
+  teams'), and the real `yadiff -ado` command
   line, including that its log traces each step and never contains the token, and opening the PR
   in a window, which resolves it itself. The keyring is
   redirected to a temporary file there.
 - `test_log` covers secret scrubbing (URL passwords, auth headers, GitHub and Azure DevOps tokens,
   JWTs, query parameters and registered secrets), command-line quoting, levels, the file format,
-  failed and quiet commands.
+  failed and quiet commands, and the watchdog reporting a frozen window and its recovery.
 - `test_update` covers version comparison, telling an `install.sh` snapshot from other installs,
   replacing files in use the Windows way, and reading the latest release from a fake GitHub API.
 - `test_navigation` drives the real window offscreen. It checks change navigation across files, the
@@ -536,7 +604,8 @@ ctest --test-dir build --output-on-failure
   the file filter, image diffs, review-thread placement, the large-diff notice, themes, blame,
   ignoring comments, manual alignment, staging the current change, stepping through commits, and
   dropped files, patches, sessions, recent comparisons, the hex and table views, and the merge
-  window, including resolving a real `git merge` conflict. It also covers loading every diff in the
+  window, including resolving a real `git merge` conflict, resolved threads, the PR overview, the
+  pull request list, and switching between a PR's pushes. It also covers loading every diff in the
   background, with counts from the diffs matching git's. That one test runs truly in the
   background.
   The other GUI
@@ -547,6 +616,9 @@ To look at the UI without a display, render every file in both modes to PNG:
 ```
 QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 ```
+
+`YADIFF_GRAB_WAIT=MS` waits that long first, for what loads in the background (a PR's comments,
+overview and pushes).
 
 ## Layout
 
@@ -578,8 +650,10 @@ QT_QPA_PLATFORM=offscreen YADIFF_GRAB=/tmp/shot yadiff --wait
 | `src/GitHubReview.*` | PR review comments through `gh` |
 | `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |
 | `src/PrReview.*` | Review operations for whichever host a PR is on |
+| `src/PrOverview.*`, `src/PrOverviewPanel.*` | A PR's overview (reviewers, checks, work items, comments) and its panel |
+| `src/PrInbox.*`, `src/PrListDialog.*` | The PRs waiting for review, and File > Open pull request |
 | `src/Http.*`, `src/SecretStore.*` | HTTP client, system keyring |
-| `src/Log.*`, `src/UiLog.*` | The log: categories, file, secret scrubbing, crash handler; dialogs and actions |
+| `src/Log.*`, `src/UiLog.*` | The log: categories, file, secret scrubbing, crash handler, freeze watchdog; dialogs and actions |
 | `src/Updater.*` | Update checks and installs from GitHub releases |
 | `src/ReviewStore.*` | Persisted review marks |
 | `src/CodeView.*` | Text view: gutter, move annotations, folds, search hits, wrap padding, editing |

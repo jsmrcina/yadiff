@@ -62,6 +62,8 @@ public:
     void openInBackground(ComparisonArgs::Request req, const std::optional<Session> &session = {});
     // Dropped files: two are compared, one waits for a second (or is a patch or session).
     void openDropped(const QStringList &paths);
+    // The pull request's versions, as if loaded from its host (tests).
+    void showPrHistory(const PrReview::History &history);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -219,6 +221,9 @@ private:
     void fillVersionCombo();
     void showPrVersions(int from, int to);
     void choosePrVersions();
+    void maybeShowSinceLastReview();
+    // A pull request's identity: its versions and overview are kept while it's shown.
+    void notePullRequest();
     // File > Open pull request: the PRs waiting for the user's review.
     void openPullRequest();
 

@@ -149,6 +149,7 @@ PrOverviewPanel::PrOverviewPanel(QWidget *parent)
     m_title->setTextFormat(Qt::RichText);
     m_title->setTextInteractionFlags(Qt::NoTextInteraction);
     m_title->setMinimumWidth(10);
+    m_title->setWordWrap(true); // the file panel is narrow: wrap rather than cut the summary
     m_reload = new QToolButton;
     m_reload->setAutoRaise(true);
     m_reload->setText(QStringLiteral("↻"));

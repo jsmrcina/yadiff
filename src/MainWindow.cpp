@@ -60,6 +60,7 @@
 #include <QProgressDialog>
 #include <QThread>
 #include <QUrl>
+#include <QAbstractItemView>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QDir>
@@ -329,6 +330,8 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
         m_files->setMatchCounts({});
         m_pane->setFocus();
     });
+
+    notePullRequest();
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(2000);
@@ -1100,7 +1103,9 @@ void MainWindow::createToolBar()
     reviewButton->setToolTip(tr("Vote on the pull request, or comment on it"));
     m_reviewToolAction = tb->addWidget(reviewButton);
     m_versionCombo = new QComboBox;
-    m_versionCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    // Narrow in the toolbar; the list itself is as wide as its entries.
+    m_versionCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_versionCombo->setMinimumContentsLength(26);
     m_versionCombo->setToolTip(tr("Which changes of the pull request to show: all of them, or those since an earlier push"));
     connect(m_versionCombo, &QComboBox::activated, this, [this](int i) {
         const QVariant v = m_versionCombo->itemData(i);
@@ -2856,7 +2861,8 @@ void MainWindow::refreshThreads()
     // Per file: open threads and all of them (outdated ones aren't shown, so not counted).
     QHash<QString, std::pair<int, int>> byPath;
     for (const GitHubReview::Thread &t : GitHubReview::threads(m_comments)) {
-        if (t.first().outdated())
+        // Only the threads shown: none in an earlier version, no old-side ones after a later old side.
+        if (t.first().outdated() || m_cmp.prToVersion != 0 || (m_cmp.prFromVersion != 0 && t.first().side == QLatin1String("LEFT")))
             continue;
         auto &n = byPath[t.first().path];
         n.first += GitHubReview::isOpen(t.first().status);
@@ -3218,6 +3224,55 @@ void MainWindow::submitReview(GitHubReview::Verdict verdict)
         });
 }
 
+void MainWindow::notePullRequest()
+{
+    // A pull request's versions stay while it's shown; the whole PR is what to come back to.
+    const QString key = m_cmp.prNumber > 0 ? PrReview::webUrl(m_cmp) : QString();
+    if (key != m_prKey) {
+        m_prKey = key;
+        m_overview.reset();
+        ++m_overviewGen;
+        m_overviewPanel->clear();
+        m_prHistory.reset();
+        m_prAutoShown = false;
+        m_historyBusy = false;
+        ++m_historyGen;
+    }
+    if (!key.isEmpty() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0) {
+        m_prWhole = m_cmp;
+        m_prWholeRoot = m_repo.root();
+    }
+    // For File > Open pull request: where to look next time, and what was seen.
+    if (!key.isEmpty() && m_cmp.prToVersion == 0)
+        PrInbox::markSeen(key, m_cmp.prHead);
+    if (m_cmp.prHost == QLatin1String("ado") && m_cmp.prNumber > 0 && !m_cmp.prCollectionUrl.isEmpty() && !m_cmp.prProject.isEmpty())
+        PrInbox::addSource({QUrl(m_cmp.prCollectionUrl), m_cmp.prProject});
+}
+
+void MainWindow::showPrHistory(const PrReview::History &history)
+{
+    ++m_historyGen;
+    m_historyBusy = false;
+    m_prHistory = history;
+    fillVersionCombo();
+    maybeShowSinceLastReview();
+}
+
+void MainWindow::maybeShowSinceLastReview()
+{
+    // New pushes since the user's last review: show just those (once per PR).
+    if (!m_prHistory || m_prHistory->versions.isEmpty())
+        return;
+    const PrReview::History &h = *m_prHistory;
+    const int latest = h.versions.last().number;
+    const bool unknownCommit = h.lastReviewed == 0 && !h.lastReviewedCommit.isEmpty();
+    if (!m_prAutoShown && m_sinceReviewAct->isChecked() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0
+        && ((h.lastReviewed > 0 && h.lastReviewed < latest) || unknownCommit)) {
+        m_prAutoShown = true;
+        showPrVersions(unknownCommit ? -1 : h.lastReviewed, latest);
+    }
+}
+
 void MainWindow::openPullRequest()
 {
     PrListDialog dlg(this);
@@ -3288,15 +3343,7 @@ void MainWindow::loadPrHistory()
             }
             m_prHistory = r.first;
             fillVersionCombo();
-            // New pushes since the user's last review: show just those (once per PR).
-            const PrReview::History &h = *m_prHistory;
-            const int latest = h.versions.isEmpty() ? 0 : h.versions.last().number;
-            const bool unknownCommit = h.lastReviewed == 0 && !h.lastReviewedCommit.isEmpty();
-            if (!m_prAutoShown && m_sinceReviewAct->isChecked() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0
-                && ((h.lastReviewed > 0 && h.lastReviewed < latest) || unknownCommit)) {
-                m_prAutoShown = true;
-                showPrVersions(unknownCommit ? -1 : h.lastReviewed, latest);
-            }
+            maybeShowSinceLastReview();
         });
 }
 
@@ -3337,12 +3384,13 @@ void MainWindow::fillVersionCombo()
         add(text, v.number, latest, when);
     }
     m_versionCombo->addItem(ado ? tr("Compare two pushes…") : tr("Compare two commits…"));
+    m_versionCombo->view()->setMinimumWidth(m_versionCombo->view()->sizeHintForColumn(0) + 32);
     // Select what's shown; a pair chosen in the dialog gets its own entry.
     const QPoint shown(m_cmp.prFromVersion, m_cmp.prToVersion == 0 ? latest : m_cmp.prToVersion);
     int found = -1;
     for (int i = 0; i < m_versionCombo->count(); ++i)
-        if (m_versionCombo->itemData(i).isValid() && m_versionCombo->itemData(i).toPoint() == shown)
-            found = i;
+        if (found < 0 && m_versionCombo->itemData(i).isValid() && m_versionCombo->itemData(i).toPoint() == shown)
+            found = i; // the first: "since your last review" rather than the same push further down
     if (found < 0) {
         auto name = [&](int n) {
             const int i = h.indexOf(n);
@@ -4705,27 +4753,7 @@ void MainWindow::setComparison(GitRepo repo, Comparison cmp)
     m_voteError.clear();
     m_voteBusy = false;
     ++m_voteGen;
-    // A pull request's versions stay while it's shown; the whole PR is what to come back to.
-    const QString key = m_cmp.prNumber > 0 ? PrReview::webUrl(m_cmp) : QString();
-    if (key != m_prKey) {
-        m_prKey = key;
-        m_overview.reset();
-        ++m_overviewGen;
-        m_overviewPanel->clear();
-        m_prHistory.reset();
-        m_prAutoShown = false;
-        m_historyBusy = false;
-        ++m_historyGen;
-    }
-    if (!key.isEmpty() && m_cmp.prFromVersion == 0 && m_cmp.prToVersion == 0) {
-        m_prWhole = m_cmp;
-        m_prWholeRoot = m_repo.root();
-    }
-    // For File > Open pull request: where to look next time, and what was seen.
-    if (!key.isEmpty() && m_cmp.prToVersion == 0)
-        PrInbox::markSeen(key, m_cmp.prHead);
-    if (m_cmp.prHost == QLatin1String("ado") && m_cmp.prNumber > 0)
-        PrInbox::addSource({QUrl(m_cmp.prCollectionUrl), m_cmp.prProject});
+    notePullRequest();
     fillVersionCombo();
     qCInfo(lcApp).noquote() << "showing" << m_cmp.describe() << "in" << QDir::toNativeSeparators(m_repo.root());
     updateModeUi();

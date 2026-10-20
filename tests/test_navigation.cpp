@@ -46,6 +46,7 @@
 #include <QTextLayout>
 #include <QAbstractTextDocumentLayout>
 #include <QProcess>
+#include <QComboBox>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextBlock>
@@ -956,6 +957,85 @@ private slots:
             panel.show();
             QApplication::processEvents();
             panel.grab().save(out + QStringLiteral("/overview.png"));
+        }
+    }
+
+    void comparesAPullRequestsPushes()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        auto commit = [&](const char *file, const QString &msg) {
+            write(d + u'/' + QLatin1String(file), "x\n");
+            git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+            git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), msg});
+        };
+        commit("base.txt", QStringLiteral("base"));
+        commit("a.txt", QStringLiteral("push one"));
+        commit("b.txt", QStringLiteral("push two"));
+        commit("c.txt", QStringLiteral("push three"));
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        auto at = [&](const char *rev) { return *repo->resolveCommit(QLatin1String(rev), &error); };
+        // An Azure DevOps PR with no server behind it (comments and votes fail quickly);
+        // its pushes come from the test.
+        Comparison pr;
+        pr.mode = Comparison::Mode::Revisions;
+        pr.rev1 = at("HEAD~3");
+        pr.rev1Name = QStringLiteral("main (merge base)");
+        pr.rev2 = at("HEAD");
+        pr.rev2Name = QStringLiteral("PR 9 feature");
+        pr.prHost = QStringLiteral("ado");
+        pr.prNumber = 9;
+        pr.prCollectionUrl = QStringLiteral("http://127.0.0.1:9");
+        pr.prProject = QStringLiteral("P");
+        pr.prRepo = QStringLiteral("R");
+        pr.prWebUrl = QStringLiteral("http://127.0.0.1:9/P/_git/R/pullrequest/9");
+        pr.prHead = pr.rev2;
+        PrReview::History h;
+        h.versions = {{1, at("HEAD~2"), pr.rev1, {}, {}}, {2, at("HEAD~1"), pr.rev1, {}, {}}, {3, at("HEAD"), pr.rev1, {}, {}}};
+        h.lastReviewed = 1;
+        MainWindow w(std::move(*repo), pr);
+        w.resize(1300, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *files = w.findChild<FileList *>();
+        QTRY_COMPARE(files->visibleCount(), 3);
+        QComboBox *versions = nullptr;
+        for (QComboBox *c : w.findChildren<QComboBox *>())
+            if (c->toolTip().contains(QStringLiteral("since an earlier push")))
+                versions = c;
+        QVERIFY(versions);
+
+        // The pushes arrive: it opens at the changes since the user's last review (push 1).
+        w.showPrHistory(h);
+        QTRY_VERIFY(!w.isBusy());
+        QCOMPARE(files->visibleCount(), 2);
+        QVERIFY2(versions->currentText().startsWith(QStringLiteral("Since your last review (Push 1)")), qPrintable(versions->currentText()));
+        QVERIFY(versions->isVisibleTo(&w));
+        QVERIFY(w.windowTitle().size() > 0);
+        // All changes, then just the latest push.
+        auto pick = [&](const QString &prefix) {
+            for (int i = 0; i < versions->count(); ++i)
+                if (versions->itemText(i).startsWith(prefix)) {
+                    versions->setCurrentIndex(i);
+                    emit versions->activated(i);
+                    return true;
+                }
+            return false;
+        };
+        QVERIFY(pick(QStringLiteral("All changes (3 pushes)")));
+        QTRY_VERIFY(!w.isBusy());
+        QCOMPARE(files->visibleCount(), 3);
+        QVERIFY(pick(QStringLiteral("Since Push 2")));
+        QTRY_VERIFY(!w.isBusy());
+        QCOMPARE(files->visibleCount(), 1);
+        QVERIFY(versions->currentText().startsWith(QStringLiteral("Since Push 2")));
+        // The pushes are still known after switching: the picker keeps all its entries.
+        QVERIFY(versions->findText(QStringLiteral("Compare two pushes…")) >= 0);
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            QApplication::processEvents();
+            w.grab().save(out + QStringLiteral("/pushes.png"));
         }
     }
 

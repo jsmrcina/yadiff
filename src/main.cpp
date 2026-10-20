@@ -20,6 +20,7 @@
 #include "Usage.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFile>
@@ -443,6 +444,12 @@ int main(int argc, char *argv[])
     if (const QString grab = qEnvironmentVariable("YADIFF_GRAB"); !grab.isEmpty()) {
         w.resize(1300, 700);
         QApplication::processEvents();
+        // YADIFF_GRAB_WAIT: milliseconds to let background loading (comments, the overview) finish.
+        QElapsedTimer waited;
+        waited.start();
+        const int wait = qEnvironmentVariableIntValue("YADIFF_GRAB_WAIT");
+        while (waited.elapsed() < wait)
+            QApplication::processEvents(QEventLoop::AllEvents, 50);
         w.grabAll(grab);
         return 0;
     }
