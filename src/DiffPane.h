@@ -141,10 +141,15 @@ public:
     void clearSearch();
     int matchCount() const { return int(m_matches.size()); }
     int currentMatch() const { return m_currentMatch; }
-    bool nextMatch();
-    bool prevMatch();
+    // `wrap`: past the last match comes the first again (and the other way round).
+    bool nextMatch(bool wrap = false);
+    bool prevMatch(bool wrap = false);
     void goToMatch(int index);
     bool hasSelection() const;
+    // A selection to search in: the current one, or the one the last search remembered.
+    bool hasSearchSelection() const;
+    // The selected text, when it lies within one line (empty otherwise).
+    QString selectedWord() const;
 
     // Editing the new (working-tree) side.
     bool canEdit() const { return m_hasDiff && m_file.newOnDisk && !m_file.diff.binary && !m_file.isHex && !showsTable(); }
@@ -180,6 +185,9 @@ signals:
     void commentRequested(const QString &path, const QString &side, int line, int startLine);
     void replyRequested(qint64 threadId);
     void threadStatusRequested(qint64 threadId, GitHubReview::ThreadStatus status);
+
+protected:
+    void changeEvent(QEvent *event) override;
 
 private:
     void rebuild();
@@ -236,6 +244,7 @@ private:
     SearchQuery m_query;
     SearchScope m_scope = SearchScope::File;
     CodeView *m_selView = nullptr;
+    CodeView *m_cursorView = nullptr; // last focused, or where revealMatch put the cursor
     int m_selStart = -1, m_selEnd = -1; // document positions in m_selView
     QVector<LineMatch> m_matches;
     int m_currentMatch = -1;

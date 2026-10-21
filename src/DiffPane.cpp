@@ -172,6 +172,12 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
         connect(v->verticalScrollBar(), &QScrollBar::valueChanged, this, &DiffPane::updateVisibleRange);
     }
     connect(m_right, &CodeView::modifiedChanged, this, &DiffPane::modifiedChanged);
+    // The side last clicked in is where a search starts (focus moves to the find bar).
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *now) {
+        for (CodeView *v : {m_inline, m_left, m_right})
+            if (now && (now == v || v->isAncestorOf(now)))
+                m_cursorView = v;
+    });
     connect(m_overview, &OverviewBar::rowRequested, this, [this](int row) {
         CodeView *v = activeView();
         const int visible = v->viewport()->height() / std::max(1, v->fontMetrics().lineSpacing());
@@ -331,6 +337,7 @@ void DiffPane::setFile(const FileView &file)
     m_matches.clear();
     m_currentMatch = -1;
     m_selView = nullptr;
+    m_cursorView = nullptr;
     m_showAnyway->setVisible(false);
     indexThreads();
     if (!m_file.isImage)
@@ -672,6 +679,16 @@ void DiffPane::applySettings()
     rebuild();
     if (keep >= 0)
         showChange(keep);
+}
+
+void DiffPane::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    // The rows cache the palette's colours (the gutter, folds, fillers). A new theme
+    // reaches this widget after MainWindow has already rebuilt with the old palette, so
+    // rebuild again once it has.
+    if (event->type() == QEvent::PaletteChange)
+        applySettings();
 }
 
 void DiffPane::setCollapseUnchanged(bool on)
@@ -1094,13 +1111,41 @@ bool DiffPane::hasSelection() const
     return false;
 }
 
+bool DiffPane::hasSearchSelection() const
+{
+    return hasSelection() || (m_selView && m_selView->isVisible());
+}
+
+QString DiffPane::selectedWord() const
+{
+    for (CodeView *v : {m_inline, m_left, m_right}) {
+        if (!v->isVisible() || !v->textCursor().hasSelection())
+            continue;
+        const QString text = v->textCursor().selectedText();
+        if (!text.contains(QChar::ParagraphSeparator) && !text.contains(u'\n') && !text.trimmed().isEmpty())
+            return text;
+    }
+    return {};
+}
+
 void DiffPane::setSearch(const SearchQuery &query, SearchScope scope)
 {
     m_query = query;
     m_scope = scope;
-    m_selView = nullptr;
+    // Start from the cursor: the first match at or after it, so a selected word that is
+    // also the search text is the current match.
+    CodeView *at = nullptr;
+    for (CodeView *v : {m_inline, m_left, m_right})
+        if (v->isVisible() && v->textCursor().hasSelection() && (!at || v->hasFocus()))
+            at = v;
+    if (!at && m_cursorView && m_cursorView->isVisible())
+        at = m_cursorView; // where the last match put the cursor
+    if (!at)
+        at = activeView();
+    const QTextCursor atCursor = at ? at->textCursor() : QTextCursor();
     if (scope == SearchScope::Selection) {
-        // Remember the selection now: moving to a match replaces the text cursor.
+        // Remember the selection now: moving to a match replaces the text cursor, so
+        // the next keystroke in the find bar searches the selection remembered here.
         CodeView *focused = nullptr;
         for (CodeView *v : {m_inline, m_left, m_right})
             if (v->isVisible() && v->textCursor().hasSelection() && (!focused || v->hasFocus()))
@@ -1112,8 +1157,26 @@ void DiffPane::setSearch(const SearchQuery &query, SearchScope scope)
         }
     }
     recomputeMatches();
-    if (!m_matches.isEmpty())
-        revealMatch(0);
+    if (m_matches.isEmpty())
+        return;
+    int first = 0;
+    if (at && scope == SearchScope::File) {
+        const QVector<int> &rowOf = at == m_inline ? m_inlineRowOfLine : at == m_left ? m_leftRowOfLine : m_rightRowOfLine;
+        for (int i = 0; i < m_matches.size(); ++i) {
+            const int row = rowOf.value(m_matches[i].lineIndex, -1);
+            if (row < 0)
+                continue;
+            // A selection starts at the match; a bare cursor sits after the match it
+            // reached (so typing more of the search text stays on it).
+            const int start = at->document()->findBlockByNumber(row).position() + m_matches[i].span.start;
+            if (atCursor.hasSelection() ? start >= atCursor.selectionStart()
+                                        : start + m_matches[i].span.length >= atCursor.position()) {
+                first = i;
+                break;
+            }
+        }
+    }
+    revealMatch(first);
 }
 
 void DiffPane::clearSearch()
@@ -1121,7 +1184,6 @@ void DiffPane::clearSearch()
     m_query = SearchQuery();
     m_matches.clear();
     m_currentMatch = -1;
-    m_selView = nullptr;
     applySearchHighlights();
     emit searchResultsChanged(0, -1);
 }
@@ -1225,26 +1287,40 @@ void DiffPane::revealMatch(int index)
         const QTextBlock b = v->document()->findBlockByNumber(row);
         QTextCursor c(b);
         c.setPosition(b.position() + m.span.start + m.span.length);
-        if (!v->isEditing())
+        if (!v->isEditing()) {
             v->setTextCursor(c);
+            m_cursorView = v;
+        }
         v->ensureCursorVisible();
     }
     applySearchHighlights();
     emit searchResultsChanged(int(m_matches.size()), m_currentMatch);
 }
 
-bool DiffPane::nextMatch()
+bool DiffPane::nextMatch(bool wrap)
 {
-    if (m_currentMatch + 1 >= m_matches.size())
+    if (m_matches.isEmpty())
         return false;
+    if (m_currentMatch + 1 >= m_matches.size()) {
+        if (!wrap)
+            return false;
+        revealMatch(0);
+        return true;
+    }
     revealMatch(m_currentMatch + 1);
     return true;
 }
 
-bool DiffPane::prevMatch()
+bool DiffPane::prevMatch(bool wrap)
 {
-    if (m_currentMatch <= 0)
+    if (m_matches.isEmpty())
         return false;
+    if (m_currentMatch <= 0) {
+        if (!wrap)
+            return false;
+        revealMatch(int(m_matches.size()) - 1);
+        return true;
+    }
     revealMatch(m_currentMatch - 1);
     return true;
 }

@@ -94,7 +94,7 @@ path looks like a revision.
   The language is detected from the file name. The toolbar's Syntax drop-down overrides it for
   files with the same extension, and "None" turns highlighting off. Builds without the library
   still work, just without highlighting.
-- **Collapse unchanged regions** with View → Collapse unchanged regions (Ctrl+Shift+C). It's off
+- **Collapse unchanged regions** with View → Collapse unchanged regions (Ctrl+Alt+U). It's off
   by default. Long unchanged runs shrink to one row with 3 lines of context kept. Click a row to
   expand it, or use View → Expand all.
 - **Overview strip** on the right edge shows every change in the file, search hits, and the
@@ -103,9 +103,12 @@ path looks like a revision.
   - Drag the outlined visible area like a scrollbar's thumb.
   - Click anywhere else on it to jump there.
 - **Find** with F3 or Ctrl+F searches the current Selection, This file, or All changes, by substring
-  or regex, optionally case-sensitive. F8 and F7 step to the next and previous match, as do Enter
-  and Shift+Enter in the find bar. With All changes, stepping past the last match moves to the next file that has
-  matches, and those files are shown in bold.
+  or regex, optionally case-sensitive. It opens on This file. With a word (or part of one line)
+  selected, that becomes the search text and the selected instance is the current match. With
+  whole lines selected, it searches just those. Searching starts at the cursor. F8 and F7 step to
+  the next and previous match, as do Enter and Shift+Enter in the find bar. Past the last match it
+  goes round to the first, and the other way round. With All changes, stepping past the last match
+  moves to the next file that has matches, and those files are shown in bold.
 - **Per-file line counts** such as "+12 −3" appear in the file list when there is room, and totals
   appear in the status bar.
 - **Edit the working-tree side** with Ctrl+E or the Edit button, then save with Ctrl+S. Editing
@@ -138,7 +141,17 @@ path looks like a revision.
   edit keeps the old lines and adds the chosen new ones after them.
 - **Show whitespace characters** with Ctrl+Shift+8, and **word wrap** with Alt+Z. Side-by-side
   rows stay aligned when one side wraps more than the other.
-- **Reload automatically when files change on disk** is in the Preferences menu and off by default.
+- **Next and Previous change** are the filled buttons at the right of the toolbar (Alt+Down and
+  Alt+Up), with "Change 2 of 5" between them. Past the last change, Next goes to the next file.
+- **Settings and keyboard shortcuts** (Options menu, Ctrl+,) gathers every option from the menus
+  in one window: check boxes for on/off options, choices for themes, views and algorithms, and
+  buttons for those with their own dialog (fonts, colours, the editor, patterns). Options apply at
+  once, as in the menus. The Keyboard shortcuts tab lists every command by menu, with its shortcut
+  and the default. Pick one, click in Shortcut or Alternative and press the keys. None removes the
+  shortcut, Default puts back yadiff's, and Reset all puts back every one. A key another command has
+  is moved after asking. The search box at the top filters both tabs. Shortcuts apply with OK or
+  Apply, to every open window, and are saved.
+- **Reload automatically when files change on disk** is in the Options menu and off by default.
   yadiff checks every 2 seconds and keeps your place. It won't reload over unsaved edits.
 - **Compare text.** File → Compare text opens two boxes to paste or type into; the file name you
   give sets the syntax. Edit → Compare clipboard with left (or right) file compares the clipboard
@@ -273,6 +286,9 @@ path looks like a revision.
     Reject (−10) and Reset vote (0).
   - Each vote asks for an optional message. On Azure DevOps the message is posted as a comment on
     the PR.
+  - Voting again for the vote you already have (approving again after a new push, say) works on
+    Azure DevOps too. Azure DevOps ignores a repeated vote, so yadiff resets it first, waits until
+    Azure DevOps shows the reset, then votes again.
   - Your vote is read from the host when the PR opens. "Check my vote again" re-reads it, for
     instance after voting in the browser.
   - On GitHub, your latest approval, change request or dismissal counts. Plain comments don't
@@ -389,6 +405,7 @@ computed by yadiff.
   - CSV and TSV files as tables, and binary files as hex.
   - Git blame, Color theme, Fonts, and Diff colors and tab width.
 - **Options:**
+  - Settings and keyboard shortcuts (Ctrl+,): every option, and changing shortcuts.
   - Show left-only, right-only, different, identical or blanks-only files, plus Show all and Show
     no files. Identical files are listed only while that option is on.
   - Ignore all whitespace, extra whitespace, leading/trailing whitespace, blank lines, CR at end
@@ -584,7 +601,7 @@ ctest --test-dir build --output-on-failure
 - `test_ado` runs Azure DevOps PRs against a small fake Azure DevOps server and a local bare
   repository. It covers link and remote parsing, credential order, keyring storage, rejected
   credentials, reusing credentials until they expire or are rejected, fetching, threads, thread
-  status, comments, replies, every vote (set and read back), the PR's pushes and the last one
+  status, comments, replies, every vote (set and read back), voting the same vote again (reset first), the PR's pushes and the last one
   voted on, downloading the changes between two pushes, the overview (reviewers, policies,
   statuses, work items, PR comments), the list of PRs waiting for review (yours and your
   teams'), and the real `yadiff -ado` command
@@ -605,7 +622,9 @@ ctest --test-dir build --output-on-failure
   ignoring comments, manual alignment, staging the current change, stepping through commits, and
   dropped files, patches, sessions, recent comparisons, the hex and table views, and the merge
   window, including resolving a real `git merge` conflict, resolved threads, the PR overview, the
-  pull request list, and switching between a PR's pushes. It also covers loading every diff in the
+  pull request list, and switching between a PR's pushes. The line numbers following a new theme,
+  Find starting from a selected word and going round, and the settings window (changing, moving
+  and resetting shortcuts, and options staying in step with the menus) are covered too. It also covers loading every diff in the
   background, with counts from the diffs matching git's. That one test runs truly in the
   background.
   The other GUI
@@ -663,5 +682,6 @@ overview and pushes).
 | `src/NewComparisonDialog.*` | File > New comparison |
 | `src/ComparisonArgs.*` | Command-line arguments to a repository and comparison (also used by New comparison) |
 | `src/PreferencesDialog.*`, `src/Settings.*` | Colours, font, persisted options |
+| `src/SettingsDialog.*`, `src/Shortcuts.*` | Options > Settings: every option, and keyboard shortcuts the user can change |
 | `resources/syntax-themes/` | Syntax themes KSyntaxHighlighting doesn't ship (Light+, Vibrant Ink) |
 | `resources/` | Icon (SVG source, PNG sizes, Windows `.ico`/`.rc`) and desktop entry |

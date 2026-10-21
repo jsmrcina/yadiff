@@ -23,6 +23,7 @@ public:
     Scope scope() const;
     void setScope(Scope s);
     void activate();          // show, focus and select the text
+    void setText(const QString &text);
     void setResult(const QString &text, bool error = false);
     void setBusy(bool busy); // shows a Stop button while an "All changes" search runs
 

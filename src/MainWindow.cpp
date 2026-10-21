@@ -7,6 +7,8 @@
 #include "FileList.h"
 #include "HistoryDialog.h"
 #include "PreferencesDialog.h"
+#include "SettingsDialog.h"
+#include "Shortcuts.h"
 #include "SearchBar.h"
 #include "Settings.h"
 #include "Syntax.h"
@@ -246,8 +248,7 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
 
     createActions();
     createToolBar();
-    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
-    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
+    Shortcuts::registerWindow(this, {m_recentMenu, m_languageMenu});
     syncOptionControls();
     updateViewToggle();
 
@@ -447,7 +448,8 @@ void MainWindow::createActions()
         ->setStatusTip(tr("Save this comparison, the file shown, the view and the diff options to reopen later"));
     fileMenu->addAction(tr("Change window &title…"), this, &MainWindow::changeWindowTitle);
     fileMenu->addSeparator();
-    fileMenu->addAction(tr("Edit &globbing ignore patterns…"), this, &MainWindow::editIgnorePatterns);
+    fileMenu->addAction(tr("Edit &globbing ignore patterns…"), this, &MainWindow::editIgnorePatterns)
+        ->setProperty("yadiffSetting", true);
     m_useGlobsAct = fileMenu->addAction(tr("&Use globbing ignore patterns"));
     m_useGlobsAct->setCheckable(true);
     m_useGlobsAct->setChecked(Settings::useIgnoreGlobs());
@@ -527,8 +529,16 @@ void MainWindow::createActions()
     editMenu->addAction(tr("Compare clipboard with right file"), this, [this] { compareClipboard(true); });
     editMenu->addSeparator();
     QAction *findAct = editMenu->addAction(tr("&Find…"), this, [this] {
-        if (m_pane->hasSelection() && m_search->isHidden())
+        // This file, unless text is selected: a word (or part of a line) becomes what to
+        // find in the file, and lines are searched in.
+        if (const QString word = m_pane->selectedWord(); !word.isEmpty()) {
+            m_search->setScope(SearchBar::Scope::File);
+            m_search->setText(word);
+        } else if (m_pane->hasSelection()) {
             m_search->setScope(SearchBar::Scope::Selection);
+        } else if (m_search->isHidden()) {
+            m_search->setScope(SearchBar::Scope::File);
+        }
         m_search->activate();
         runSearch();
     });
@@ -547,11 +557,12 @@ void MainWindow::createActions()
     QAction *goTo = editMenu->addAction(tr("&Go to line…"), this, &MainWindow::goToLineDialog);
     goTo->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     editMenu->addSeparator();
-    editMenu->addAction(tr("Set &editor…"), this, &MainWindow::setEditorCommand);
+    editMenu->addAction(tr("Set &editor…"), this, &MainWindow::setEditorCommand)->setProperty("yadiffSetting", true);
     m_editLeftAct = editMenu->addAction(tr("Edit le&ft file"), this, [this] { editExternally(false); });
     m_editRightAct = editMenu->addAction(tr("Edit righ&t file"), this, [this] { editExternally(true); });
     editMenu->addSeparator();
     m_editAct = editMenu->addAction(QIcon::fromTheme(QStringLiteral("document-edit")), tr("Edit right side &in place"));
+    m_editAct->setProperty("yadiffNotASetting", true); // a mode, not a setting
     m_editAct->setCheckable(true);
     m_editAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     m_editAct->setToolTip(tr("Edit the right-hand file directly in yadiff (Ctrl+E). Ctrl+S saves."));
@@ -718,7 +729,7 @@ void MainWindow::createActions()
             m_pane->applySettings();
         });
     }
-    tabMenu->addAction(tr("Other…"), this, [this] {
+    QAction *otherTab = tabMenu->addAction(tr("Other…"), this, [this] {
         bool ok = false;
         const int w = QInputDialog::getInt(this, tr("Tab width"), tr("Spaces per tab:"), Settings::tabWidth(), 1, 16, 1, &ok);
         if (ok) {
@@ -726,6 +737,7 @@ void MainWindow::createActions()
             m_pane->applySettings();
         }
     });
+    otherTab->setProperty("yadiffSetting", true);
     QMenu *zoomMenu = viewMenu->addMenu(tr("&Zoom"));
     auto zoomTo = [this](int percent) {
         Settings::setZoomPercent(percent);
@@ -810,17 +822,24 @@ void MainWindow::createActions()
     };
     fonts->addAction(tr("&Diff font\u2026"), this, [pickFont] {
         pickFont(tr("Diff font"), Settings::font(), true, [](const QFont &f) { Settings::setFont(f); });
-    });
+    })->setProperty("yadiffSetting", true);
     fonts->addAction(tr("&File list font\u2026"), this, [pickFont] {
         pickFont(tr("File list font"), Settings::fileListFont(), false, [](const QFont &f) { Settings::setFileListFont(f); });
-    });
+    })->setProperty("yadiffSetting", true);
     fonts->addAction(tr("&Clipboard font\u2026"), this, [pickFont] {
         pickFont(tr("Font for copied text"), Settings::clipboardFont(), false, [](const QFont &f) { Settings::setClipboardFont(f); });
-    })->setStatusTip(tr("The font used when copying with formatting (Copy, Copy this change as diff)"));
-    viewMenu->addAction(tr("Diff &colors and tab width\u2026"), this, &MainWindow::openPreferences);
+    });
+    fonts->actions().constLast()->setStatusTip(tr("The font used when copying with formatting (Copy, Copy this change as diff)"));
+    fonts->actions().constLast()->setProperty("yadiffSetting", true);
+    viewMenu->addAction(tr("Diff &colors and tab width\u2026"), this, &MainWindow::openPreferences)
+        ->setProperty("yadiffSetting", true);
 
     // ---- Options -----------------------------------------------------------
     QMenu *optionsMenu = menuBar()->addMenu(tr("&Options"));
+    QAction *settingsAct = optionsMenu->addAction(tr("&Settings and keyboard shortcuts\u2026"), this, &MainWindow::openSettings);
+    settingsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    settingsAct->setStatusTip(tr("Every option and keyboard shortcut in one place; change shortcuts there"));
+    optionsMenu->addSeparator();
     const struct {
         const char *key;
         QString label;
@@ -894,7 +913,8 @@ void MainWindow::createActions()
         o.unimportantPatterns = on ? Settings::unimportantPatterns() : QStringList();
         setDiffOptions(o);
     });
-    optionsMenu->addAction(tr("Unimportant text &rules\u2026"), this, &MainWindow::editUnimportantText);
+    optionsMenu->addAction(tr("Unimportant text &rules\u2026"), this, &MainWindow::editUnimportantText)
+        ->setProperty("yadiffSetting", true);
     QMenu *algoMenu = optionsMenu->addMenu(tr("Diff &algorithm"));
     m_algoGroup = new QActionGroup(this);
     for (DiffAlgorithm a : allAlgorithms()) {
@@ -981,7 +1001,7 @@ void MainWindow::createActions()
             Settings::setMarkColor(c);
             m_files->setMarkColor(c);
         }
-    });
+    })->setProperty("yadiffSetting", true);
 
     // ---- Review (pull requests only) ---------------------------------------
     m_reviewMenu = menuBar()->addMenu(tr("&Review"));
@@ -1194,14 +1214,59 @@ void MainWindow::createToolBar()
     connect(m_whitespaceToggle, &QToolButton::clicked, m_ignoreAllSpaceAct, &QAction::trigger);
     tb->addWidget(m_whitespaceToggle);
     tb->addSeparator();
-    auto *prev = new QToolButton;
-    prev->setDefaultAction(m_prevAct);
-    prev->setAutoRaise(true);
-    tb->addWidget(prev);
-    auto *next = new QToolButton;
-    next->setDefaultAction(m_nextAct);
-    next->setAutoRaise(true);
-    tb->addWidget(next);
+    // Change navigation stands out: filled buttons with words, and where you are.
+    // Not the actions' own buttons: their icons here are drawn in the accent's text
+    // colour, which would vanish in the menu.
+    m_prevButton = new QToolButton;
+    m_prevButton->setText(tr("Previous"));
+    m_nextButton = new QToolButton;
+    m_nextButton->setText(tr("Next"));
+    for (auto [b, a] : {std::pair{m_prevButton, m_prevAct}, std::pair{m_nextButton, m_nextAct}}) {
+        b->setToolTip(a->toolTip());
+        connect(b, &QToolButton::clicked, a, &QAction::trigger);
+        connect(a, &QAction::changed, b, [b, a] {
+            b->setEnabled(a->isEnabled());
+            b->setToolTip(a->toolTip()); // names the shortcut, which can change
+        });
+    }
+    m_changeLabel = new QLabel;
+    m_changeLabel->setAlignment(Qt::AlignCenter);
+    m_changeLabel->setToolTip(tr("The change shown, of the changes in this file"));
+    for (QToolButton *b : {m_prevButton, m_nextButton}) {
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setAutoRaise(false);
+        QFont f = b->font();
+        f.setBold(true);
+        b->setFont(f);
+        b->setMinimumHeight(30);
+    }
+    m_nextButton->setLayoutDirection(Qt::RightToLeft); // the arrow after the word
+    tb->addWidget(m_prevButton);
+    tb->addWidget(m_changeLabel);
+    tb->addWidget(m_nextButton);
+    connect(m_pane, &DiffPane::currentChangeChanged, this, [this](int index, int count) {
+        m_changeLabel->setText(count == 0 ? tr(" No changes ")
+                                          : index < 0 ? tr(" %n changes ", nullptr, count)
+                                                      : tr(" Change %1 of %2 ").arg(index + 1).arg(count));
+    });
+    styleChangeButtons();
+}
+
+void MainWindow::styleChangeButtons()
+{
+    // The theme's accent: the selection colour, with its text colour.
+    for (QToolButton *b : {m_prevButton, m_nextButton}) {
+        QPalette pal = palette();
+        pal.setColor(QPalette::Button, pal.color(QPalette::Highlight));
+        pal.setColor(QPalette::ButtonText, pal.color(QPalette::HighlightedText));
+        b->setPalette(pal);
+        b->setAutoFillBackground(true);
+    }
+    const QColor text = palette().color(QPalette::HighlightedText);
+    m_nextButton->setIcon(arrowIcon(false, text));
+    m_prevButton->setIcon(arrowIcon(true, text));
+    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
+    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
 }
 
 void MainWindow::updateModeUi()
@@ -2260,6 +2325,12 @@ void MainWindow::setSideBySide(bool on)
     updateViewToggle();
 }
 
+void MainWindow::openSettings()
+{
+    SettingsDialog dlg(this, {m_recentMenu, m_languageMenu}, this);
+    dlg.exec();
+}
+
 void MainWindow::openPreferences()
 {
     PreferencesDialog dlg(this);
@@ -2519,7 +2590,7 @@ void MainWindow::runSearch()
         return;
     }
     const auto scope = m_search->scope();
-    if (scope == SearchBar::Scope::Selection && !m_pane->hasSelection()) {
+    if (scope == SearchBar::Scope::Selection && !m_pane->hasSearchSelection()) {
         m_pane->clearSearch();
         m_files->setMatchCounts({});
         m_search->setResult(tr("Select some text first"), true);
@@ -2607,7 +2678,11 @@ void MainWindow::searchNext(bool forward)
     if (forward ? m_pane->nextMatch() : m_pane->prevMatch())
         return;
     if (m_search->scope() != SearchBar::Scope::AllChanges || m_matchCounts.isEmpty()) {
-        statusBar()->showMessage(forward ? tr("No more matches") : tr("No earlier matches"), 2000);
+        // Within the file (or selection): round to the other end.
+        if (forward ? m_pane->nextMatch(true) : m_pane->prevMatch(true))
+            statusBar()->showMessage(forward ? tr("Passed the end; back at the first match")
+                                             : tr("Passed the start; back at the last match"),
+                                     2000);
         return;
     }
     // Move to the next (or previous) file with matches, wrapping around.
@@ -3070,6 +3145,7 @@ void MainWindow::rebuildVoteActions()
     for (const GitHubReview::Vote vote : PrReview::votes(m_cmp)) {
         auto *a = new QAction(voteIcon(vote), PrReview::voteAction(m_cmp, vote) + QStringLiteral("…"), this);
         a->setCheckable(vote != GitHubReview::Vote::None);
+        a->setProperty("yadiffNotASetting", true);
         if (a->isCheckable())
             group->addAction(a);
         connect(a, &QAction::triggered, this, [this, vote] { castVote(vote); });
@@ -4556,8 +4632,7 @@ void MainWindow::applyTheme()
     m_pane->applySettings();
     updateViewToggle();
     m_whitespaceToggle->setIcon(whitespaceIcon(palette().color(QPalette::ButtonText)));
-    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
-    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
+    styleChangeButtons();
 }
 
 void MainWindow::applyFonts()

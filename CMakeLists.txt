@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 0.18.0 LANGUAGES CXX)
+project(yadiff VERSION 0.19.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +63,8 @@ add_library(yadiffui STATIC
     src/ComparisonArgs.cpp src/ComparisonArgs.h
     src/OverviewBar.cpp src/OverviewBar.h
     src/PreferencesDialog.cpp src/PreferencesDialog.h
+    src/SettingsDialog.cpp src/SettingsDialog.h
+    src/Shortcuts.cpp src/Shortcuts.h
     src/PrListDialog.cpp src/PrListDialog.h
     src/PrOverviewPanel.cpp src/PrOverviewPanel.h
     src/SearchBar.cpp src/SearchBar.h

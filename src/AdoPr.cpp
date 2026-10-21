@@ -5,6 +5,7 @@
 #include "Log.h"
 
 #include <QDir>
+#include <QThread>
 #include <QThreadPool>
 #include <QDirIterator>
 #include <QDateTime>
@@ -908,9 +909,39 @@ bool setVote(const Ref &ref, const AdoAuth::Credential &cred, int vote, QString 
     const auto me = myId(ref, cred, error);
     if (!me)
         return false;
+    const QUrl mine = apiUrl(ref, QStringLiteral("/reviewers/%1").arg(*me));
+    auto put = [&](int value) {
+        const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("vote"), value}}).toJson(QJsonDocument::Compact);
+        return call("PUT", mine, cred, payload, error).error.isEmpty();
+    };
+    auto current = [&]() -> std::optional<int> {
+        QString ignored;
+        const Http::Response r = call("GET", apiUrl(ref, QStringLiteral("/reviewers")), cred, {}, &ignored);
+        if (!r.error.isEmpty())
+            return std::nullopt;
+        return parseVote(r.body, *me);
+    };
+    // The same vote again is a no-op for Azure DevOps: an approval from before the latest
+    // push still doesn't count for "approval on the last iteration". Reset it, wait until
+    // Azure DevOps shows the reset, then vote.
+    if (vote != 0 && current() == vote) {
+        qCInfo(lcAdo).noquote() << "PR" << ref.id << ": already voted" << vote << "- resetting the vote first, to vote again";
+        if (!put(0))
+            return false;
+        bool reset = false;
+        for (int attempt = 0; attempt < 20 && !reset; ++attempt) {
+            if (Log::stopping())
+                return false;
+            const auto now = current();
+            reset = now && *now == 0;
+            if (!reset)
+                QThread::msleep(250);
+        }
+        if (!reset)
+            qCWarning(lcAdo).noquote() << "PR" << ref.id << ": the reset vote did not show within 5 s; voting anyway";
+    }
     qCInfo(lcAdo).noquote() << "PR" << ref.id << ": voting" << vote;
-    const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("vote"), vote}}).toJson(QJsonDocument::Compact);
-    return call("PUT", apiUrl(ref, QStringLiteral("/reviewers/%1").arg(*me)), cred, payload, error).error.isEmpty();
+    return put(vote);
 }
 
 bool postMessage(const Ref &ref, const AdoAuth::Credential &cred, const QString &body, QString *error)

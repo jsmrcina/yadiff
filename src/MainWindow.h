@@ -118,6 +118,7 @@ private:
     void setDiffOptions(const DiffOptions &o);
     void syncOptionControls();
     void openPreferences();
+    void openSettings();
     void openHistory();
     void registerDifftool();
     void exportReport();
@@ -182,6 +183,7 @@ private:
     void goToLineDialog();
     void rebuildLanguageMenu();
     void applyTheme();
+    void styleChangeButtons();
     void applyFonts();
     QString scrollKey(const FileChange &fc) const;
     QString describeComparison() const;
@@ -344,6 +346,9 @@ private:
     QAction *m_wordWrapAct = nullptr;
     QAction *m_prevAct = nullptr;
     QAction *m_nextAct = nullptr;
+    QToolButton *m_prevButton = nullptr;
+    QToolButton *m_nextButton = nullptr;
+    QLabel *m_changeLabel = nullptr;
     QAction *m_editAct = nullptr;
     QAction *m_saveAct = nullptr;
     QAction *m_discardAct = nullptr;

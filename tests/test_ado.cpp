@@ -731,6 +731,16 @@ private slots:
         QVERIFY(PrReview::setVote(cmp, Vote::Approved, QStringLiteral("Looks good"), &error));
         QCOMPARE(ado.requests.last().method, QByteArray("POST"));
         QVERIFY(ado.requests.last().body.contains("Looks good"));
+        // Approving again (after a push, say): Azure DevOps ignores the same vote, so it is
+        // reset first, then cast again once the reset shows.
+        const qsizetype firstRequest = ado.requests.size();
+        QVERIFY2(PrReview::setVote(cmp, Vote::Approved, {}, &error), qPrintable(error));
+        QVector<int> puts;
+        for (qsizetype i = firstRequest; i < ado.requests.size(); ++i)
+            if (ado.requests[i].method == "PUT" && ado.requests[i].path.contains("/reviewers/user-1"))
+                puts << QJsonDocument::fromJson(ado.requests[i].body).object().value(QStringLiteral("vote")).toInt();
+        QCOMPARE(puts, (QVector<int>{0, 10}));
+        QCOMPARE(ado.vote, 10);
         QCOMPARE(AdoPr::parseVote(R"({"value":[{"id":"a","vote":5}]})", QStringLiteral("b")), 0); // not a reviewer
         for (const auto &r : ado.requests)
             if (r.path.contains("/pullRequests/7") && r.auth == patHeader())

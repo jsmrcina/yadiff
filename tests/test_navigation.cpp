@@ -13,6 +13,8 @@
 #include "NewComparisonDialog.h"
 #include "PrReview.h"
 #include "SearchBar.h"
+#include "SettingsDialog.h"
+#include "Shortcuts.h"
 #include "TableDiffView.h"
 #include "Session.h"
 #include "Settings.h"
@@ -30,6 +32,10 @@
 #include <QMimeData>
 #include <QTimer>
 #include <QRadioButton>
+#include <QCheckBox>
+#include <QLineEdit>
+#include <QTabWidget>
+#include <QTreeWidget>
 #include <QDialogButtonBox>
 #include <QFileInfo>
 #include <QAbstractButton>
@@ -434,12 +440,61 @@ private slots:
         // Regex.
         pane->setSearch(SearchQuery(QStringLiteral("needle (one|two)"), true, true), DiffPane::SearchScope::File);
         QCOMPARE(pane->matchCount(), 2);
+        // Wrapping round from the last match to the first, and back.
+        pane->goToMatch(0);
+        QVERIFY(pane->prevMatch(true));
+        QCOMPARE(pane->currentMatch(), 1);
+        QVERIFY(pane->nextMatch(true));
+        QCOMPARE(pane->currentMatch(), 0);
+        pane->clearSearch();
+
+        // Find with the last "needle" selected searches the whole file for it, starting there;
+        // Find next goes round to the first.
+        CodeView *right = nullptr;
+        for (CodeView *v : pane->findChildren<CodeView *>())
+            if (v->isVisible() && v->numbers() == CodeView::Numbers::New)
+                right = v;
+        QVERIFY(right);
+        int lastRow = -1;
+        for (int row = 0; row < right->rows().size(); ++row)
+            if (right->rows()[row].newNo == 3)
+                lastRow = row;
+        QVERIFY(lastRow >= 0);
+        right->setFocus();
+        QTextCursor sel(right->document()->findBlockByNumber(lastRow));
+        sel.movePosition(QTextCursor::Right, QTextCursor::KeepAnchor, 6);
+        right->setTextCursor(sel);
+        QCOMPARE(pane->selectedWord(), QStringLiteral("needle"));
+        action(w, QStringLiteral("Find…"))->trigger();
+        QCOMPARE(bar->scope(), SearchBar::Scope::File);
+        QCOMPARE(bar->query().text(), QStringLiteral("needle"));
+        QCOMPARE(pane->matchCount(), 2);
+        QCOMPARE(pane->currentMatch(), 1);
+        action(w, QStringLiteral("Find next"))->trigger();
+        QCOMPARE(pane->currentMatch(), 0);
+        QTest::qWait(300); // the find bar's delayed re-search keeps the current match
+        QCOMPARE(pane->currentMatch(), 0);
+        // Lines selected: search in them. Closed and opened again without a selection:
+        // this file.
+        QTextCursor lines(right->document()->firstBlock());
+        lines.movePosition(QTextCursor::Down, QTextCursor::KeepAnchor, 2);
+        right->setTextCursor(lines);
+        action(w, QStringLiteral("Find…"))->trigger();
+        QCOMPARE(bar->scope(), SearchBar::Scope::Selection);
+        QTest::keyClick(bar, Qt::Key_Escape);
+        QVERIFY(bar->isHidden());
+        right->setTextCursor(QTextCursor(right->document()));
+        action(w, QStringLiteral("Find…"))->trigger();
+        QCOMPARE(bar->scope(), SearchBar::Scope::File);
+        QTest::keyClick(bar, Qt::Key_Escape);
 
         // All changes through the search bar: Enter past the last match moves to b.txt.
         QTest::keyClick(&w, Qt::Key_F, Qt::ControlModifier);
         QVERIFY(bar->isVisible());
         bar->setScope(SearchBar::Scope::AllChanges);
         auto *edit = bar->findChild<QLineEdit *>();
+        edit->clear();
+        QTRY_COMPARE(pane->matchCount(), 0);
         edit->setText(QStringLiteral("needle"));
         QTRY_COMPARE(pane->matchCount(), 2);
         QTest::keyClick(edit, Qt::Key_Return);
@@ -1454,6 +1509,104 @@ private slots:
         action(w, QStringLiteral("Use globbing ignore patterns"))->setChecked(false);
     }
 
+    void settingsChangeShortcutsAndOptions()
+    {
+        QTemporaryDir tmp;
+        git(tmp.path(), {QStringLiteral("init"), QStringLiteral("-q")});
+        QString error;
+        Shortcuts::setOverrides({});
+        auto repo = GitRepo::open(tmp.path(), &error);
+        MainWindow w(std::move(*repo), Comparison{});
+        w.show();
+        QAction *find = action(w, QStringLiteral("Find…"));
+        QAction *next = action(w, QStringLiteral("Next change"));
+        QVERIFY(find && next);
+        QCOMPARE(Shortcuts::id(find), QStringLiteral("Edit/Find"));
+        QCOMPARE(Shortcuts::defaults(find).size(), 2); // F3 and Ctrl+F
+
+        {
+            SettingsDialog dlg(&w, {});
+            if (const QString grab = qEnvironmentVariable("YADIFF_TEST_GRAB"); !grab.isEmpty()) {
+                dlg.show();
+                dlg.grab().save(grab + QStringLiteral("-options.png"));
+                dlg.tabs()->setCurrentIndex(1);
+                dlg.grab().save(grab + QStringLiteral("-shortcuts.png"));
+            }
+            // Every command with a shortcut is listed, under its menu.
+            QStringList listed;
+            for (int i = 0; i < dlg.shortcutTree()->topLevelItemCount(); ++i)
+                for (int c = 0; c < dlg.shortcutTree()->topLevelItem(i)->childCount(); ++c)
+                    listed << dlg.shortcutTree()->topLevelItem(i)->text(0) + u'/' + dlg.shortcutTree()->topLevelItem(i)->child(c)->text(0);
+            QVERIFY(listed.contains(QStringLiteral("Edit/Find")));
+            QVERIFY(listed.contains(QStringLiteral("View/Zoom › Zoom in")));
+            QVERIFY(listed.contains(QStringLiteral("Window/Filter files")));
+
+            // A new shortcut; taking one another command has moves it (once confirmed).
+            QVERIFY(dlg.assign(find, {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F)}));
+            QVERIFY(dlg.assign(find, {QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F), QKeySequence(Qt::ALT | Qt::Key_Down)}, false));
+            QVERIFY(dlg.pending(next).isEmpty());
+            QCOMPARE(find->shortcuts(), Shortcuts::defaults(find)); // not until Apply
+            dlg.applyShortcuts();
+            QCOMPARE(find->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+            QVERIFY(next->shortcuts().isEmpty());
+            QVERIFY(!next->toolTip().contains(QStringLiteral("Alt+Down"))); // the tooltip follows
+
+            // Options are the menus' own: ticking one here toggles the action.
+            QCheckBox *numbers = nullptr;
+            for (QCheckBox *c : dlg.findChildren<QCheckBox *>())
+                if (c->text() == QStringLiteral("Show line numbers"))
+                    numbers = c;
+            QVERIFY(numbers);
+            QAction *numbersAct = action(w, QStringLiteral("Show line numbers"));
+            const bool was = numbersAct->isChecked();
+            QCOMPARE(numbers->isChecked(), was);
+            numbers->click();
+            QCOMPARE(numbersAct->isChecked(), !was);
+            numbersAct->trigger();
+            QCOMPARE(numbers->isChecked(), was);
+            QRadioButton *oneDark = nullptr;
+            for (QRadioButton *r : dlg.findChildren<QRadioButton *>())
+                if (r->text() == QStringLiteral("One Dark"))
+                    oneDark = r;
+            QVERIFY(oneDark);
+            oneDark->click();
+            QCOMPARE(Theme::current(), QStringLiteral("one-dark"));
+            action(w, QStringLiteral("System"))->trigger();
+            QVERIFY(!oneDark->isChecked());
+            // Votes are not options.
+            for (QRadioButton *r : dlg.findChildren<QRadioButton *>())
+                QVERIFY(!r->text().contains(QStringLiteral("Approve")));
+
+            // Finding: only what matches stays.
+            dlg.filter()->setText(QStringLiteral("line numbers"));
+            QVERIFY(!numbers->isHidden());
+            QVERIFY(oneDark->isHidden());
+            int shown = 0;
+            for (int i = 0; i < dlg.shortcutTree()->topLevelItemCount(); ++i)
+                for (int c = 0; c < dlg.shortcutTree()->topLevelItem(i)->childCount(); ++c)
+                    shown += !dlg.shortcutTree()->topLevelItem(i)->child(c)->isHidden();
+            QCOMPARE(shown, 1);
+        }
+
+        // Saved: the next window has them too; back to the defaults clears them.
+        QCOMPARE(Shortcuts::overrides().value(QStringLiteral("Edit/Find")).size(), 2);
+        {
+            auto repo2 = GitRepo::open(tmp.path(), &error);
+            MainWindow w2(std::move(*repo2), Comparison{});
+            QCOMPARE(action(w2, QStringLiteral("Find…"))->shortcut(), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+            QVERIFY(action(w2, QStringLiteral("Next change"))->shortcuts().isEmpty());
+        }
+        {
+            SettingsDialog dlg(&w, {});
+            QVERIFY(dlg.assign(find, Shortcuts::defaults(find)));
+            QVERIFY(dlg.assign(next, Shortcuts::defaults(next)));
+            dlg.applyShortcuts();
+        }
+        QVERIFY(Shortcuts::overrides().isEmpty());
+        QCOMPARE(next->shortcut(), QKeySequence(Qt::ALT | Qt::Key_Down));
+        QVERIFY(next->toolTip().contains(QStringLiteral("Alt+Down")));
+    }
+
     void newComparisonDialogBuildsArguments()
     {
         QTemporaryDir tmp;
@@ -1517,7 +1670,20 @@ private slots:
         QCOMPARE(Theme::current(), QStringLiteral("vibrant-ink"));
         QVERIFY(Theme::isDark());
         QCOMPARE(QApplication::palette().color(QPalette::Base), Theme::currentDef().base);
+        // The line numbers follow the theme too (they kept the previous one's colours).
+        auto gutterLightness = [pane] {
+            QCoreApplication::processEvents();
+            CodeView *v = pane->findChildren<CodeView *>().constLast();
+            for (CodeView *c : pane->findChildren<CodeView *>())
+                if (c->isVisible())
+                    v = c;
+            return v->grab().toImage().pixelColor(4, 4).lightness();
+        };
+        QVERIFY2(gutterLightness() < 128, qPrintable(QString::number(gutterLightness())));
+        action(w, QStringLiteral("One Light"))->trigger();
+        QVERIFY2(gutterLightness() > 128, qPrintable(QString::number(gutterLightness())));
         action(w, QStringLiteral("One Dark"))->trigger();
+        QVERIFY2(gutterLightness() < 128, qPrintable(QString::number(gutterLightness())));
         action(w, QStringLiteral("Switch light / dark"))->trigger();
         QCOMPARE(Theme::current(), QStringLiteral("one-light"));
         QVERIFY(!Theme::isDark());

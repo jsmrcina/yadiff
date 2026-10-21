@@ -100,6 +100,11 @@ void SearchBar::activate()
     m_edit->selectAll();
 }
 
+void SearchBar::setText(const QString &text)
+{
+    m_edit->setText(text);
+}
+
 void SearchBar::setBusy(bool busy)
 {
     m_stop->setVisible(busy);
