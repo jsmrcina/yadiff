@@ -141,7 +141,7 @@ path looks like a revision.
   edit keeps the old lines and adds the chosen new ones after them.
 - **Show whitespace characters** with Ctrl+Shift+8, and **word wrap** with Alt+Z. Side-by-side
   rows stay aligned when one side wraps more than the other.
-- **Next and Previous change** are the filled buttons at the right of the toolbar (Alt+Down and
+- **Next and Previous change** are labelled buttons at the right of the toolbar (Alt+Down and
   Alt+Up), with "Change 2 of 5" between them. Past the last change, Next goes to the next file.
 - **Settings and keyboard shortcuts** (Options menu, Ctrl+,) gathers every option from the menus
   in one window: check boxes for on/off options, choices for themes, views and algorithms, and

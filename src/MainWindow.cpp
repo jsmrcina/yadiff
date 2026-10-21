@@ -248,6 +248,8 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
 
     createActions();
     createToolBar();
+    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
+    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
     Shortcuts::registerWindow(this, {m_recentMenu, m_languageMenu});
     syncOptionControls();
     updateViewToggle();
@@ -1214,59 +1216,28 @@ void MainWindow::createToolBar()
     connect(m_whitespaceToggle, &QToolButton::clicked, m_ignoreAllSpaceAct, &QAction::trigger);
     tb->addWidget(m_whitespaceToggle);
     tb->addSeparator();
-    // Change navigation stands out: filled buttons with words, and where you are.
-    // Not the actions' own buttons: their icons here are drawn in the accent's text
-    // colour, which would vanish in the menu.
-    m_prevButton = new QToolButton;
-    m_prevButton->setText(tr("Previous"));
-    m_nextButton = new QToolButton;
-    m_nextButton->setText(tr("Next"));
-    for (auto [b, a] : {std::pair{m_prevButton, m_prevAct}, std::pair{m_nextButton, m_nextAct}}) {
-        b->setToolTip(a->toolTip());
-        connect(b, &QToolButton::clicked, a, &QAction::trigger);
-        connect(a, &QAction::changed, b, [b, a] {
-            b->setEnabled(a->isEnabled());
-            b->setToolTip(a->toolTip()); // names the shortcut, which can change
-        });
+    // Change navigation, in words, with where you are between the buttons.
+    m_prevAct->setIconText(tr("Previous"));
+    m_nextAct->setIconText(tr("Next"));
+    auto *prev = new QToolButton;
+    prev->setDefaultAction(m_prevAct);
+    auto *next = new QToolButton;
+    next->setDefaultAction(m_nextAct);
+    for (QToolButton *b : {prev, next}) {
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setAutoRaise(true);
     }
     m_changeLabel = new QLabel;
     m_changeLabel->setAlignment(Qt::AlignCenter);
     m_changeLabel->setToolTip(tr("The change shown, of the changes in this file"));
-    for (QToolButton *b : {m_prevButton, m_nextButton}) {
-        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        b->setAutoRaise(false);
-        QFont f = b->font();
-        f.setBold(true);
-        b->setFont(f);
-        b->setMinimumHeight(30);
-    }
-    m_nextButton->setLayoutDirection(Qt::RightToLeft); // the arrow after the word
-    tb->addWidget(m_prevButton);
+    tb->addWidget(prev);
     tb->addWidget(m_changeLabel);
-    tb->addWidget(m_nextButton);
+    tb->addWidget(next);
     connect(m_pane, &DiffPane::currentChangeChanged, this, [this](int index, int count) {
         m_changeLabel->setText(count == 0 ? tr(" No changes ")
                                           : index < 0 ? tr(" %n changes ", nullptr, count)
                                                       : tr(" Change %1 of %2 ").arg(index + 1).arg(count));
     });
-    styleChangeButtons();
-}
-
-void MainWindow::styleChangeButtons()
-{
-    // The theme's accent: the selection colour, with its text colour.
-    for (QToolButton *b : {m_prevButton, m_nextButton}) {
-        QPalette pal = palette();
-        pal.setColor(QPalette::Button, pal.color(QPalette::Highlight));
-        pal.setColor(QPalette::ButtonText, pal.color(QPalette::HighlightedText));
-        b->setPalette(pal);
-        b->setAutoFillBackground(true);
-    }
-    const QColor text = palette().color(QPalette::HighlightedText);
-    m_nextButton->setIcon(arrowIcon(false, text));
-    m_prevButton->setIcon(arrowIcon(true, text));
-    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
-    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
 }
 
 void MainWindow::updateModeUi()
@@ -4632,7 +4603,8 @@ void MainWindow::applyTheme()
     m_pane->applySettings();
     updateViewToggle();
     m_whitespaceToggle->setIcon(whitespaceIcon(palette().color(QPalette::ButtonText)));
-    styleChangeButtons();
+    m_nextAct->setIcon(arrowIcon(false, palette().color(QPalette::ButtonText)));
+    m_prevAct->setIcon(arrowIcon(true, palette().color(QPalette::ButtonText)));
 }
 
 void MainWindow::applyFonts()
