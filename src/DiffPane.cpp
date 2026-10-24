@@ -165,6 +165,7 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
         connect(v, &CodeView::wordClicked, this, &DiffPane::highlightWord);
         connect(v, &CodeView::blameClicked, this, &DiffPane::blameCommitRequested);
         connect(v, &CodeView::cursorPositionChanged, this, [this, v] { m_lastFocused = v; });
+        connect(v, &CodeView::rowChosen, this, &DiffPane::placeCursorAt);
         connect(v, &CodeView::foldClicked, this, [v, this](int row) {
             if (row >= 0 && row < v->rows().size())
                 expandFold(v->rows()[row].foldFirstLine);
@@ -357,6 +358,7 @@ void DiffPane::setFile(const FileView &file)
     }
     if (!m_query.isEmpty())
         recomputeMatches();
+    m_changesAbove = 0;
     goToFirstChange();
     if (m_file.diff.chunks.isEmpty())
         emit currentChangeChanged(-1, 0);
@@ -1046,6 +1048,31 @@ void DiffPane::showChange(int index)
     emit currentChangeChanged(m_current, changeCount());
 }
 
+void DiffPane::placeCursorAt(int row)
+{
+    const auto &ranges = m_mode == Mode::Inline ? m_inlineChunkRows : m_sideChunkRows;
+    if (!m_hasDiff || ranges.isEmpty())
+        return;
+    int above = 0;
+    while (above < ranges.size() && ranges[above].second < row)
+        ++above;
+    if (above < ranges.size() && ranges[above].first <= row) {
+        // On a change: it becomes the current one, without scrolling.
+        m_current = above;
+        const auto [first, last] = ranges[above];
+        for (CodeView *cv : {m_inline, m_left, m_right})
+            cv->setCurrentRange(first, last);
+        m_overview->setCurrentRange(first, last);
+    } else {
+        m_current = -1;
+        m_changesAbove = above;
+        for (CodeView *cv : {m_inline, m_left, m_right})
+            cv->setCurrentRange(-1, -1);
+        m_overview->setCurrentRange(-1, -1);
+    }
+    emit currentChangeChanged(m_current, changeCount());
+}
+
 void DiffPane::setTableView(bool on)
 {
     if (m_tableView == on)
@@ -1059,9 +1086,10 @@ bool DiffPane::nextChange()
 {
     if (showsTable())
         return m_table->nextChange();
-    if (m_current + 1 >= changeCount())
+    const int next = m_current >= 0 ? m_current + 1 : m_changesAbove;
+    if (next >= changeCount())
         return false;
-    showChange(m_current + 1);
+    showChange(next);
     return true;
 }
 
@@ -1069,9 +1097,10 @@ bool DiffPane::prevChange()
 {
     if (showsTable())
         return m_table->prevChange();
-    if (m_current <= 0)
+    const int prev = m_current >= 0 ? m_current - 1 : m_changesAbove - 1;
+    if (prev < 0)
         return false;
-    showChange(m_current - 1);
+    showChange(prev);
     return true;
 }
 

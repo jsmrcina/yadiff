@@ -135,6 +135,8 @@ public:
     void goToFirstChange();
     void goToLastChange();
     void goToChange(int index); // clamped to the available changes
+    // When the cursor was put between changes (no current change): how many are above it.
+    int changesAbove() const { return m_changesAbove; }
 
     // Search within this file (or the current selection).
     void setSearch(const SearchQuery &query, SearchScope scope);
@@ -192,6 +194,7 @@ protected:
 private:
     void rebuild();
     void showChange(int index);
+    void placeCursorAt(int row); // a row the user chose becomes where changes count from
     void jumpToMovePartner(CodeView *source, int row);
     void showContextMenu(CodeView *view, int row, const QPoint &globalPos);
     void addAlignmentActions(QMenu &menu, CodeView *view, int row);
@@ -232,6 +235,7 @@ private:
     bool m_hasDiff = false;
     Mode m_mode = Mode::SideBySide;
     int m_current = -1;
+    int m_changesAbove = 0; // with m_current -1: where Next and Previous go from
 
     bool m_collapse = false;
     int m_context = 3;

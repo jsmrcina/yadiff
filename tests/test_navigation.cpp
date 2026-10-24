@@ -177,6 +177,88 @@ private slots:
         QCOMPARE(pane->currentChange(), 2);
     }
 
+    void nextChangeStartsAtTheClickedLine()
+    {
+        QTemporaryDir tmp;
+        const QString d = tmp.path();
+        git(d, {QStringLiteral("init"), QStringLiteral("-q")});
+        write(d + QStringLiteral("/a.txt"), lines(100));
+        git(d, {QStringLiteral("add"), QStringLiteral("-A")});
+        git(d, {QStringLiteral("commit"), QStringLiteral("-qm"), QStringLiteral("init")});
+        write(d + QStringLiteral("/a.txt"), lines(100, 30)); // changes at lines 30, 60, 90
+
+        QString error;
+        auto repo = GitRepo::open(d, &error);
+        QVERIFY2(repo, qPrintable(error));
+        MainWindow w(std::move(*repo), Comparison{});
+        w.resize(1100, 700);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        auto *pane = w.findChild<DiffPane *>();
+        QVERIFY(pane);
+        QCOMPARE(pane->changeCount(), 3);
+        auto *changeLabel = w.findChild<QLabel *>(QStringLiteral("changeLabel"));
+        QVERIFY(changeLabel);
+        auto label = [changeLabel] { return changeLabel->text().trimmed(); };
+        QCOMPARE(label(), QStringLiteral("Change 1 of 3"));
+
+        for (const auto mode : {DiffPane::Mode::SideBySide, DiffPane::Mode::Inline}) {
+            pane->setMode(mode);
+            CodeView *view = nullptr;
+            for (CodeView *v : pane->findChildren<CodeView *>())
+                if (v->isVisible() && (!view || v->x() > view->x()))
+                    view = v; // the right side, or the inline view
+            QVERIFY(view);
+            auto clickLine = [view](int newLine) {
+                int row = -1;
+                for (int i = 0; i < view->rows().size(); ++i)
+                    if (view->rows()[i].newNo == newLine && view->rows()[i].kind != LineKind::Removed)
+                        row = i;
+                QVERIFY(row >= 0);
+                view->scrollToRow(row);
+                QTextCursor c(view->document()->findBlockByNumber(row));
+                view->setTextCursor(c);
+                QTest::mouseClick(view->viewport(), Qt::LeftButton, {}, view->cursorRect().center());
+                QCOMPARE(view->cursorRow(), row);
+            };
+
+            // Between the second and third change: Next is the third, Previous the second.
+            clickLine(75);
+            QCOMPARE(pane->currentChange(), -1);
+            QCOMPARE(label(), QStringLiteral("Between changes 2 and 3 of 3"));
+            QVERIFY(pane->nextChange());
+            QCOMPARE(pane->currentChange(), 2);
+            clickLine(75);
+            QVERIFY(pane->prevChange());
+            QCOMPARE(pane->currentChange(), 1);
+
+            // On a change: it becomes the current one.
+            clickLine(60);
+            QCOMPARE(pane->currentChange(), 1);
+            QCOMPARE(label(), QStringLiteral("Change 2 of 3"));
+
+            // Above the first: Previous has nowhere to go, Next is the first.
+            clickLine(5);
+            QCOMPARE(label(), QStringLiteral("3 changes"));
+            QVERIFY(!pane->prevChange());
+            QVERIFY(pane->nextChange());
+            QCOMPARE(pane->currentChange(), 0);
+
+            // Below the last.
+            clickLine(95);
+            QCOMPARE(label(), QStringLiteral("After change 3 of 3"));
+            QVERIFY(!pane->nextChange());
+            QVERIFY(pane->prevChange());
+            QCOMPARE(pane->currentChange(), 2);
+
+            // A cursor key moves the place too.
+            clickLine(59);
+            QCOMPARE(pane->currentChange(), -1);
+            QTest::keyClick(view, Qt::Key_Down);
+            QCOMPARE(pane->currentChange(), 1);
+        }
+    }
+
     void equalLinesHaveNoBackgroundAfterDeletedFile()
     {
         // Regression: QPlainTextEdit::setPlainText kept the previous first block's

@@ -37,6 +37,10 @@
 
 #include <cstdio>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 namespace {
 
 bool g_gui = false; // report errors with a dialog (no terminal to print to)
@@ -49,6 +53,26 @@ int fail(const QString &message)
         QMessageBox::critical(nullptr, QStringLiteral("yadiff"), message);
     return 1;
 }
+
+#ifdef Q_OS_WIN
+bool g_console = false; // attached to the console yadiff was started from
+
+// yadiff.exe is a GUI program, so Windows gives it no console: --help, --version and
+// errors would go nowhere (or into a message box). Write them to the console of the
+// command prompt it was started from instead. Output that is already redirected (a
+// pipe, a file, git's) is left alone.
+void attachParentConsole()
+{
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if ((out && out != INVALID_HANDLE_VALUE && GetFileType(out) != FILE_TYPE_UNKNOWN)
+        || qEnvironmentVariableIsSet("YADIFF_DETACHED_CHILD") || !AttachConsole(ATTACH_PARENT_PROCESS))
+        return;
+    FILE *f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    g_console = true;
+}
+#endif
 
 // What a log reader needs to know about this run.
 void logStartup(const QString &cwd)
@@ -100,6 +124,9 @@ void logStartup(const QString &cwd)
 
 int main(int argc, char *argv[])
 {
+#ifdef Q_OS_WIN
+    attachParentConsole();
+#endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("yadiff"));
     QApplication::setOrganizationName(QStringLiteral("yadiff"));
@@ -429,6 +456,15 @@ int main(int argc, char *argv[])
             return 0;
         // Fall through and run in the foreground if detaching failed.
     }
+
+#ifdef Q_OS_WIN
+    // A window in the foreground: let go of the console, so a Ctrl+C typed there later
+    // doesn't close it. Kept with --wait, or when the log goes to the terminal.
+    if (g_console && !parser.isSet(waitOpt) && parser.value(logOpt) != QLatin1String("-")) {
+        FreeConsole();
+        g_console = false;
+    }
+#endif
 
     if (parser.isSet(inlineOpt))
         Settings::setSideBySide(false);

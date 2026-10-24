@@ -31,11 +31,16 @@ Options: -C <dir>             run as if started in <dir>
          --title <text>       window title for the comparison
          --wait               stay attached to the terminal until the window closes
          --inline / --side-by-side   initial view mode
+         -h, --help           all of this, and every option; -v, --version
 ```
 
 `yadiff` returns to the prompt immediately and the window opens on its own, like `gitk &`.
 Arguments that resolve as commits are revisions, and the rest are paths. Use `--` when a
 path looks like a revision.
+
+On Windows `yadiff --help`, `--version` and error messages print in the console yadiff was started
+from. yadiff is a windowed program, so the prompt comes back first and the text follows it. In
+PowerShell, `yadiff --help | Out-Host` waits for the text instead.
 
 ## Features
 
@@ -143,6 +148,9 @@ path looks like a revision.
   rows stay aligned when one side wraps more than the other.
 - **Next and Previous change** are labelled buttons at the right of the toolbar (Alt+Down and
   Alt+Up), with "Change 2 of 5" between them. Past the last change, Next goes to the next file.
+  They go from where you are: click a line (or move there with the cursor keys) and Next is the
+  first change below it, Previous the last one above. Clicking inside a change makes it the
+  current one, and between changes the label says so ("Between changes 2 and 3 of 5").
 - **Settings and keyboard shortcuts** (Options menu, Ctrl+,) gathers every option from the menus
   in one window: check boxes for on/off options, choices for themes, views and algorithms, and
   buttons for those with their own dialog (fonts, colours, the editor, patterns). Options apply at

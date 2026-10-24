@@ -128,12 +128,15 @@ signals:
     void wordClicked(const QString &word); // empty when the click was not on a word
     void blameClicked(const QString &hash);
     void modifiedChanged(bool modified);
+    // The user put the cursor on a row (a click, or a cursor key).
+    void rowChosen(int row);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     bool viewportEvent(QEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;

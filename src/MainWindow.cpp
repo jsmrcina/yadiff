@@ -1228,15 +1228,20 @@ void MainWindow::createToolBar()
         b->setAutoRaise(true);
     }
     m_changeLabel = new QLabel;
+    m_changeLabel->setObjectName(QStringLiteral("changeLabel"));
     m_changeLabel->setAlignment(Qt::AlignCenter);
     m_changeLabel->setToolTip(tr("The change shown, of the changes in this file"));
     tb->addWidget(prev);
     tb->addWidget(m_changeLabel);
     tb->addWidget(next);
     connect(m_pane, &DiffPane::currentChangeChanged, this, [this](int index, int count) {
-        m_changeLabel->setText(count == 0 ? tr(" No changes ")
-                                          : index < 0 ? tr(" %n changes ", nullptr, count)
-                                                      : tr(" Change %1 of %2 ").arg(index + 1).arg(count));
+        const int above = m_pane->changesAbove();
+        m_changeLabel->setText(count == 0                  ? tr(" No changes ")
+                               : index >= 0                ? tr(" Change %1 of %2 ").arg(index + 1).arg(count)
+                               : above == 0                ? tr(" %n changes ", nullptr, count)
+                               : above >= count            ? tr(" After change %1 of %1 ").arg(count)
+                                                           : tr(" Between changes %1 and %2 of %3 ")
+                                                                 .arg(above).arg(above + 1).arg(count));
     });
 }
 

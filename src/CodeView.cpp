@@ -11,6 +11,7 @@
 #include <QContextMenuEvent>
 #include <QDateTime>
 #include <QHelpEvent>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QScrollBar>
 #include <QTextBlock>
@@ -680,6 +681,16 @@ void CodeView::mousePressEvent(QMouseEvent *event)
         return;
     }
     QPlainTextEdit::mousePressEvent(event);
+    if (event->button() == Qt::LeftButton)
+        emit rowChosen(cursorRow());
+}
+
+void CodeView::keyPressEvent(QKeyEvent *event)
+{
+    const int before = cursorRow();
+    QPlainTextEdit::keyPressEvent(event);
+    if (cursorRow() != before)
+        emit rowChosen(cursorRow());
 }
 
 void CodeView::mouseMoveEvent(QMouseEvent *event)
