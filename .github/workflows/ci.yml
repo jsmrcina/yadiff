@@ -139,13 +139,17 @@ jobs:
           if (-not (Select-String -Path smoke.html -Pattern '<!doctype html>' -Quiet)) { throw "no report written" }
           if (-not (Select-String -Path smoke.html -Pattern 'TWO' -Quiet)) { throw "report is missing the diff" }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: yadiff-windows-x64
-          path: yadiff-windows-x64.zip
-
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: yadiff-windows-x64.zip
+
+      # A convenience copy of every build. Kept briefly, and never fails the job: a full
+      # artifact quota mustn't stop a release.
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: yadiff-windows-x64
+          path: yadiff-windows-x64.zip
+          retention-days: 14
