@@ -1,14 +1,15 @@
 # Third-party notices
 
-yadiff itself is under the MIT license (see `LICENSE`). It uses, and the Windows zip ships,
+yadiff itself is under the MIT license (see `LICENSE`). It uses, and the release zips ship,
 the following.
 
 ## Qt 6
 
 yadiff links Qt 6 (Core, Gui, Widgets, Network, Concurrent) dynamically. Qt is available under
 the GNU Lesser General Public License v3 (LGPL-3.0); see https://www.qt.io/licensing/. The Qt
-DLLs in the Windows zip are unmodified builds of Qt (the log's startup lines name the
-version), and can be replaced with your own build of the same version. Qt's source code is at
+libraries in the zips (DLLs on Windows, `usr/lib` on Linux) are unmodified builds of Qt (the
+log's startup lines name the version), and can be replaced with your own build of the same
+version. Qt's source code is at
 https://download.qt.io/official_releases/qt/.
 
 ## KDE Frameworks: KSyntaxHighlighting

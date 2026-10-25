@@ -113,7 +113,7 @@ QByteArray format(QtMsgType type, const char *category, const QString &text)
                        .arg(QCoreApplication::applicationPid(), 6)
                        .arg(threadName(), -4)
                        .arg(QLatin1String(typeName(type)))
-                       .arg(QLatin1String(category), -12);
+                       .arg(QLatin1String(category), -13);
     // Continuation lines (stderr of a command, say) are indented under the first.
     QString body = text;
     body.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));

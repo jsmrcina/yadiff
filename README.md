@@ -4,7 +4,7 @@ A graphical diff viewer for Git, written in C++20 with Qt 6 Widgets. It runs on 
 
 ```
 yadiff                      staged and unstaged changes, compared against HEAD
-                           (outside a repository: an empty window; use File > New comparison)
+                            (outside a repository: an empty window; use File > New comparison)
 yadiff PATH...              just these files or directories, compared against HEAD
 yadiff REV                  REV compared against the working tree
 yadiff REV1 REV2            REV1 compared against REV2
@@ -13,10 +13,10 @@ yadiff REV1...REV2          merge-base of REV1 and REV2 compared against REV2
 yadiff [REV...] -- PATH...  limit any of the above to PATHs
 yadiff -ghpr URL            a GitHub pull request, e.g. https://github.com/OWNER/REPO/pull/12
 yadiff -ado URL             an Azure DevOps pull request,
-                           e.g. https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/12
+                            e.g. https://dev.azure.com/ORG/PROJECT/_git/REPO/pullrequest/12
 yadiff --ado-login [ORG]    sign in to Azure DevOps (--ado-logout ORG forgets the saved token)
 yadiff --no-index A B       two directories or two files, in or outside a repository
-                           (automatic when A and B aren't both inside the current repository)
+                            (automatic when A and B aren't both inside the current repository)
 yadiff --patch FILE         a patch file, on the files it applies to when they're there
 yadiff --session FILE       a session saved with File > Save session
 yadiff --register-difftool  make yadiff git's difftool (--unregister-difftool undoes it)
@@ -41,6 +41,25 @@ path looks like a revision.
 On Windows `yadiff --help`, `--version` and error messages print in the console yadiff was started
 from. yadiff is a windowed program, so the prompt comes back first and the text follows it. In
 PowerShell, `yadiff --help | Out-Host` waits for the text instead.
+
+## Installing
+
+Download the zip for your system from the
+[latest release](https://github.com/jsmrcina/yadiff/releases/latest). Both need
+[Git](https://git-scm.com) installed.
+
+- **Windows:** unzip `yadiff-windows-x64.zip` anywhere you can write to, for example
+  `%LOCALAPPDATA%\Programs`, and put the `yadiff` folder on `PATH`. yadiff updates itself from
+  there (Help → Check for update now).
+- **Linux:** unzip `yadiff-linux-x64.zip`, for example into `~/.local/opt`, and link its starter
+  script onto `PATH`: `ln -s ~/.local/opt/yadiff/yadiff ~/.local/bin/yadiff`. It brings its own
+  Qt, so it runs on any x86-64 distribution as new as Ubuntu 22.04. For the icon in the
+  application menu, copy `yadiff.desktop` to `~/.local/share/applications` and point its `Exec=`
+  and `Icon=` at the folder. To build from source instead, see [Building](#building).
+
+Then, optionally, `yadiff --register-difftool` and `yadiff --register-mergetool` make it git's
+diff and merge tool, and `yadiff --add-file-manager-menu` adds it to Dolphin's or Explorer's
+right-click menu.
 
 ## Features
 
@@ -442,18 +461,18 @@ default) checks once a day, a few seconds after start-up, and installs without a
 the new version starts the next time yadiff does. A "Restart now" button in the status bar starts
 it straight away.
 
-Releases are read with the `gh` CLI, which handles sign-in for the private repository. Without
-`gh`, yadiff uses GitHub's REST API, sending `GH_TOKEN` or `GITHUB_TOKEN` when one is set.
+Releases are read with the `gh` CLI when it's installed, and otherwise with GitHub's REST API,
+sending `GH_TOKEN` or `GITHUB_TOKEN` when one is set.
 Installing depends on how yadiff was installed:
 
-- **Linux, installed with `install.sh`:** releases have no Linux binaries, so yadiff builds the
+- **Linux, installed with `install.sh`:** yadiff builds the
   release's source, runs its tests, and installs it as a new `~/.local/opt/yadiff-<tag>` snapshot.
   Then it moves the `~/.local/bin/yadiff` link to that snapshot. This needs the same build tools
   as `install.sh`. Building against this machine's own Qt keeps yadiff working across Qt updates.
   The old snapshot stays, so going back is a matter of moving the link.
 - **Windows, an unzipped folder:** yadiff downloads `yadiff-windows-x64.zip` and replaces its files
   in place. Files in use are renamed to `*.old` first and deleted on the next start.
-- **Anything else,** such as a package manager or a build tree: yadiff says a release is available
+- **Anything else,** such as the Linux zip, a package manager or a build tree: yadiff says a release is available
   and links to it, but doesn't install it.
 
 ## Signing in to Azure DevOps
@@ -561,9 +580,8 @@ icon.
 
 ### Windows
 
-A ready-to-run build is attached to every CI run: the `yadiff-windows-x64` artifact. Version tags
-(`v*`) also attach it to a GitHub release. Unzip it anywhere and put the folder on `PATH`. Git for
-Windows must be installed. To build it yourself:
+Releases have a ready-to-run zip (see [Installing](#installing)), and every CI run keeps one for
+two weeks as the `yadiff-windows-x64` artifact. To build it yourself:
 
 Install Qt 6 (MSVC 2022 64-bit kit) with the Qt online installer, plus CMake, Ninja and Git for
 Windows. For syntax highlighting, also build KSyntaxHighlighting, with KDE Craft or vcpkg, and add it
@@ -576,14 +594,22 @@ C:\Qt\6.x.x\msvc2022_64\bin\windeployqt.exe build\yadiff.exe
 ```
 
 Put the `build` folder on `PATH`. `yadiff.exe` is a GUI-subsystem program, so the console returns
-immediately and errors are shown in a dialog. The Windows build has not been tested yet.
+immediately; `--help`, `--version` and errors print in the console it was started from.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` builds and runs every test on Arch Linux, the same packages as the
-development machine, and on Windows with MSVC and Qt 6.8. The Windows job builds
-KSyntaxHighlighting from source and caches it. It then packages `yadiff.exe` with `windeployqt`,
-and smoke-tests the zip on a clean `PATH` with a headless `--export`.
+`.github/workflows/ci.yml` builds and runs every test on Arch Linux and on Windows with MSVC and
+Qt 6.8. The Windows job builds KSyntaxHighlighting from source and caches it. It then packages
+`yadiff.exe` with `windeployqt`, and smoke-tests the zip on a clean `PATH` with a headless
+`--export`. A third job runs `packaging/linux/package.sh` in an Ubuntu 22.04 container: it builds
+against Qt's official binaries, bundles Qt with linuxdeploy, and smoke-tests the zip with Qt out
+of the way. To build the Linux zip locally:
+
+```
+docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 packaging/linux/package.sh
+```
+
+On a version tag (`v*`), both zips are attached to the GitHub release.
 
 ## Tests
 
@@ -696,5 +722,5 @@ overview and pushes).
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Qt, KSyntaxHighlighting and the other parts the Windows zip ships
+MIT; see [LICENSE](LICENSE). Qt, KSyntaxHighlighting and the other parts the release zips ship
 are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

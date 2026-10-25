@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # attach the Windows zip to releases on version tags
+  contents: write # attach the zips to releases on version tags
 
 env:
   QT_VERSION: "6.8.3"
@@ -38,6 +38,33 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build --output-on-failure --timeout 300
+
+  linux-package:
+    name: Linux zip (Ubuntu 22.04)
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Qt and KSyntaxHighlighting
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/yadiff-package/qt
+            /tmp/yadiff-package/kf6
+          key: linux-package-qt${{ env.QT_VERSION }}-kf${{ env.KF_VERSION }}-v1
+      - name: Build and package
+        run: packaging/linux/package.sh
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yadiff-linux-x64.zip
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: yadiff-linux-x64
+          path: yadiff-linux-x64.zip
+          retention-days: 14
 
   windows:
     name: Windows (MSVC)
