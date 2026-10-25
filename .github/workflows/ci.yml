@@ -122,7 +122,7 @@ jobs:
           $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
           if (-not $crt) { throw "VC runtime redist folder not found under $env:VCToolsRedistDir" }
           Copy-Item "$($crt.FullName)\*.dll" dist/yadiff/
-          Copy-Item README.md dist/yadiff/
+          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/yadiff/
           Compress-Archive -Path dist/yadiff -DestinationPath yadiff-windows-x64.zip -Force
 
       - name: Smoke test the package

@@ -693,3 +693,8 @@ overview and pushes).
 | `src/SettingsDialog.*`, `src/Shortcuts.*` | Options > Settings: every option, and keyboard shortcuts the user can change |
 | `resources/syntax-themes/` | Syntax themes KSyntaxHighlighting doesn't ship (Light+, Vibrant Ink) |
 | `resources/` | Icon (SVG source, PNG sizes, Windows `.ico`/`.rc`) and desktop entry |
+
+## License
+
+MIT; see [LICENSE](LICENSE). Qt, KSyntaxHighlighting and the other parts the Windows zip ships
+are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
