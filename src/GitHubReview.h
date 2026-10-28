@@ -36,6 +36,7 @@ struct Comment {
     ThreadStatus status = ThreadStatus::None;
     QString threadNode;
     bool outdated() const { return line <= 0; }
+    bool operator==(const Comment &) const = default;
 };
 
 using Thread = QVector<Comment>; // first comment, then replies in order

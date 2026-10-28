@@ -135,7 +135,7 @@ GitHubReview::Comment commentFrom(const QJsonObject &c, qint64 threadId, const Q
     GitHubReview::Comment out;
     const qint64 commentId = qint64(c.value(QStringLiteral("id")).toDouble());
     const bool root = c.value(QStringLiteral("parentCommentId")).toInt() == 0 && commentId == 1;
-    out.id = root ? threadId : threadId * AdoPr::kReplyBase + commentId;
+    out.id = root ? threadId : -(threadId * AdoPr::kReplyBase + commentId);
     out.inReplyTo = root ? 0 : threadId;
     out.author = c.value(QStringLiteral("author")).toObject().value(QStringLiteral("displayName")).toString();
     out.body = c.value(QStringLiteral("content")).toString();

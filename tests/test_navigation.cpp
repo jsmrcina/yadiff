@@ -1014,7 +1014,8 @@ private slots:
         const int lines = right->document()->findBlockByNumber(2).text().size() + 1;
         QVERIFY(lines > 3);
         QCOMPARE(left->document()->findBlockByNumber(2).text().size(), lines - 1); // spacer matches
-        QVERIFY(browser->height() >= lines * right->fontMetrics().lineSpacing() - 2);
+        QVERIFY(browser->parentWidget()->height() >= lines * right->fontMetrics().lineSpacing() - 2); // the overlay fills the row
+        QVERIFY(browser->height() >= browser->document()->size().height()); // and shows all of the thread
         if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
             QApplication::processEvents();
             pane.grab().save(out + QStringLiteral("/comments.png"));
@@ -1037,6 +1038,147 @@ private slots:
         QVERIFY2(resolved.text.startsWith(QStringLiteral("\u2713 Resolved · ")), qPrintable(resolved.text));
         pane.setCommentsExpanded(true);
         QVERIFY(right->findChild<QTextBrowser *>()->toPlainText().contains(QStringLiteral("Resolved")));
+        QVERIFY(right->findChild<QTextBrowser *>()->toPlainText().contains(QStringLiteral("Reply"))); // no states here: no Resolve
+    }
+
+    void movedLinesKeepTheirSidesColour()
+    {
+        const FileDiff diff = DiffModel::parseUnified(QStringLiteral("@@ -1,8 +1,8 @@\n-void moved() {\n-    doSomethingImportant();\n-}\n"
+                                                                     " int keep1;\n int keep2;\n int keep3;\n int keep4;\n int keep5;\n"
+                                                                     "+void moved() {\n+    doSomethingImportant();\n+}\n"));
+        QCOMPARE(diff.moves.size(), 1);
+        FileView v;
+        v.diff = diff;
+        v.title = v.fileName = QStringLiteral("f.cpp");
+        DiffPane pane;
+        pane.resize(900, 400);
+        pane.setMode(DiffPane::Mode::Inline);
+        pane.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&pane));
+        pane.setFile(v);
+        CodeView *view = nullptr;
+        for (CodeView *cv : pane.findChildren<CodeView *>())
+            if (!cv->rows().isEmpty())
+                view = cv;
+        QVERIFY(view);
+        const ViewPalette pal = diffPalette(&pane);
+        int out = 0, in = 0;
+        for (int i = 0; i < view->rows().size(); ++i) {
+            const Row &r = view->rows()[i];
+            if (!r.moved)
+                continue;
+            const QColor bg = view->document()->findBlockByNumber(i).blockFormat().background().color();
+            QCOMPARE(bg, r.kind == LineKind::Removed ? pal.removed : pal.added);
+            ++(r.kind == LineKind::Removed ? out : in);
+        }
+        QCOMPARE(out, 3);
+        QCOMPARE(in, 3);
+        if (const QString dir = qEnvironmentVariable("YADIFF_TEST_GRAB"); !dir.isEmpty()) {
+            QApplication::processEvents();
+            pane.grab().save(dir + QStringLiteral("/moved.png"));
+        }
+    }
+
+    void reviewCommentsAreWrittenInline()
+    {
+        const FileDiff diff = DiffModel::parseUnified(QStringLiteral("@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"));
+        GitHubReview::Comment root;
+        root.id = 7;
+        root.path = QStringLiteral("f.txt");
+        root.side = QStringLiteral("RIGHT");
+        root.line = 2;
+        root.author = QStringLiteral("alice");
+        root.body = QStringLiteral("Why?");
+        root.status = GitHubReview::ThreadStatus::Active;
+        FileView v;
+        v.diff = diff;
+        v.title = v.fileName = QStringLiteral("f.txt");
+        v.paths = {QStringLiteral("f.txt"), QStringLiteral("f.txt")};
+        v.threads = GitHubReview::threads({root});
+        v.reviewEnabled = true;
+        v.threadStatuses = {{GitHubReview::ThreadStatus::Active, QStringLiteral("Active")},
+                            {GitHubReview::ThreadStatus::Resolved, QStringLiteral("Resolved")}};
+        DiffPane pane;
+        pane.resize(1000, 500);
+        pane.setMode(DiffPane::Mode::Inline);
+        pane.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&pane));
+        pane.setFile(v);
+        CodeView *view = nullptr;
+        for (CodeView *cv : pane.findChildren<CodeView *>())
+            if (!cv->rows().isEmpty())
+                view = cv;
+        QVERIFY(view);
+        auto editor = [view] { return view->findChild<QPlainTextEdit *>(); };
+
+        // Reply: the thread opens with an editor under it, which has the focus.
+        QVector<std::pair<qint64, QString>> replies;
+        connect(&pane, &DiffPane::replySubmitted, [&](qint64 id, const QString &body) { replies.push_back({id, body}); });
+        QVector<GitHubReview::ThreadStatus> statuses;
+        connect(&pane, &DiffPane::threadStatusRequested, [&](qint64, GitHubReview::ThreadStatus s) { statuses << s; });
+        pane.startReply(7);
+        QVERIFY(pane.isThreadExpanded(7));
+        QVERIFY(editor());
+        QTRY_VERIFY(editor()->hasFocus());
+        QTest::keyClicks(editor(), QStringLiteral("Because"));
+        // A rebuild (new threads arrive, say) keeps the text and the focus.
+        pane.setThreads(v.threads);
+        QCOMPARE(editor()->toPlainText(), QStringLiteral("Because"));
+        QTRY_VERIFY(editor()->hasFocus());
+        if (const QString out = qEnvironmentVariable("YADIFF_TEST_GRAB"); !out.isEmpty()) {
+            QApplication::processEvents();
+            pane.grab().save(out + QStringLiteral("/reply.png"));
+        }
+        QTest::keyClick(editor(), Qt::Key_Return, Qt::ControlModifier);
+        QTest::keyRelease(editor(), Qt::Key_Control); // or Qt still thinks Ctrl is held, for later tests
+        QCOMPARE(QGuiApplication::keyboardModifiers(), Qt::NoModifier);
+        QTRY_COMPARE(replies.size(), 1);
+        QCOMPARE(replies[0], std::make_pair(qint64(7), QStringLiteral("Because")));
+        QVERIFY(editor()->isReadOnly()); // while posting
+        // Refused: the text stays to try again.
+        pane.draftFailed();
+        QVERIFY(!editor()->isReadOnly());
+        QCOMPARE(editor()->toPlainText(), QStringLiteral("Because"));
+        pane.draftPosted();
+        pane.setThreads(v.threads);
+        QVERIFY(!editor());
+        QVERIFY(pane.isThreadExpanded(7));
+
+        // The thread's own links reply and resolve.
+        auto *browser = view->findChild<QTextBrowser *>();
+        QVERIFY(browser);
+        emit browser->anchorClicked(QUrl(QStringLiteral("yadiff:resolve")));
+        QTRY_COMPARE(statuses.size(), 1);
+        QCOMPARE(statuses[0], GitHubReview::ThreadStatus::Resolved);
+        emit browser->anchorClicked(QUrl(QStringLiteral("yadiff:reply")));
+        QTRY_VERIFY(editor());
+        QTest::keyClick(editor(), Qt::Key_Escape); // empty: cancelled without asking
+        QTRY_VERIFY(!editor());
+
+        // A new thread: an editor under its line, alone.
+        QVector<QStringList> posted;
+        connect(&pane, &DiffPane::commentSubmitted, [&](const QString &path, const QString &side, int line, int startLine, const QString &body) {
+            posted.push_back({path, side, QString::number(line), QString::number(startLine), body});
+        });
+        pane.startComment(QStringLiteral("f.txt"), QStringLiteral("LEFT"), 2, 0);
+        int row = -1;
+        for (int i = 0; i < view->rows().size(); ++i)
+            if (view->rows()[i].comment && view->rows()[i].threadId == DiffPane::kNewThread)
+                row = i;
+        QVERIFY(row > 0);
+        QCOMPARE(view->rows()[row - 1].kind, LineKind::Removed); // under the old line 2
+        QVERIFY(view->rows()[row].compose);
+        QVERIFY(view->document()->findBlockByNumber(row).text().size() >= 4); // room for the editor
+        QTRY_VERIFY(editor() && editor()->hasFocus());
+        QTest::keyClicks(editor(), QStringLiteral("Gone?"));
+        QTest::keyClick(editor(), Qt::Key_Enter, Qt::ControlModifier);
+        QTest::keyRelease(editor(), Qt::Key_Control);
+        QTRY_COMPARE(posted.size(), 1);
+        QCOMPARE(posted[0], (QStringList{QStringLiteral("f.txt"), QStringLiteral("LEFT"), QStringLiteral("2"), QStringLiteral("0"), QStringLiteral("Gone?")}));
+        pane.draftPosted();
+        pane.setThreads(v.threads);
+        QVERIFY(!editor());
+        QVERIFY(!pane.hasDraft());
     }
 
     void prOverviewShowsHowThePrStands()

@@ -7,6 +7,8 @@
 #include "Search.h"
 
 #include <QImage>
+#include <limits>
+#include <optional>
 #include <QSet>
 #include <QWidget>
 
@@ -122,6 +124,17 @@ public:
     void setCommentsExpanded(bool expanded);
     bool isThreadExpanded(qint64 threadId) const { return m_expandedThreads.contains(threadId); }
 
+    // Review comments are written inline, in an editor under the thread (a reply) or under
+    // the line (a new thread). Posting emits replySubmitted() or commentSubmitted(); the
+    // window then calls draftPosted() (expanding `threadId`, a new thread) or draftFailed(),
+    // which keeps the text. A draft outlives switching files.
+    void startReply(qint64 threadId);
+    void startComment(const QString &path, const QString &side, int line, int startLine);
+    void draftPosted(qint64 threadId = 0);
+    void draftFailed();
+    bool hasDraft() const { return m_draft.has_value(); }
+    static constexpr qint64 kNewThread = std::numeric_limits<qint64>::min(); // the new thread's row
+
     // Syntax: empty `language` means auto-detect from the file name.
     void setLanguageOverride(const QString &language);
     QString detectedLanguage() const;
@@ -183,9 +196,9 @@ signals:
     void lineOpRequested(GitRepo::LineOp op, const QVector<int> &lines);
     void hint(const QString &text); // a short message for the status bar
     void textViewRequested();       // the table view's "Text view" button
-    // Review: add a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
-    void commentRequested(const QString &path, const QString &side, int line, int startLine);
-    void replyRequested(qint64 threadId);
+    // Review: post a comment on `line` (and up from `startLine` for a range) of `side` ("LEFT"/"RIGHT").
+    void commentSubmitted(const QString &path, const QString &side, int line, int startLine, const QString &body);
+    void replySubmitted(qint64 threadId, const QString &body);
     void threadStatusRequested(qint64 threadId, GitHubReview::ThreadStatus status);
 
 protected:
@@ -221,6 +234,12 @@ private:
     Row makeCommentRow(const GitHubReview::Thread &t) const;
     QString threadHtml(const GitHubReview::Thread &t) const;
     void toggleThread(qint64 threadId);
+    void threadAction(qint64 threadId, const QString &action);
+    const GitHubReview::Thread &threadAt(int index) const { return index < 0 ? m_draftThread : m_file.threads[index]; }
+    void rebuildKeepingScroll();
+    bool replaceDraft();
+    void submitDraft(qint64 threadId, const QString &text);
+    void cancelDraft();
     void relayout();
     void applyCommentHeights();
     Row makeSpacerRow(const Row &comment) const;
@@ -277,8 +296,19 @@ private:
     ImageDiffView *m_image = nullptr;
     class TableDiffView *m_table = nullptr;
     bool m_tableView = true;
-    // Review threads anchored to FileDiff lines: line index -> thread indices.
+    // Review threads anchored to FileDiff lines: line index -> thread indices (-1: the
+    // new thread being written, m_draftThread).
     QHash<int, QVector<int>> m_threadsAt;
+    struct Draft {
+        qint64 threadId = 0; // the thread replied to, or kNewThread
+        QString text;
+        int cursor = 0;
+        bool busy = false;   // being posted
+        bool focus = true;   // the editor gets the focus when next shown
+    };
+    std::optional<Draft> m_draft;
+    GitHubReview::Thread m_draftThread; // a new thread's place: path, side and lines
+    bool m_draftFocus = false;          // during rebuild()
     QSet<qint64> m_expandedThreads; // review threads shown in full
     OverviewBar *m_overview = nullptr;
     QTimer *m_wrapTimer = nullptr;

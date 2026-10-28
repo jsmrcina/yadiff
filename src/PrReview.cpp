@@ -83,9 +83,7 @@ std::optional<GitHubReview::Comment> reply(const Comparison &cmp, qint64 threadI
     if (!isAdo(cmp))
         return GitHubReview::reply(gh(cmp), threadId, body, error);
     const auto cred = adoCredential(cmp, error);
-    // Reply ids encode their thread (see AdoPr::kReplyBase); roots are the thread id.
-    const qint64 thread = threadId >= AdoPr::kReplyBase ? threadId / AdoPr::kReplyBase : threadId;
-    return cred ? AdoPr::reply(ado(cmp), *cred, thread, body, error) : std::nullopt;
+    return cred ? AdoPr::reply(ado(cmp), *cred, AdoPr::threadOf(threadId), body, error) : std::nullopt;
 }
 
 QVector<ThreadStatus> threadStatuses(const Comparison &cmp)
@@ -114,8 +112,7 @@ bool setThreadStatus(const Comparison &cmp, const GitHubReview::Comment &root, T
         return GitHubReview::setResolved(root.threadNode, status == ThreadStatus::Resolved, error);
     }
     const auto cred = adoCredential(cmp, error);
-    const qint64 thread = root.id >= AdoPr::kReplyBase ? root.id / AdoPr::kReplyBase : root.id;
-    return cred && AdoPr::setThreadStatus(ado(cmp), *cred, thread, status, error);
+    return cred && AdoPr::setThreadStatus(ado(cmp), *cred, AdoPr::threadOf(root.id), status, error);
 }
 
 QVector<Vote> votes(const Comparison &cmp)

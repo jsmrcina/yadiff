@@ -96,8 +96,11 @@ std::optional<Resolved> resolve(const Ref &ref, const AdoAuth::Credential &cred,
                                 int *httpStatus = nullptr, const std::function<void(const QString &)> &progress = {});
 
 // Review threads, in yadiff's common comment model. Thread roots use the thread id as
-// their id; replies are numbered within it (see kReplyBase), so replies go to the thread.
+// their id. Replies get -(thread * kReplyBase + comment): negative, because thread ids
+// are global to the organization and reach the millions, so a positive encoding can't
+// be told apart from a thread id. threadOf() gives any comment id's thread.
 constexpr qint64 kReplyBase = 100000;
+inline qint64 threadOf(qint64 commentId) { return commentId < 0 ? -commentId / kReplyBase : commentId; }
 QVector<GitHubReview::Comment> parseThreads(const QByteArray &json, const QUrl &webUrl);
 QByteArray threadPayload(const QString &path, const QString &side, int line, int startLine, const QString &body);
 

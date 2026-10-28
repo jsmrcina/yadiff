@@ -421,6 +421,16 @@ private slots:
         const auto threads = GitHubReview::threads(comments);
         QCOMPARE(threads.size(), 1);
         QCOMPARE(threads[0].size(), 2);
+        QCOMPARE(AdoPr::threadOf(comments[0].id), qint64(5));
+        QCOMPARE(AdoPr::threadOf(comments[1].id), qint64(5));
+
+        // Thread ids are organization-wide, so they reach the millions: a root's id must
+        // stay its thread, and a reply must still find it.
+        const auto big = AdoPr::parseThreads(QByteArray(json).replace(R"("id":5,)", R"("id":2345678,)"), QUrl());
+        QCOMPARE(big.size(), 2);
+        QCOMPARE(AdoPr::threadOf(big[0].id), qint64(2345678));
+        QCOMPARE(AdoPr::threadOf(big[1].id), qint64(2345678));
+        QVERIFY(big[1].id != big[0].id);
 
         const QJsonObject p = QJsonDocument::fromJson(AdoPr::threadPayload(QStringLiteral("src/a.cpp"), QStringLiteral("LEFT"), 4, 2,
                                                                             QStringLiteral("hi")))

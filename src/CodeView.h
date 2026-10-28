@@ -7,7 +7,7 @@
 #include <QHash>
 #include <QPlainTextEdit>
 
-class QTextBrowser;
+class CommentWidget;
 
 // One displayed row in a CodeView. Filler rows pad side-by-side views so that
 // both sides stay aligned; fold rows stand in for a collapsed run of unchanged lines.
@@ -20,6 +20,15 @@ struct Row {
     bool commentExpanded = false; // shown in full (rich text over the row) instead of one summary line
     QString commentHtml;          // expanded comment rows: the rendered thread
     bool commentDone = false;     // the thread is resolved (or closed): its summary is greyed
+    // Expanded comment rows being written to: an editor under the thread (a reply), or
+    // alone (a new thread). The text survives rebuilds through the row.
+    bool compose = false;
+    QString composeText;
+    int composeCursor = 0;
+    bool composeBusy = false;    // posting: the editor is read-only
+    bool composeFocus = false;   // give the editor the keyboard focus
+    QString composeLabel;        // beside the buttons, e.g. "Comment on line 12 (new side)"
+    QString composeAction;       // the post button, e.g. "Reply"
     int foldFirstLine = -1; // fold rows: first hidden FileDiff line
     int foldCount = 0;      // fold rows: number of hidden lines
     int oldNo = 0;
@@ -103,6 +112,8 @@ public:
     int commentLinesNeeded(int row);
     void setRowLineCount(int row, int lines);
     void layoutCommentWidgets();
+    // Whether a comment editor here has the keyboard focus.
+    bool composerHasFocus() const;
 
     // Editing (working-tree side only). Lines added by the user are shown as additions.
     void setEditing(bool on);
@@ -124,6 +135,12 @@ signals:
     void moveJumpRequested(int row);
     void foldClicked(int row);
     void commentToggled(qint64 threadId);
+    // A link in an expanded thread: "reply", "resolve" or "reactivate".
+    void commentAction(qint64 threadId, const QString &action);
+    // The comment editor: its text as typed, Post (or Ctrl+Enter), Cancel (or Esc).
+    void composeEdited(qint64 threadId, const QString &text, int cursor);
+    void composeSubmitted(qint64 threadId, const QString &text);
+    void composeCancelled(qint64 threadId);
     void contextMenuRequested(int row, const QPoint &globalPos);
     void wordClicked(const QString &word); // empty when the click was not on a word
     void blameClicked(const QString &hash);
@@ -150,14 +167,14 @@ private:
     void rebuildRowsAfterEdit();
     static QString stripPadding(const QString &s);
     void clearCommentWidgets();
-    QTextBrowser *makeCommentWidget(int row);
+    CommentWidget *makeCommentWidget(int row);
 
     class Gutter;
     Gutter *m_gutter = nullptr;
     Numbers m_numbers;
     QVector<Row> m_rows;
     QVector<int> m_padding;
-    QHash<int, QTextBrowser *> m_commentWidgets; // row -> overlay
+    QHash<int, CommentWidget *> m_commentWidgets; // row -> overlay
     QList<QTextEdit::ExtraSelection> m_searchSelections, m_wordSelections;
     bool m_lineNumbers = true;
     QVector<BlameLine> m_blameOld, m_blameNew;

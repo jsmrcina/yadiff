@@ -311,8 +311,8 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
         m_shownIndex = -1;
         showFile(index);
     });
-    connect(m_pane, &DiffPane::commentRequested, this, &MainWindow::addComment);
-    connect(m_pane, &DiffPane::replyRequested, this, &MainWindow::replyToThread);
+    connect(m_pane, &DiffPane::commentSubmitted, this, &MainWindow::postComment);
+    connect(m_pane, &DiffPane::replySubmitted, this, [this](qint64 threadId, const QString &body) { postReply(threadId, body, true); });
     connect(m_pane, &DiffPane::threadStatusRequested, this, &MainWindow::setThreadStatus);
     connect(m_search, &SearchBar::stopRequested, this, [this] {
         if (m_searchCancel)
@@ -335,6 +335,14 @@ MainWindow::MainWindow(GitRepo repo, Comparison cmp, QWidget *parent)
     });
 
     notePullRequest();
+
+    m_commentsTimer = new QTimer(this);
+    m_commentsTimer->setInterval(60 * 1000);
+    connect(m_commentsTimer, &QTimer::timeout, this, [this] {
+        if (isActiveWindow() && !QApplication::activeModalWidget())
+            loadComments(true);
+    });
+    m_commentsTimer->start();
 
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(2000);
@@ -369,6 +377,15 @@ QString MainWindow::reviewRoot() const
     if (m_cmp.mode == Comparison::Mode::Paths)
         return m_cmp.leftPath + u'\n' + m_cmp.rightPath;
     return m_repo.root();
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    // Back from the browser, say: fetch the threads unless that was just done.
+    if (event->type() == QEvent::ActivationChange && isActiveWindow() && m_commentsFetched.isValid()
+        && m_commentsFetched.elapsed() > 15 * 1000)
+        loadComments(true);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -2959,11 +2976,11 @@ void MainWindow::setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus sta
                 QMessageBox::warning(this, tr("Thread status"), tr("%1 refused the change:\n%2").arg(PrReview::hostName(m_cmp), error));
                 return;
             }
+            ++m_commentsGen;
             // Every comment of the thread carries it (Azure DevOps); GitHub's on the first.
-            const qint64 adoThread = m_cmp.prHost == QLatin1String("ado") ? threadId : -1;
+            const bool ado = m_cmp.prHost == QLatin1String("ado");
             for (GitHubReview::Comment &c : m_comments)
-                if (c.id == threadId || c.inReplyTo == threadId
-                    || (adoThread > 0 && c.id >= AdoPr::kReplyBase && c.id / AdoPr::kReplyBase == adoThread))
+                if (c.id == threadId || c.inReplyTo == threadId || (ado && AdoPr::threadOf(c.id) == threadId))
                     c.status = status;
             if (m_overview) {
                 for (GitHubReview::Thread &t : m_overview->discussion)
@@ -2977,22 +2994,38 @@ void MainWindow::setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus sta
         });
 }
 
-void MainWindow::loadComments()
+void MainWindow::loadComments(bool quiet)
 {
-    if (m_cmp.prNumber <= 0)
+    if (m_cmp.prNumber <= 0 || (quiet && m_commentsBusy))
         return;
+    m_commentsBusy = true;
+    m_commentsFetched.start();
+    const quint64 gen = m_commentsGen;
+    const QString pr = PrReview::webUrl(m_cmp);
     runJob<std::pair<QVector<GitHubReview::Comment>, QString>>(
         [cmp = m_cmp] {
             QString error;
             auto c = PrReview::fetch(cmp, &error);
             return std::make_pair(c.value_or(QVector<GitHubReview::Comment>()), c ? QString() : error);
         },
-        [this](std::pair<QVector<GitHubReview::Comment>, QString> r) {
+        [this, quiet, gen, pr](std::pair<QVector<GitHubReview::Comment>, QString> r) {
+            m_commentsBusy = false;
+            // Another PR by now, or fetched before our own post: the next refresh has it.
+            if (pr != PrReview::webUrl(m_cmp) || (quiet && gen != m_commentsGen))
+                return;
             if (!r.second.isEmpty()) {
-                statusBar()->showMessage(tr("Could not load review comments: %1").arg(r.second.section(u'\n', 0, 0)), 6000);
+                if (!quiet)
+                    statusBar()->showMessage(tr("Could not load review comments: %1").arg(r.second.section(u'\n', 0, 0)), 6000);
                 return;
             }
+            if (quiet && r.first == m_comments)
+                return;
             m_comments = r.first;
+            if (quiet) {
+                statusBar()->showMessage(tr("Review threads updated"), 3000);
+                refreshThreads();
+                return;
+            }
             int outdated = 0, open = 0;
             const auto all = GitHubReview::threads(m_comments);
             for (const auto &t : all) {
@@ -3009,17 +3042,8 @@ void MainWindow::loadComments()
         });
 }
 
-void MainWindow::addComment(const QString &path, const QString &side, int line, int startLine)
+void MainWindow::postComment(const QString &path, const QString &side, int line, int startLine, const QString &body)
 {
-    bool ok = false;
-    const QString where = startLine ? tr("lines %1–%2").arg(startLine).arg(line) : tr("line %1").arg(line);
-    const QString body = QInputDialog::getMultiLineText(
-        this, tr("Add review comment"),
-        tr("Comment on %1, %2 (%3 side).\nIt is posted to %4 straight away.")
-            .arg(path, where, side == QLatin1String("LEFT") ? tr("old") : tr("new"), PrReview::hostName(m_cmp)),
-        QString(), &ok);
-    if (!ok || body.trimmed().isEmpty())
-        return;
     statusBar()->showMessage(tr("Posting comment…"));
     runJob<std::pair<std::optional<GitHubReview::Comment>, QString>>(
         [cmp = m_cmp, path, side, line, startLine, body] {
@@ -3029,10 +3053,14 @@ void MainWindow::addComment(const QString &path, const QString &side, int line, 
         },
         [this](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
             if (!r.first) {
+                statusBar()->clearMessage();
+                m_pane->draftFailed();
                 QMessageBox::warning(this, tr("Add review comment"), tr("%1 refused the comment:\n%2").arg(PrReview::hostName(m_cmp), r.second));
                 return;
             }
+            ++m_commentsGen;
             m_comments << *r.first;
+            m_pane->draftPosted(r.first->id);
             statusBar()->showMessage(tr("Comment posted"), 3000);
             refreshThreads();
         });
@@ -3045,17 +3073,29 @@ void MainWindow::replyToThread(qint64 threadId)
                                                         QString(), &ok);
     if (!ok || body.trimmed().isEmpty())
         return;
+    postReply(threadId, body, false);
+}
+
+void MainWindow::postReply(qint64 threadId, const QString &body, bool inlineDraft)
+{
+    statusBar()->showMessage(tr("Posting reply…"));
     runJob<std::pair<std::optional<GitHubReview::Comment>, QString>>(
         [cmp = m_cmp, threadId, body] {
             QString error;
             auto c = PrReview::reply(cmp, threadId, body, &error);
             return std::make_pair(c, error);
         },
-        [this, threadId](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
+        [this, threadId, inlineDraft](std::pair<std::optional<GitHubReview::Comment>, QString> r) {
             if (!r.first) {
+                statusBar()->clearMessage();
+                if (inlineDraft)
+                    m_pane->draftFailed();
                 QMessageBox::warning(this, tr("Reply"), tr("%1 refused the reply:\n%2").arg(PrReview::hostName(m_cmp), r.second));
                 return;
             }
+            ++m_commentsGen;
+            if (inlineDraft)
+                m_pane->draftPosted();
             GitHubReview::Comment c = *r.first;
             for (const GitHubReview::Comment &root : std::as_const(m_comments)) {
                 if (root.id == threadId || root.id == c.inReplyTo) {
@@ -3063,6 +3103,7 @@ void MainWindow::replyToThread(qint64 threadId)
                     c.side = root.side;
                     c.line = root.line;
                     c.startLine = root.startLine;
+                    c.status = root.status;
                     if (c.inReplyTo == 0)
                         c.inReplyTo = root.id;
                     break;

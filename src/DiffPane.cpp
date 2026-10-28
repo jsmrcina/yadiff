@@ -15,6 +15,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QScrollBar>
 #include <QSplitter>
@@ -162,6 +163,16 @@ DiffPane::DiffPane(QWidget *parent) : QWidget(parent)
         connect(v, &CodeView::contextMenuRequested, this,
                 [this, v](int row, const QPoint &pos) { showContextMenu(v, row, pos); });
         connect(v, &CodeView::commentToggled, this, &DiffPane::toggleThread);
+        // Queued: these rebuild the rows, and with them the widget that sent the signal.
+        connect(v, &CodeView::commentAction, this, &DiffPane::threadAction, Qt::QueuedConnection);
+        connect(v, &CodeView::composeSubmitted, this, &DiffPane::submitDraft, Qt::QueuedConnection);
+        connect(v, &CodeView::composeCancelled, this, &DiffPane::cancelDraft, Qt::QueuedConnection);
+        connect(v, &CodeView::composeEdited, this, [this](qint64 threadId, const QString &text, int cursor) {
+            if (m_draft && m_draft->threadId == threadId && !m_draft->busy) {
+                m_draft->text = text;
+                m_draft->cursor = cursor;
+            }
+        });
         connect(v, &CodeView::wordClicked, this, &DiffPane::highlightWord);
         connect(v, &CodeView::blameClicked, this, &DiffPane::blameCommitRequested);
         connect(v, &CodeView::cursorPositionChanged, this, [this, v] { m_lastFocused = v; });
@@ -409,6 +420,15 @@ void DiffPane::indexThreads()
         if (idx >= 0)
             m_threadsAt[idx].push_back(t);
     }
+    // A new thread being written, under its line when this is its file.
+    if (m_draft && m_draft->threadId == kNewThread && !m_draftThread.isEmpty()) {
+        const GitHubReview::Comment &c = m_draftThread.first();
+        if (c.path == m_file.paths.newPath || c.path == m_file.paths.oldPath) {
+            const int idx = (c.side == QLatin1String("LEFT") ? byOld : byNew).value(c.line, -1);
+            if (idx >= 0)
+                m_threadsAt[idx].push_back(-1);
+        }
+    }
 }
 
 namespace {
@@ -467,13 +487,32 @@ Row DiffPane::makeCommentRow(const GitHubReview::Thread &t) const
     Row r;
     r.comment = true;
     r.threadId = first.id;
+    const bool drafting = m_draft && m_draft->threadId == first.id;
+    if (drafting) {
+        r.compose = true;
+        r.composeText = m_draft->text;
+        r.composeCursor = m_draft->cursor;
+        r.composeBusy = m_draft->busy;
+        r.composeFocus = m_draftFocus;
+    }
+    if (first.id == kNewThread) {
+        // A new thread: just the editor.
+        r.commentExpanded = true;
+        const QString where = first.startLine ? tr("lines %1\u2013%2").arg(first.startLine).arg(first.line) : tr("line %1").arg(first.line);
+        r.composeLabel = tr("New comment on %1 (%2 side)").arg(where, first.side == QLatin1String("LEFT") ? tr("old") : tr("new"));
+        r.composeAction = tr("Comment");
+        return r;
+    }
     r.commentExpanded = m_expandedThreads.contains(first.id);
     if (r.commentExpanded) {
         // The text is only reserved space; the thread is drawn over it (see CodeView).
         r.commentHtml = threadHtml(t);
+        r.composeLabel = tr("Reply to %1").arg(first.author);
+        r.composeAction = tr("Reply");
         r.tooltip = tr("Right-click to reply.");
         return r;
     }
+    r.compose = false; // collapsed: the draft waits
     // Collapsed: one line. Click it (or the arrow in the gutter) to read the thread.
     // Resolved threads are greyed, and say so first.
     r.commentDone = !GitHubReview::isOpen(first.status);
@@ -484,6 +523,8 @@ Row DiffPane::makeCommentRow(const GitHubReview::Thread &t) const
                 + summary;
     if (t.size() > 1)
         summary += t.size() == 2 ? tr(" · 1 reply") : tr(" · %1 replies").arg(t.size() - 1);
+    if (drafting)
+        summary += tr(" · \u270E your reply");
     QString gist = firstLine(first.body);
     if (gist.size() > 110)
         gist = gist.left(108) + QStringLiteral("…");
@@ -540,6 +581,21 @@ QString DiffPane::threadHtml(const GitHubReview::Thread &t) const
             bc.setBlockFormat(f);
         }
     }
+    // Reply and resolve links, unless a reply is being written.
+    if (m_file.reviewEnabled && !(m_draft && m_draft->threadId == t.first().id)) {
+        QTextBlockFormat links;
+        links.setTopMargin(6);
+        links.setBottomMargin(2);
+        links.setLeftMargin(16);
+        c.insertBlock(links);
+        QString html = QStringLiteral("<a href=\"yadiff:reply\">%1</a>").arg(tr("Reply"));
+        if (!m_file.threadStatuses.isEmpty()) {
+            const bool open = GitHubReview::isOpen(t.first().status);
+            html += QStringLiteral(" &nbsp;·&nbsp; <a href=\"yadiff:%1\">%2</a>")
+                        .arg(open ? QStringLiteral("resolve") : QStringLiteral("reactivate"), open ? tr("Resolve") : tr("Reactivate"));
+        }
+        c.insertHtml(html);
+    }
     // Code (inline and fenced blocks) in the diff's monospace font; blocks on a shaded band.
     const QFont mono = Settings::font();
     QColor codeBg = palette().color(QPalette::Text);
@@ -572,12 +628,123 @@ QString DiffPane::threadHtml(const GitHubReview::Thread &t) const
 
 void DiffPane::toggleThread(qint64 threadId)
 {
+    if (threadId == kNewThread)
+        return;
     if (!m_expandedThreads.remove(threadId))
         m_expandedThreads.insert(threadId);
+    rebuildKeepingScroll();
+}
+
+void DiffPane::rebuildKeepingScroll()
+{
     CodeView *v = activeView();
     const int top = v->verticalScrollBar()->value();
     rebuild();
     v->verticalScrollBar()->setValue(top);
+}
+
+void DiffPane::threadAction(qint64 threadId, const QString &action)
+{
+    if (action == QLatin1String("reply"))
+        startReply(threadId);
+    else if (action == QLatin1String("resolve"))
+        emit threadStatusRequested(threadId, GitHubReview::ThreadStatus::Resolved);
+    else if (action == QLatin1String("reactivate"))
+        emit threadStatusRequested(threadId, GitHubReview::ThreadStatus::Active);
+}
+
+bool DiffPane::replaceDraft()
+{
+    // One comment at a time: a draft being posted stays, one with text is given up only on request.
+    if (!m_draft)
+        return true;
+    if (m_draft->busy) {
+        emit hint(tr("Still posting the last comment"));
+        return false;
+    }
+    if (!m_draft->text.trimmed().isEmpty()
+        && QMessageBox::question(this, tr("Review comment"), tr("Discard the comment you are writing?")) != QMessageBox::Yes)
+        return false;
+    m_draft.reset();
+    return true;
+}
+
+void DiffPane::startReply(qint64 threadId)
+{
+    if (m_draft && m_draft->threadId == threadId) { // already replying: show it
+        m_draft->focus = true;
+    } else {
+        if (!replaceDraft())
+            return;
+        m_draft.emplace();
+        m_draft->threadId = threadId;
+    }
+    m_expandedThreads.insert(threadId);
+    indexThreads();
+    rebuildKeepingScroll();
+}
+
+void DiffPane::startComment(const QString &path, const QString &side, int line, int startLine)
+{
+    if (!replaceDraft())
+        return;
+    GitHubReview::Comment anchor;
+    anchor.id = kNewThread;
+    anchor.path = path;
+    anchor.side = side;
+    anchor.line = line;
+    anchor.startLine = startLine;
+    m_draftThread = {anchor};
+    m_draft.emplace();
+    m_draft->threadId = kNewThread;
+    indexThreads();
+    rebuildKeepingScroll();
+}
+
+void DiffPane::submitDraft(qint64 threadId, const QString &text)
+{
+    if (!m_draft || m_draft->threadId != threadId || m_draft->busy)
+        return;
+    m_draft->text = text;
+    m_draft->busy = true;
+    if (threadId != kNewThread) {
+        emit replySubmitted(threadId, text);
+        return;
+    }
+    const GitHubReview::Comment &c = m_draftThread.first();
+    emit commentSubmitted(c.path, c.side, c.line, c.startLine, text);
+}
+
+void DiffPane::cancelDraft()
+{
+    if (!m_draft || m_draft->busy)
+        return;
+    if (!m_draft->text.trimmed().isEmpty()
+        && QMessageBox::question(this, tr("Review comment"), tr("Discard the comment you are writing?")) != QMessageBox::Yes)
+        return;
+    m_draft.reset();
+    indexThreads();
+    rebuildKeepingScroll();
+    activeView()->setFocus();
+}
+
+void DiffPane::draftPosted(qint64 threadId)
+{
+    // The caller shows the posted comment with setThreads().
+    m_draft.reset();
+    if (threadId)
+        m_expandedThreads.insert(threadId);
+    indexThreads();
+}
+
+void DiffPane::draftFailed()
+{
+    if (!m_draft)
+        return;
+    m_draft->busy = false;
+    m_draft->focus = true;
+    if (m_hasDiff)
+        rebuildKeepingScroll();
 }
 
 void DiffPane::setCommentsExpanded(bool expanded)
@@ -774,6 +941,10 @@ void DiffPane::applySyntax()
 
 void DiffPane::rebuild()
 {
+    // A comment editor that has the focus gets it back in the new rows.
+    m_draftFocus = m_draft && (m_draft->focus || m_inline->composerHasFocus() || m_left->composerHasFocus() || m_right->composerHasFocus());
+    if (m_draft)
+        m_draft->focus = false;
     const ViewPalette pal = makePalette();
     QFont font = Settings::font();
     if (m_zoom != 100)
@@ -838,7 +1009,7 @@ void DiffPane::rebuild()
                     m_inlineRowOfLine[k] = int(rows.size());
                     rows.push_back(makeRow(k));
                     for (int t : m_threadsAt.value(k))
-                        rows.push_back(makeCommentRow(m_file.threads[t]));
+                        rows.push_back(makeCommentRow(threadAt(t)));
                 }
                 i = e + 1;
                 continue;
@@ -849,7 +1020,7 @@ void DiffPane::rebuild()
                 m_inlineRowOfLine[i] = int(rows.size());
                 rows.push_back(makeRow(i));
                 for (int t : m_threadsAt.value(i))
-                    rows.push_back(makeCommentRow(m_file.threads[t]));
+                    rows.push_back(makeCommentRow(threadAt(t)));
                 ++i;
             }
             if (isChunk)
@@ -866,9 +1037,9 @@ void DiffPane::rebuild()
         // Review threads go under their line, on their side, with a spacer opposite.
         auto addThreads = [&](int lineIndex) {
             for (int t : m_threadsAt.value(lineIndex)) {
-                const Row c = makeCommentRow(m_file.threads[t]);
+                const Row c = makeCommentRow(threadAt(t));
                 const Row sp = makeSpacerRow(c);
-                const bool onLeft = m_file.threads[t].first().side == QLatin1String("LEFT");
+                const bool onLeft = threadAt(t).first().side == QLatin1String("LEFT");
                 left.push_back(onLeft ? c : sp);
                 right.push_back(onLeft ? sp : c);
             }
@@ -1575,9 +1746,11 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
     if (m_file.reviewEnabled) {
         menu.addSeparator();
         const Row *r = row >= 0 && row < view->rows().size() ? &view->rows()[row] : nullptr;
-        if (r && r->comment) {
+        if (r && r->comment && r->threadId == kNewThread) {
+            // the new comment's editor: nothing to do with a thread yet
+        } else if (r && r->comment) {
             const qint64 id = r->threadId;
-            menu.addAction(tr("&Reply to this comment\u2026"), this, [this, id] { emit replyRequested(id); });
+            menu.addAction(tr("&Reply to this comment"), this, [this, id] { startReply(id); });
             GitHubReview::ThreadStatus current = GitHubReview::ThreadStatus::None;
             for (const GitHubReview::Thread &t : std::as_const(m_file.threads))
                 if (t.first().id == id)
@@ -1628,11 +1801,11 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
                 }
             }
             const QString what = startLine ? tr("lines %1\u2013%2").arg(startLine).arg(line) : tr("line %1").arg(line);
-            QAction *add = menu.addAction(tr("Add review &comment on %1\u2026").arg(what), this,
+            QAction *add = menu.addAction(tr("Add review &comment on %1").arg(what), this,
                                           [this, side, line, startLine] {
-                                              emit commentRequested(m_file.paths.newPath.isEmpty() ? m_file.paths.oldPath
-                                                                                                   : m_file.paths.newPath,
-                                                                    side, line, startLine);
+                                              startComment(m_file.paths.newPath.isEmpty() ? m_file.paths.oldPath
+                                                                                          : m_file.paths.newPath,
+                                                           side, line, startLine);
                                           });
             const bool ok = r && r->lineIndex >= 0 && line > 0 && nearChange(r->lineIndex);
             add->setEnabled(ok);

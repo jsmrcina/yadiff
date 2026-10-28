@@ -6,7 +6,12 @@
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QDesktopServices>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
 #include <QTextBrowser>
+#include <QTimer>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QContextMenuEvent>
 #include <QDateTime>
@@ -18,6 +23,7 @@
 #include <QToolTip>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 constexpr int kPad = 6;
@@ -147,9 +153,9 @@ QColor CodeView::rowColor(const Row &r) const
         return m_pal.fold;
     if (r.comment)
         return m_pal.comment;
-    if (r.moved)
-        return m_pal.moved;
-    if (r.unimportant)
+    // Moved lines keep the colour of the side they're on (taken away, or put in); the
+    // move colour marks them with a frame, a label and an edge (see paintEvent).
+    if (r.unimportant && !r.moved)
         return m_pal.unimportant;
     switch (r.kind) {
     case LineKind::Added: return m_pal.added;
@@ -591,7 +597,7 @@ void CodeView::paintEvent(QPaintEvent *event)
 {
     QPlainTextEdit::paintEvent(event);
 
-    // Mark moved blocks with dashed borders and a label so they read as one unit.
+    // Mark moved blocks with dashed borders, an edge and a label so they read as one unit.
     QPainter p(viewport());
     QPen pen(m_pal.movedEmph, 1, Qt::DashLine);
     const int w = viewport()->width();
@@ -606,6 +612,7 @@ void CodeView::paintEvent(QPaintEvent *event)
         const int row = block.blockNumber();
         if (row < m_rows.size() && m_rows[row].moved) {
             const Row &r = m_rows[row];
+            p.fillRect(QRect(0, top, 3, h), m_pal.movedEmph);
             p.setPen(pen);
             if (r.moveStart)
                 p.drawLine(0, top, w, top);
@@ -737,7 +744,68 @@ public:
 private:
     QWidget *m_target;
 };
+
+// Ctrl+Enter and Esc in a comment editor, ahead of the window's shortcuts.
+class ComposeKeys : public QObject
+{
+public:
+    ComposeKeys(QObject *parent, std::function<void()> submit, std::function<void()> cancel)
+        : QObject(parent), m_submit(std::move(submit)), m_cancel(std::move(cancel))
+    {
+    }
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        if (e->type() != QEvent::ShortcutOverride && e->type() != QEvent::KeyPress)
+            return false;
+        auto *ke = static_cast<QKeyEvent *>(e);
+        const bool enter = (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) && (ke->modifiers() & Qt::ControlModifier);
+        const bool esc = ke->key() == Qt::Key_Escape && ke->modifiers() == Qt::NoModifier;
+        if (!enter && !esc)
+            return false;
+        if (e->type() == QEvent::ShortcutOverride) {
+            e->accept(); // ours, not a window shortcut's
+            return true;
+        }
+        (enter ? m_submit : m_cancel)();
+        return true;
+    }
+
+private:
+    std::function<void()> m_submit, m_cancel;
+};
 } // namespace
+
+// An expanded review thread over its row: the thread as rich text and, while it is being
+// replied to (or for a new thread, alone), an editor with the post and cancel buttons.
+class CommentWidget : public QWidget
+{
+public:
+    CommentWidget(QWidget *parent, const QColor &background) : QWidget(parent), m_background(background) {}
+    QTextBrowser *browser = nullptr;
+    QPlainTextEdit *editor = nullptr;
+    QWidget *buttons = nullptr;
+
+    static constexpr int kSpacing = 4;
+    int heightFor(int width) const
+    {
+        // The thread is as tall as its text; what the row has over goes below everything.
+        int h = 0;
+        if (browser) {
+            browser->document()->setTextWidth(width);
+            browser->setFixedHeight(int(std::ceil(browser->document()->size().height())) + 4);
+            h += browser->height();
+        }
+        if (editor)
+            h += (browser ? kSpacing : 2) + editor->height() + kSpacing + buttons->sizeHint().height() + kSpacing;
+        return h;
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override { QPainter(this).fillRect(rect(), m_background); }
+
+private:
+    QColor m_background;
+};
 
 void CodeView::clearCommentWidgets()
 {
@@ -745,43 +813,118 @@ void CodeView::clearCommentWidgets()
     m_commentWidgets.clear();
 }
 
-QTextBrowser *CodeView::makeCommentWidget(int row)
+CommentWidget *CodeView::makeCommentWidget(int row)
 {
     const Row &r = m_rows[row];
-    auto *w = new QTextBrowser(viewport());
-    w->setFrameShape(QFrame::NoFrame);
-    w->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    w->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    w->setOpenLinks(false);
-    w->setContextMenuPolicy(Qt::CustomContextMenu);
-    QPalette pal = w->palette();
-    pal.setColor(QPalette::Base, m_pal.comment);
-    w->setPalette(pal);
-    w->setHtml(r.commentHtml);
     const qint64 thread = r.threadId;
-    connect(w, &QTextBrowser::anchorClicked, this, [this, thread](const QUrl &url) {
-        if (url.scheme() == QLatin1String("yadiff"))
-            emit commentToggled(thread); // the thread's collapse link
-        else
-            QDesktopServices::openUrl(url);
-    });
-    connect(w, &QWidget::customContextMenuRequested, this, [this, w, row](const QPoint &pos) {
-        emit contextMenuRequested(row, w->mapToGlobal(pos));
-    });
-    w->viewport()->installEventFilter(new WheelForwarder(w, viewport()));
+    auto *w = new CommentWidget(viewport(), m_pal.comment);
+    w->installEventFilter(new WheelForwarder(w, viewport()));
+    auto *layout = new QVBoxLayout(w);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(CommentWidget::kSpacing);
+
+    if (!r.commentHtml.isEmpty()) {
+        auto *b = new QTextBrowser(w);
+        w->browser = b;
+        b->setFrameShape(QFrame::NoFrame);
+        b->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        b->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        b->setOpenLinks(false);
+        b->setContextMenuPolicy(Qt::CustomContextMenu);
+        QPalette bp = b->palette();
+        bp.setColor(QPalette::Base, m_pal.comment);
+        b->setPalette(bp);
+        b->setHtml(r.commentHtml);
+        connect(b, &QTextBrowser::anchorClicked, this, [this, thread](const QUrl &url) {
+            if (url.scheme() != QLatin1String("yadiff"))
+                QDesktopServices::openUrl(url);
+            else if (url.path() == QLatin1String("collapse"))
+                emit commentToggled(thread); // the thread's collapse link
+            else
+                emit commentAction(thread, url.path());
+        });
+        connect(b, &QWidget::customContextMenuRequested, this, [this, b, row](const QPoint &pos) {
+            emit contextMenuRequested(row, b->mapToGlobal(pos));
+        });
+        b->viewport()->installEventFilter(new WheelForwarder(b, viewport()));
+        layout->addWidget(b);
+    }
+
+    if (r.compose) {
+        if (!w->browser)
+            layout->addSpacing(2);
+        auto *e = new QPlainTextEdit(w);
+        w->editor = e;
+        e->setTabChangesFocus(true);
+        e->setPlaceholderText(tr("Markdown. Ctrl+Enter posts, Esc cancels."));
+        e->setPlainText(r.composeText);
+        QTextCursor c = e->textCursor();
+        c.setPosition(std::clamp(r.composeCursor, 0, int(r.composeText.size())));
+        e->setTextCursor(c);
+        e->setFixedHeight(e->fontMetrics().lineSpacing() * 5 + 2 * e->frameWidth() + 8);
+        e->setReadOnly(r.composeBusy);
+        layout->addWidget(e);
+
+        auto *bar = new QWidget(w);
+        w->buttons = bar;
+        auto *bl = new QHBoxLayout(bar);
+        bl->setContentsMargins(0, 0, 4, 0);
+        auto *label = new QLabel(r.composeBusy ? tr("Posting\u2026") : r.composeLabel, bar);
+        label->setForegroundRole(QPalette::PlaceholderText);
+        bl->addWidget(label, 1);
+        auto *cancel = new QPushButton(tr("Cancel"), bar);
+        auto *post = new QPushButton(r.composeAction.isEmpty() ? tr("Post") : r.composeAction, bar);
+        post->setDefault(true);
+        post->setToolTip(tr("Ctrl+Enter"));
+        cancel->setToolTip(tr("Esc"));
+        post->setEnabled(!r.composeBusy && !r.composeText.trimmed().isEmpty());
+        cancel->setEnabled(!r.composeBusy);
+        bl->addWidget(cancel);
+        bl->addWidget(post);
+        layout->addWidget(bar);
+
+        const auto submit = [this, e, post, thread] {
+            const QString text = e->toPlainText();
+            if (e->isReadOnly() || text.trimmed().isEmpty())
+                return;
+            e->setReadOnly(true);
+            post->setEnabled(false);
+            emit composeSubmitted(thread, text);
+        };
+        connect(post, &QPushButton::clicked, this, submit);
+        connect(cancel, &QPushButton::clicked, this, [this, thread] { emit composeCancelled(thread); });
+        connect(e, &QPlainTextEdit::textChanged, this, [this, e, post, thread] {
+            post->setEnabled(!e->isReadOnly() && !e->toPlainText().trimmed().isEmpty());
+            emit composeEdited(thread, e->toPlainText(), e->textCursor().position());
+        });
+        connect(e, &QPlainTextEdit::cursorPositionChanged, this,
+                [this, e, thread] { emit composeEdited(thread, e->toPlainText(), e->textCursor().position()); });
+        e->installEventFilter(new ComposeKeys(e, submit, [this, thread] { emit composeCancelled(thread); }));
+        if (r.composeFocus)
+            QTimer::singleShot(0, e, [e] { e->setFocus(Qt::OtherFocusReason); });
+    }
+    layout->addStretch(1);
     w->show();
     return w;
 }
 
+bool CodeView::composerHasFocus() const
+{
+    const QWidget *f = QApplication::focusWidget();
+    for (const CommentWidget *w : m_commentWidgets)
+        if (w->editor && f == w->editor)
+            return true;
+    return false;
+}
+
 int CodeView::commentLinesNeeded(int row)
 {
-    QTextBrowser *w = m_commentWidgets.value(row);
+    CommentWidget *w = m_commentWidgets.value(row);
     if (!w)
         return 1;
     const int width = std::max(200, viewport()->width() - 8);
-    w->document()->setTextWidth(width);
-    const qreal height = w->document()->size().height();
-    return std::max(1, int(std::ceil((height + 4) / std::max(1, fontMetrics().lineSpacing()))));
+    const int height = w->heightFor(width);
+    return std::max(1, int(std::ceil((height + 4.0) / std::max(1, fontMetrics().lineSpacing()))));
 }
 
 void CodeView::setRowLineCount(int row, int lines)
@@ -810,7 +953,7 @@ void CodeView::layoutCommentWidgets()
         if (!b.isValid())
             continue;
         const QRectF r = blockBoundingGeometry(b).translated(contentOffset());
-        QTextBrowser *w = it.value();
+        CommentWidget *w = it.value();
         if (r.bottom() < 0 || r.top() > viewport()->height()) {
             w->hide();
             continue;

@@ -234,12 +234,14 @@ right-click menu.
   bots use, links, and code blocks in monospace. The author's name links to the comment on the
   website. HTML comments are hidden, and `<details>` sections fold to their summary. Comment rows
   never affect syntax highlighting, so a `/*` inside a comment can't turn the rest of the file
-  into a comment.
+  into a comment. Threads refresh by themselves every minute while the window is in front, and
+  when you come back to it, so replies and resolutions from the browser show up. The view only
+  redraws when something changed.
 - **Thread status.** Each thread shows its state, and resolved ones are greyed with ✓ in front of
   their line.
-  - Right-click a thread to resolve or reactivate it. The Thread status submenu has every state
-    the host knows: on GitHub, unresolved and resolved; on Azure DevOps, active, pending,
-    resolved, won't fix, by design and closed.
+  - Right-click a thread, or use the Resolve or Reactivate link under an open one, to change its
+    state. The Thread status submenu has every state the host knows: on GitHub, unresolved and
+    resolved; on Azure DevOps, active, pending, resolved, won't fix, by design and closed.
   - View → Hide resolved review threads leaves only the threads still to deal with.
   - The file list shows each file's thread count (💬 2) at the right of its row. It is bold while
     any thread is open, and the tooltip says how many of them are.
@@ -286,8 +288,10 @@ right-click menu.
     background; it opens in this window when the window is empty, otherwise in a new one, from
     the repository this window shows (so a PR of your clone is fetched into it).
 - **GitHub review comments.** With `-ghpr`, review threads show under the lines they belong to.
-  Right-click a line, or a selection for several lines, to add a comment. Right-click a thread to
-  reply. The Review menu comments on the PR or votes on it (see Voting below). Everything goes
+  Right-click a line, or a selection for several lines, to add a comment. Right-click a thread, or
+  use the Reply link under an open one, to reply. Either way you type in an editor right there in
+  the diff: Ctrl+Enter posts, Esc cancels. The text survives switching files, and stays if the
+  host refuses it. The Review menu comments on the PR or votes on it (see Voting below). Everything goes
   through `gh` and posts straight away. GitHub only accepts comments on or near changed lines.
   Outdated comments, whose line no longer exists, aren't shown.
 - **Azure DevOps pull requests:** `yadiff -ado URL` shows what the PR's Files tab shows, which is the
@@ -360,8 +364,9 @@ right-click menu.
   whitespace stop counting as changes, and files with only whitespace changes leave the list.
 - **Word-level highlights** within edited lines. Similar removed and added lines are paired, so
   side-by-side shows an edited line on one row.
-- **Moved blocks** are detected and coloured separately. They get dashed borders, a ⇄ marker in
-  the gutter, and a label such as "↓ moved to new lines 120–135". Double-click a moved block to
+- **Moved blocks** are detected and marked in the move colour: dashed borders, an edge down
+  their left side, a ⇄ marker in the gutter, and a label such as "↓ moved to new lines 120–135".
+  Their background stays red where they were taken out and green where they were put in. Double-click a moved block to
   jump to its other location.
 - **Right-click to copy** a change as a `git diff` hunk. The copy includes the header and 3 lines
   of context, as plain text and as colour-coded rich text for mail, docs or chat. The same menu

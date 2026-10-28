@@ -10,6 +10,7 @@
 #include "ReviewStore.h"
 #include "Session.h"
 
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
 #include <QMainWindow>
@@ -67,6 +68,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -205,10 +207,13 @@ private:
     void pollForChanges();
 
     // Pull request review (GitHub or Azure DevOps).
-    void loadComments();
+    // `quiet`: a background refresh, which says nothing and redraws only on a change.
+    void loadComments(bool quiet = false);
     QVector<GitHubReview::Thread> threadsFor(const FileChange &fc) const;
-    void addComment(const QString &path, const QString &side, int line, int startLine);
-    void replyToThread(qint64 threadId);
+    // From the diff's inline editor (see DiffPane::startComment, startReply).
+    void postComment(const QString &path, const QString &side, int line, int startLine, const QString &body);
+    void postReply(qint64 threadId, const QString &body, bool inlineDraft);
+    void replyToThread(qint64 threadId); // asks for the text (pull-request-level threads)
     void setThreadStatus(qint64 threadId, GitHubReview::ThreadStatus status);
     // The file list's comment counts, and the shown file's threads, after a change.
     void refreshThreads();
@@ -281,6 +286,11 @@ private:
 
     // PR review.
     QVector<GitHubReview::Comment> m_comments;
+    // Threads refresh while the window is in use, and when it comes back to the front.
+    QTimer *m_commentsTimer = nullptr;
+    QElapsedTimer m_commentsFetched;
+    bool m_commentsBusy = false;
+    quint64 m_commentsGen = 0; // bumped by our own posts: older fetches don't have them
     QMenu *m_reviewMenu = nullptr;
     QAction *m_reviewMenuAction = nullptr;
     QAction *m_reviewToolAction = nullptr;

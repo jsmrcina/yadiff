@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0 (2026-10-27)
+
+- **Write review comments in the diff.** Replies and new comments open an editor right under the
+  thread or line, instead of a popup. Ctrl+Enter posts and Esc cancels. The text survives switching
+  files and stays if the host refuses it. Open threads have Reply and Resolve links.
+- **Threads refresh by themselves**, every minute while the window is in front and when you come
+  back to it. The view redraws only when something changed.
+- **Moved lines show where they left and where they landed.** They keep the red or green of a
+  removal or addition, with the move colour on their frame, label and left edge.
+- **Fix: changing a thread's status or replying on Azure DevOps** failed with "thread cannot be
+  found" in organizations whose thread ids have reached 100000.
+
 ## 1.0.0
 
 The first public release.
