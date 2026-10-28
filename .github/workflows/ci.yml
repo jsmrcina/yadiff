@@ -66,41 +66,45 @@ jobs:
           path: yadiff-linux-x64.zip
           retention-days: 14
 
+  # Built and tested on Windows with clang (Qt's llvm-mingw toolchain). The zip is built by
+  # windows-package, cross-compiled on Linux with the same compiler and Qt.
   windows:
-    name: Windows (MSVC)
+    name: Windows (clang)
     runs-on: windows-latest
     env:
       KF_PREFIX: ${{ github.workspace }}\kf6
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt
+      - name: Install Qt and llvm-mingw
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
-          arch: win64_msvc2022_64
-          modules: qtimageformats
+          arch: win64_llvm_mingw
+          tools: tools_llvm_mingw1706,qt.tools.win64_llvm_mingw1706
           cache: true
 
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Put clang on PATH
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "$env:IQTA_TOOLS\llvm-mingw1706_64\bin"
 
       - name: Cache KSyntaxHighlighting
         id: kf-cache
         uses: actions/cache@v4
         with:
           path: kf6
-          key: kf6-${{ env.KF_VERSION }}-qt${{ env.QT_VERSION }}-msvc2022
+          key: kf6-${{ env.KF_VERSION }}-qt${{ env.QT_VERSION }}-llvm-mingw1706
 
       - name: Build KSyntaxHighlighting
         if: steps.kf-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $cc = '-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++'
           git clone --depth 1 --branch "v$env:KF_VERSION" https://github.com/KDE/extra-cmake-modules.git ecm
-          cmake -S ecm -B ecm/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_HTML_DOCS=OFF -DBUILD_MAN_DOCS=OFF -DBUILD_QTHELP_DOCS=OFF
+          cmake -S ecm -B ecm/build -G Ninja @cc -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_HTML_DOCS=OFF -DBUILD_MAN_DOCS=OFF -DBUILD_QTHELP_DOCS=OFF
           cmake --build ecm/build --target install
           git clone --depth 1 --branch "v$env:KF_VERSION" https://github.com/KDE/syntax-highlighting.git ksh
-          cmake -S ksh -B ksh/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DCMAKE_PREFIX_PATH="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_QCH=OFF -DQT_MAJOR_VERSION=6
+          cmake -S ksh -B ksh/build -G Ninja @cc -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$env:KF_PREFIX" -DCMAKE_PREFIX_PATH="$env:KF_PREFIX" -DBUILD_TESTING=OFF -DBUILD_QCH=OFF -DQT_MAJOR_VERSION=6
           cmake --build ksh/build --target install
 
       - name: Configure git for the tests
@@ -113,7 +117,7 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:KF_PREFIX"
+          cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:KF_PREFIX"
           cmake --build build
 
       - name: Test
@@ -137,41 +141,29 @@ jobs:
           Write-Host "exit code: $LASTEXITCODE"
           Get-Content test_navigation.txt -ErrorAction SilentlyContinue | Select-String -Pattern 'FAIL|Loc:|Actual|Expected|QWARN' | Out-Host
 
-      - name: Package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist/yadiff | Out-Null
-          Copy-Item build/yadiff.exe dist/yadiff/
-          Copy-Item "$env:KF_PREFIX\bin\KF6SyntaxHighlighting*.dll" dist/yadiff/
-          windeployqt --release --no-translations --no-compiler-runtime dist/yadiff/yadiff.exe
-          # Ship the Visual C++ runtime DLLs app-locally (allowed by Microsoft), so the
-          # zip runs without installing vc_redist first.
-          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
-          if (-not $crt) { throw "VC runtime redist folder not found under $env:VCToolsRedistDir" }
-          Copy-Item "$($crt.FullName)\*.dll" dist/yadiff/
-          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/yadiff/
-          Compress-Archive -Path dist/yadiff -DestinationPath yadiff-windows-x64.zip -Force
-
-      - name: Smoke test the package
-        shell: pwsh
-        run: |
-          # The packaged exe must run on its own (no Qt or KF6 on PATH). --export is
-          # headless; --version would open a message box in a GUI-subsystem exe.
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'Qt|kf6' }) -join ';'
-          Set-Content a.txt "one`ntwo`n"
-          Set-Content b.txt "one`nTWO`n"
-          $p = Start-Process -FilePath dist/yadiff/yadiff.exe -ArgumentList '--no-index','a.txt','b.txt','--export','smoke.html' -PassThru -NoNewWindow
-          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "yadiff.exe hung" }
-          if ($p.ExitCode -ne 0) { throw "yadiff.exe exited with $($p.ExitCode)" }
-          if (-not (Select-String -Path smoke.html -Pattern '<!doctype html>' -Quiet)) { throw "no report written" }
-          if (-not (Select-String -Path smoke.html -Pattern 'TWO' -Quiet)) { throw "report is missing the diff" }
-
+  windows-package:
+    name: Windows zip (cross-compiled with clang)
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Qt, llvm-mingw and KSyntaxHighlighting
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/yadiff-package-windows/qt
+            /tmp/yadiff-package-windows/llvm-mingw-*
+            /tmp/yadiff-package-windows/ecm-install
+            /tmp/yadiff-package-windows/kf6
+            /tmp/yadiff-package-windows/MinGit-*
+          key: windows-package-qt${{ env.QT_VERSION }}-kf${{ env.KF_VERSION }}-${{ hashFiles('packaging/windows/package.sh') }}
+      - name: Build, package and smoke test under Wine
+        run: packaging/windows/package.sh
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: yadiff-windows-x64.zip
-
       # A convenience copy of every build. Kept briefly, and never fails the job: a full
       # artifact quota mustn't stop a release.
       - uses: actions/upload-artifact@v4

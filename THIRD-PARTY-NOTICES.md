@@ -17,10 +17,12 @@ https://download.qt.io/official_releases/qt/.
 Syntax highlighting comes from KSyntaxHighlighting (https://invent.kde.org/frameworks/syntax-highlighting),
 under the MIT license. Its syntax definitions carry their own (mostly MIT or LGPL) licenses.
 
-## Microsoft Visual C++ runtime
+## LLVM C++ runtime
 
-The Windows zip includes the Visual C++ runtime DLLs, redistributed app-locally as Microsoft's
-Visual Studio license terms allow.
+The Windows zip is built with clang (llvm-mingw) and includes LLVM's C++ runtime, `libc++.dll`
+and `libunwind.dll`, under the Apache License v2.0 with LLVM Exceptions
+(https://llvm.org/LICENSE.txt). The Windows parts come from the MinGW-w64 runtime
+(https://www.mingw-w64.org), under permissive licenses.
 
 ## Colour themes
 

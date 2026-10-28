@@ -588,14 +588,26 @@ icon.
 Releases have a ready-to-run zip (see [Installing](#installing)), and every CI run keeps one for
 two weeks as the `yadiff-windows-x64` artifact. To build it yourself:
 
-Install Qt 6 (MSVC 2022 64-bit kit) with the Qt online installer, plus CMake, Ninja and Git for
-Windows. For syntax highlighting, also build KSyntaxHighlighting, with KDE Craft or vcpkg, and add it
-to `CMAKE_PREFIX_PATH`. Without it, CMake prints a note and yadiff builds without highlighting. From a "x64 Native Tools" prompt:
+The zip is cross-compiled on Linux with clang (llvm-mingw), in Docker:
 
 ```
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:\Qt\6.x.x\msvc2022_64
+docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 packaging/windows/package.sh
+```
+
+It downloads llvm-mingw, Qt's official llvm-mingw binaries and the matching Linux Qt (for moc and
+rcc), builds KSyntaxHighlighting, bundles the DLLs `yadiff.exe` needs, and smoke-tests the zip
+under Wine. `yadiff-windows-x64.zip` lands in the source folder.
+
+To build on Windows, install Qt 6 with the Qt online installer, choosing the LLVM-MinGW 64-bit kit
+and, under Developer and Designer Tools, LLVM-MinGW. Add CMake, Ninja and Git for Windows. For
+syntax highlighting, also build KSyntaxHighlighting (CI shows how) and add it to
+`CMAKE_PREFIX_PATH`. Without it, CMake prints a note and yadiff builds without highlighting. With
+the toolchain's `bin` folder on `PATH`:
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:\Qt\6.x.x\llvm-mingw_64
 cmake --build build
-C:\Qt\6.x.x\msvc2022_64\bin\windeployqt.exe build\yadiff.exe
+C:\Qt\6.x.x\llvm-mingw_64\bin\windeployqt.exe --compiler-runtime build\yadiff.exe
 ```
 
 Put the `build` folder on `PATH`. `yadiff.exe` is a GUI-subsystem program, so the console returns
@@ -603,12 +615,16 @@ immediately; `--help`, `--version` and errors print in the console it was starte
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` builds and runs every test on Arch Linux and on Windows with MSVC and
-Qt 6.8. The Windows job builds KSyntaxHighlighting from source and caches it. It then packages
-`yadiff.exe` with `windeployqt`, and smoke-tests the zip on a clean `PATH` with a headless
-`--export`. A third job runs `packaging/linux/package.sh` in an Ubuntu 22.04 container: it builds
-against Qt's official binaries, bundles Qt with linuxdeploy, and smoke-tests the zip with Qt out
-of the way. To build the Linux zip locally:
+`.github/workflows/ci.yml` builds and runs every test on Arch Linux and on Windows with clang
+(Qt's llvm-mingw toolchain) and Qt 6.8. The Windows job builds KSyntaxHighlighting from source and
+caches it. Two jobs build the release zips in Ubuntu 22.04 containers, the same way as locally:
+
+- `packaging/linux/package.sh` builds against Qt's official binaries, bundles Qt with linuxdeploy,
+  and smoke-tests the zip with Qt out of the way.
+- `packaging/windows/package.sh` cross-compiles with clang, bundles the DLLs, and smoke-tests the
+  zip under Wine with a headless `--export`.
+
+To build the Linux zip locally:
 
 ```
 docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 packaging/linux/package.sh

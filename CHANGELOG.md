@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **The Windows build uses clang** (llvm-mingw) instead of MSVC, and the zip is cross-compiled on
+  Linux by `packaging/windows/package.sh`, so it can be built without a Windows machine. It ships
+  LLVM's C++ runtime instead of the Visual C++ one, and is about half the size.
+
 ## 1.1.0 (2026-10-27)
 
 - **Write review comments in the diff.** Replies and new comments open an editor right under the

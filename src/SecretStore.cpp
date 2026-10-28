@@ -114,6 +114,7 @@ std::optional<QString> read(const QString &key, QString *error)
         return o.value(key).toString();
     }
 #ifdef Q_OS_WIN
+    Q_UNUSED(error); // a missing credential isn't an error
     PCREDENTIALW cred = nullptr;
     if (!CredReadW(target(key).c_str(), CRED_TYPE_GENERIC, 0, &cred)) {
         qCInfo(lcAuth).noquote() << "Credential Manager has no" << key << "(error" << GetLastError() << ")";
