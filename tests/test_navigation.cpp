@@ -1831,6 +1831,37 @@ private slots:
         QVERIFY(next->toolTip().contains(QStringLiteral("Alt+Down")));
     }
 
+    void updateDialogsOpenOverTheWindow()
+    {
+        // The end of a background update: the window may be minimized by then. The box must
+        // come up over it (a box nobody sees leaves every menu dead).
+        QTemporaryDir tmp;
+        git(tmp.path(), {QStringLiteral("init"), QStringLiteral("-q")});
+        QString error;
+        auto repo = GitRepo::open(tmp.path(), &error);
+        QVERIFY2(repo, qPrintable(error));
+        MainWindow w(std::move(*repo), Comparison{});
+        w.setGeometry(200, 150, 900, 600);
+        w.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&w));
+        w.showMinimized();
+        QMessageBox box(QMessageBox::Question, QStringLiteral("Update"), QStringLiteral("Restart now?"),
+                        QMessageBox::Yes | QMessageBox::No, &w);
+        bool checked = false;
+        QTimer::singleShot(100, &box, [&] {
+            checked = true;
+            QVERIFY(box.isVisible());
+            QVERIFY(!w.isMinimized());
+            QCOMPARE(box.screen(), w.screen());
+            QVERIFY(qAbs(box.frameGeometry().center().x() - w.frameGeometry().center().x()) < 20);
+            QVERIFY(qAbs(box.frameGeometry().center().y() - w.frameGeometry().center().y()) < 40);
+            box.button(QMessageBox::Yes)->click();
+        });
+        QTimer::singleShot(5000, &box, [&] { box.reject(); }); // never hang
+        QCOMPARE(w.execOnTop(box), int(QMessageBox::Yes));
+        QVERIFY(checked);
+    }
+
     void newComparisonDialogBuildsArguments()
     {
         QTemporaryDir tmp;

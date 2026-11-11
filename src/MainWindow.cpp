@@ -69,6 +69,8 @@
 #include <QDirIterator>
 #include <QFileInfo>
 #include <QLabel>
+#include <QScreen>
+#include <QWindow>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
@@ -4932,9 +4934,11 @@ void MainWindow::installUpdate(const Updater::Release &release, bool interactive
                 return;
             }
             if (!r.first) {
-                if (interactive)
-                    QMessageBox::warning(this, tr("Update"), tr("Installing yadiff %1 failed.\n\n%2").arg(release.tag, r.second));
-                else
+                if (interactive) {
+                    QMessageBox box(QMessageBox::Warning, tr("Update"),
+                                    tr("Installing yadiff %1 failed.\n\n%2").arg(release.tag, r.second), QMessageBox::Ok, this);
+                    execOnTop(box);
+                } else
                     statusBar()->showMessage(tr("Installing yadiff %1 failed: %2").arg(release.tag, r.second.section(u'\n', 0, 0)),
                                              15000);
                 return;
@@ -4948,12 +4952,46 @@ void MainWindow::installUpdate(const Updater::Release &release, bool interactive
             }
             m_restartButton->setText(tr("yadiff %1 installed. Restart now").arg(release.tag));
             m_restartButton->show();
-            if (interactive
-                && QMessageBox::question(this, tr("Update"),
-                                         tr("yadiff %1 is installed. Restart now to use it?").arg(release.tag))
-                       == QMessageBox::Yes)
-                restartForUpdate();
+            if (interactive) {
+                QMessageBox box(QMessageBox::Question, tr("Update"),
+                                tr("yadiff %1 is installed. Restart now to use it?").arg(release.tag),
+                                QMessageBox::Yes | QMessageBox::No, this);
+                if (execOnTop(box) == QMessageBox::Yes)
+                    restartForUpdate();
+            }
         });
+}
+
+int MainWindow::execOnTop(QMessageBox &box)
+{
+    // An update ends minutes after it started, by when the window may be minimized or behind
+    // others, and the screen it opened on may be gone (a dock or KVM switch: Qt then puts new
+    // windows on a placeholder screen nobody sees). A modal box nobody sees leaves every
+    // menu dead, so bring the window up and put the box over it, on a screen that exists.
+    if (isMinimized())
+        showNormal();
+    raise();
+    activateWindow();
+    QScreen *target = windowHandle() ? windowHandle()->screen() : nullptr;
+    if (!target || !QGuiApplication::screens().contains(target) || target->geometry().isEmpty()
+        || !target->geometry().intersects(frameGeometry()))
+        target = QGuiApplication::screenAt(frameGeometry().center());
+    if (!target)
+        target = QGuiApplication::primaryScreen();
+    if (target)
+        box.setScreen(target);
+    box.adjustSize();
+    QRect r(QPoint(), box.sizeHint());
+    r.moveCenter(frameGeometry().center());
+    box.move(r.topLeft());
+    box.setWindowModality(Qt::WindowModal);
+    QTimer::singleShot(0, &box, [&box] {
+        box.raise();
+        box.activateWindow();
+    });
+    qCInfo(lcApp).noquote() << "showing" << box.windowTitle() << "over the window on screen"
+                            << (target ? target->name() : QStringLiteral("(none)"));
+    return box.exec();
 }
 
 void MainWindow::restartForUpdate()

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2 (2026-11-11)
+
+- **Fix: the window could freeze at the end of an update.** The "Restart now?" question is modal,
+  and when the screen went away during the update (a dock or KVM switch), it opened where nobody
+  could see it, leaving every menu dead. The window is now restored and raised first, and the
+  question opens over it, on a screen that still exists.
+
 ## 1.2.1 (2026-11-11)
 
 - **Faster start on Windows**, where each git command can take half a second or more:

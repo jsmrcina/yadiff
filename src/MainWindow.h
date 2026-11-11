@@ -66,6 +66,9 @@ public:
     void openDropped(const QStringList &paths);
     // The pull request's versions, as if loaded from its host (tests).
     void showPrHistory(const PrReview::History &history);
+    // Shows `box` (a child of this window) modally over this window: the window restored
+    // and raised first, the box centred on it, on a screen that still exists.
+    int execOnTop(class QMessageBox &box);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
