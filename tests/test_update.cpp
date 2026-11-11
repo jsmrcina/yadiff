@@ -112,6 +112,30 @@ private slots:
         QVERIFY(!QFile::exists(to + QStringLiteral("/yadiff.exe.old")));
         QVERIFY(QFile::exists(to + QStringLiteral("/platforms/qwindows.dll")));
         QCOMPARE(read(to + QStringLiteral("/keep.txt")), QByteArray("untouched"));
+
+        // An old copy that can't be removed (a window of an older version still has the DLL
+        // loaded; a folder stands in for it here) doesn't stop the update: another name is used.
+        write(to + QStringLiteral("/platforms/qwindows.dll.old/held"), "in use");
+        write(from + QStringLiteral("/platforms/qwindows.dll"), "newer dll");
+        QVERIFY2(Updater::replaceFiles(from, to, &error), qPrintable(error));
+        QCOMPARE(read(to + QStringLiteral("/platforms/qwindows.dll")), QByteArray("newer dll"));
+        QCOMPARE(read(to + QStringLiteral("/platforms/qwindows.dll.1.old")), QByteArray("new dll"));
+        Updater::cleanUpOldFiles(to);
+        QVERIFY(!QFile::exists(to + QStringLiteral("/platforms/qwindows.dll.1.old")));
+        QDir(to + QStringLiteral("/platforms/qwindows.dll.old")).removeRecursively();
+
+#ifndef Q_OS_WIN
+        // A failure part way puts every old file back: never half one version, half the other.
+        write(from + QStringLiteral("/yadiff.exe"), "newest exe");
+        write(from + QStringLiteral("/platforms/qwindows.dll"), "newest dll");
+        QFile::setPermissions(from + QStringLiteral("/platforms/qwindows.dll"), {}); // unreadable: the copy fails
+        if (QFile(from + QStringLiteral("/platforms/qwindows.dll")).open(QIODevice::ReadOnly))
+            QSKIP("running as root: an unreadable file can't be made");
+        QVERIFY(!Updater::replaceFiles(from, to, &error));
+        QVERIFY2(error.contains(QStringLiteral("qwindows.dll")), qPrintable(error));
+        QCOMPARE(read(to + QStringLiteral("/yadiff.exe")), QByteArray("newer exe"));
+        QCOMPARE(read(to + QStringLiteral("/platforms/qwindows.dll")), QByteArray("newer dll"));
+#endif
     }
 
     void latestReleaseFromTheApi()

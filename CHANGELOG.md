@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.5 (2026-11-11)
+
+- **Fix: updating on Windows could fail with "Could not replace …\imageformats\qgif.dll".** An
+  update moves each file in place aside to `<name>.old`, and the next start removes those. A
+  yadiff window started before the last update still has those old DLLs loaded, so they can't be
+  removed, and the next update stopped there, halfway through. Another name (`<name>.1.old`) is now
+  used when the `.old` one is held. All files are moved aside before any new ones are copied, and a
+  failure puts every old file back, so an install is never left half one version and half the other.
+  The message now gives Windows' reason.
+
 ## 1.2.4 (2026-11-11)
 
 - **Azure DevOps: comment on any line.** Review comments were limited to lines on or near a

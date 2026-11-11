@@ -425,30 +425,57 @@ void cleanUpOldFiles(const QString &dir)
         QFile::remove(it.next());
 }
 
+// A free name to move `dst` aside to: "<dst>.old", or "<dst>.<n>.old" while an earlier one
+// can't be removed (Windows keeps a DLL that a running yadiff has loaded).
+static QString asideName(const QString &dst)
+{
+    for (int n = 0; n < 100; ++n) {
+        const QString old = n == 0 ? dst + QStringLiteral(".old") : QStringLiteral("%1.%2.old").arg(dst).arg(n);
+        if (!QFileInfo::exists(old) || QFile::remove(old))
+            return old;
+    }
+    return {};
+}
+
 bool replaceFiles(const QString &from, const QString &to, QString *error)
 {
+    // Every file in place is moved aside first, and only then are the new ones copied in. A
+    // failure part way puts every old file back, so the install is never half one version and
+    // half the other. Moving aside works even for a running program and its DLLs.
     const QDir src(from);
+    QVector<std::pair<QString, QString>> files; // (new file, its place)
     QDirIterator it(from, QDir::Files, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         const QString file = it.next();
-        const QString rel = src.relativeFilePath(file);
-        const QString dst = to + u'/' + rel;
+        files.push_back({file, to + u'/' + src.relativeFilePath(file)});
+    }
+    QVector<std::pair<QString, QString>> moved; // (place, where its old file went)
+    QStringList written;
+    auto fail = [&](const QString &message) {
+        for (const QString &w : std::as_const(written))
+            QFile::remove(w);
+        for (auto m = moved.crbegin(); m != moved.crend(); ++m)
+            QFile::rename(m->second, m->first);
+        if (error)
+            *error = message;
+        return false;
+    };
+    for (const auto &[file, dst] : std::as_const(files)) {
         QDir().mkpath(QFileInfo(dst).absolutePath());
-        const QString old = dst + QStringLiteral(".old");
-        if (QFileInfo::exists(dst)) {
-            QFile::remove(old);
-            if (!QFile::rename(dst, old)) {
-                if (error)
-                    *error = QStringLiteral("Could not replace %1").arg(QDir::toNativeSeparators(dst));
-                return false;
-            }
-        }
-        if (!QFile::copy(file, dst)) {
-            QFile::rename(old, dst); // put the old one back
-            if (error)
-                *error = QStringLiteral("Could not write %1").arg(QDir::toNativeSeparators(dst));
-            return false;
-        }
+        if (!QFileInfo::exists(dst))
+            continue;
+        const QString old = asideName(dst);
+        QFile f(dst);
+        if (old.isEmpty() || !f.rename(old))
+            return fail(QStringLiteral("Could not replace %1: %2")
+                            .arg(QDir::toNativeSeparators(dst), old.isEmpty() ? QStringLiteral("too many old copies are in use") : f.errorString()));
+        moved.push_back({dst, old});
+    }
+    for (const auto &[file, dst] : std::as_const(files)) {
+        QFile f(file);
+        if (!f.copy(dst))
+            return fail(QStringLiteral("Could not write %1: %2").arg(QDir::toNativeSeparators(dst), f.errorString()));
+        written << dst;
     }
     return true;
 }
