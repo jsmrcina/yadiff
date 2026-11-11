@@ -42,6 +42,8 @@ struct FileView {
     // comments can be added.
     QVector<GitHubReview::Thread> threads;
     bool reviewEnabled = false;
+    // Azure DevOps takes comments on any line; GitHub only inside its diff hunks.
+    bool commentOnAnyLine = false;
     // The thread states the host offers, with its names for them (for the context menu).
     QVector<std::pair<GitHubReview::ThreadStatus, QString>> threadStatuses;
 

@@ -2295,6 +2295,7 @@ void MainWindow::showFile(int index)
             view.oldBytes = r.oldBytes;
             view.newBytes = r.newBytes;
             view.reviewEnabled = m_cmp.prNumber > 0;
+            view.commentOnAnyLine = PrReview::commentsOnAnyLine(m_cmp);
             view.threads = threadsFor(fc);
             for (const GitHubReview::ThreadStatus s : PrReview::threadStatuses(m_cmp))
                 view.threadStatuses.push_back({s, PrReview::threadStatusName(m_cmp, s)});

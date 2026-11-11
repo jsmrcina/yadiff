@@ -309,7 +309,8 @@ right-click menu.
   - **Download again** picks up new pushes.
   - **Closing the window stops any git command still running for it.**
 
-  Review threads, comments and replies work as for GitHub. Signing in is covered in the next section.
+  Review threads, comments and replies work as for GitHub, except that a comment can go on any line,
+  changed or not. Signing in is covered in the next section.
 - **Voting.** Your vote is shown in the status bar ("Your vote: Approved" with a coloured dot).
   Clicking it, or the Review menu, changes it.
   - GitHub offers Approve and Request changes. Request changes needs a message.

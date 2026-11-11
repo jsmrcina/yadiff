@@ -800,8 +800,7 @@ Row DiffPane::makeSpacerRow(const Row &comment) const
 
 bool DiffPane::nearChange(int lineIndex) const
 {
-    // GitHub only accepts comments inside its diff hunks (3 lines of context); keep the
-    // same rule for Azure DevOps so comments land where reviewers will see them.
+    // GitHub only accepts comments inside its diff hunks (3 lines of context).
     for (const Chunk &c : m_file.diff.chunks)
         if (lineIndex >= c.first - 3 && lineIndex <= c.last + 3)
             return true;
@@ -1807,10 +1806,11 @@ void DiffPane::showContextMenu(CodeView *view, int row, const QPoint &globalPos)
                                                                                           : m_file.paths.newPath,
                                                            side, line, startLine);
                                           });
-            const bool ok = r && r->lineIndex >= 0 && line > 0 && nearChange(r->lineIndex);
+            const bool ok = r && r->lineIndex >= 0 && line > 0 && (m_file.commentOnAnyLine || nearChange(r->lineIndex));
             add->setEnabled(ok);
             if (!ok)
-                add->setText(tr("Add review comment (only on or near changed lines)"));
+                add->setText(r && r->lineIndex >= 0 && line > 0 ? tr("Add review comment (GitHub takes them only on or near changed lines)")
+                                                                : tr("Add review comment"));
         }
     }
 

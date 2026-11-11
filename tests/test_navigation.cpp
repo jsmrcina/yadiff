@@ -1079,6 +1079,64 @@ private slots:
         }
     }
 
+    void commentsGoOnAnyLineWhereTheHostTakesThem()
+    {
+        // A change on line 2 of 20: line 15 is far from it.
+        QString text = QStringLiteral("@@ -1,20 +1,20 @@\n l1\n-old\n+new\n");
+        for (int i = 3; i <= 20; ++i)
+            text += QStringLiteral(" l%1\n").arg(i);
+        FileView v;
+        v.diff = DiffModel::parseUnified(text);
+        v.title = v.fileName = QStringLiteral("f.txt");
+        v.paths = {QStringLiteral("f.txt"), QStringLiteral("f.txt")};
+        v.reviewEnabled = true;
+        for (const auto mode : {DiffPane::Mode::Inline, DiffPane::Mode::SideBySide}) {
+            for (const bool anyLine : {true, false}) { // Azure DevOps, GitHub
+                v.commentOnAnyLine = anyLine;
+                DiffPane pane;
+                pane.resize(1000, 600);
+                pane.setMode(mode);
+                pane.show();
+                QVERIFY(QTest::qWaitForWindowExposed(&pane));
+                pane.setFile(v);
+                CodeView *view = nullptr;
+                for (CodeView *cv : pane.findChildren<CodeView *>())
+                    if (cv->isVisible())
+                        view = cv; // inline view, or the right-hand pane
+                QVERIFY(view);
+                int row = -1;
+                for (int k = 0; k < view->rows().size(); ++k)
+                    if (view->rows()[k].newNo == 15)
+                        row = k;
+                QVERIFY(row >= 0);
+
+                QString label;
+                bool enabled = false;
+                QTimer::singleShot(0, [&] {
+                    auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+                    if (!menu)
+                        return;
+                    for (QAction *a : menu->actions())
+                        if (a->text().startsWith(QStringLiteral("Add review"))) {
+                            label = a->text();
+                            enabled = a->isEnabled();
+                            if (enabled)
+                                a->trigger();
+                        }
+                    menu->close();
+                });
+                emit view->contextMenuRequested(row, view->viewport()->mapToGlobal(QPoint(20, 20)));
+                QCOMPARE(enabled, anyLine);
+                if (anyLine) {
+                    QCOMPARE(label, QStringLiteral("Add review &comment on line 15"));
+                    QTRY_VERIFY(view->findChild<QPlainTextEdit *>()); // the editor opened under it
+                } else {
+                    QVERIFY(label.contains(QStringLiteral("only on or near changed lines")));
+                }
+            }
+        }
+    }
+
     void reviewCommentsAreWrittenInline()
     {
         const FileDiff diff = DiffModel::parseUnified(QStringLiteral("@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"));

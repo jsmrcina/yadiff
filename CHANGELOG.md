@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.4 (2026-11-11)
+
+- **Azure DevOps: comment on any line.** Review comments were limited to lines on or near a
+  change, which is GitHub's rule (its API refuses others), and Azure DevOps had been given the same
+  rule. Azure DevOps takes comments anywhere in the file, so any line can now be commented on there.
+  On GitHub, the greyed-out menu item now says why.
+
 ## 1.2.3 (2026-11-11)
 
 - **Fix: opening some Azure DevOps PRs on Windows failed with "Could not write …: The system

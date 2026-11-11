@@ -12,6 +12,9 @@ namespace PrReview {
 
 bool enabled(const Comparison &cmp);
 QString hostName(const Comparison &cmp); // "GitHub" or "Azure DevOps"
+// Whether new comments can go on any line, or only on or near changed ones (GitHub's API
+// refuses lines outside its diff hunks).
+bool commentsOnAnyLine(const Comparison &cmp);
 QString webUrl(const Comparison &cmp);
 
 std::optional<QVector<GitHubReview::Comment>> fetch(const Comparison &cmp, QString *error);

@@ -57,6 +57,11 @@ QString hostName(const Comparison &cmp)
     return isAdo(cmp) ? QStringLiteral("Azure DevOps") : QStringLiteral("GitHub");
 }
 
+bool commentsOnAnyLine(const Comparison &cmp)
+{
+    return isAdo(cmp);
+}
+
 QString webUrl(const Comparison &cmp)
 {
     if (isAdo(cmp))
