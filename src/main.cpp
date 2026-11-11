@@ -34,11 +34,16 @@
 #include <QStandardPaths>
 #include <QProcess>
 #include <QSysInfo>
+#include <QTimer>
+
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <cstdio>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#elif defined(Q_OS_LINUX)
+#include <unistd.h>
 #endif
 
 namespace {
@@ -110,14 +115,58 @@ void logStartup(const QString &cwd)
         qCInfo(lcApp).noquote() << "environment:" << env.join(QStringLiteral(", "));
     qCInfo(lcApp).noquote() << "log level" << Log::levelName(Log::level()) << "settings in"
                             << QDir::toNativeSeparators(QSettings().fileName());
-    QProcess git;
-    Log::ProcessTrace trace(lcGit());
-    git.start(QStringLiteral("git"), {QStringLiteral("--version")});
-    git.waitForFinished(10000);
-    const QByteArray version = git.readAllStandardOutput().trimmed();
-    trace.done(git, version.size(), git.readAllStandardError());
-    if (!version.isEmpty())
-        qCInfo(lcGit).noquote() << QString::fromUtf8(version) << "at" << QStandardPaths::findExecutable(QStringLiteral("git"));
+}
+
+// git's version, for the log. Only in the process that does the work (not one that hands the
+// window to a copy of itself), and in the background: starting git can take half a second on
+// Windows with endpoint protection.
+void logGitVersion()
+{
+    (void)QtConcurrent::run([] {
+        QProcess git;
+        Log::ProcessTrace trace(lcGit());
+        git.start(QStringLiteral("git"), {QStringLiteral("--version")});
+        git.waitForFinished(10000);
+        const QByteArray version = git.readAllStandardOutput().trimmed();
+        trace.done(git, version.size(), git.readAllStandardError());
+        if (!version.isEmpty())
+            qCInfo(lcGit).noquote() << QString::fromUtf8(version) << "at" << QStandardPaths::findExecutable(QStringLiteral("git"));
+    });
+}
+
+// Milliseconds since the operating system created this process, or -1 if unknown. Covers
+// what happens before main(): loading the program and its DLLs, which virus scanners slow.
+qint64 msSinceProcessStart()
+{
+#ifdef Q_OS_WIN
+    FILETIME created, exited, kernel, user, now;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+        return -1;
+    GetSystemTimeAsFileTime(&now);
+    auto ticks = [](const FILETIME &t) { return (qint64(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
+    return (ticks(now) - ticks(created)) / 10000; // 100 ns units
+#elif defined(Q_OS_LINUX)
+    // Field 22 of /proc/self/stat: the start time in clock ticks since boot.
+    QFile stat(QStringLiteral("/proc/self/stat")), uptime(QStringLiteral("/proc/uptime"));
+    if (!stat.open(QIODevice::ReadOnly) || !uptime.open(QIODevice::ReadOnly))
+        return -1;
+    const QByteArray s = stat.readAll();
+    const QList<QByteArray> fields = s.mid(s.lastIndexOf(')') + 2).split(' '); // from field 3 on
+    const long hz = sysconf(_SC_CLK_TCK);
+    bool ok1 = false, ok2 = false;
+    const double started = fields.value(19).toDouble(&ok1) / double(hz);
+    const double up = uptime.readAll().split(' ').value(0).toDouble(&ok2);
+    return ok1 && ok2 && hz > 0 ? qint64((up - started) * 1000) : -1;
+#else
+    return -1;
+#endif
+}
+
+// The startup log line: how long each phase took, in milliseconds since the process started.
+void logStartupTime(const char *phase)
+{
+    if (const qint64 ms = msSinceProcessStart(); ms >= 0)
+        qCInfo(lcApp).noquote() << QStringLiteral("startup: %1 at %2 ms").arg(QLatin1String(phase)).arg(ms);
 }
 
 } // namespace
@@ -127,7 +176,9 @@ int main(int argc, char *argv[])
 #ifdef Q_OS_WIN
     attachParentConsole();
 #endif
+    const qint64 atMain = msSinceProcessStart();
     QApplication app(argc, argv);
+    const qint64 atQt = msSinceProcessStart();
     QApplication::setApplicationName(QStringLiteral("yadiff"));
     QApplication::setOrganizationName(QStringLiteral("yadiff"));
     QApplication::setApplicationVersion(QStringLiteral(YADIFF_VERSION));
@@ -221,6 +272,8 @@ int main(int argc, char *argv[])
     Log::init(parser.value(logOpt), parser.value(logLevelOpt));
     UiLog::install(app);
     logStartup(parser.isSet(dirOpt) ? QDir(parser.value(dirOpt)).absolutePath() : QDir::currentPath());
+    if (atMain >= 0)
+        qCInfo(lcApp).noquote() << QStringLiteral("startup: main() at %1 ms, Qt started at %2 ms").arg(atMain).arg(atQt);
 
     // A detached child (or a Windows GUI-subsystem exe) has no terminal to report errors to.
 #ifdef Q_OS_WIN
@@ -251,6 +304,7 @@ int main(int argc, char *argv[])
         return 0;
     }
     if (parser.isSet(mergeOpt)) {
+        logGitVersion();
         // git mergetool waits for us, and trusts the exit status: 0 = resolved and saved.
         const QStringList files = parser.positionalArguments();
         if (files.size() != 4)
@@ -383,6 +437,31 @@ int main(int argc, char *argv[])
         req.forcedPaths = 0;
         req.noIndex = true;
     }
+    // By default, hand the window to a detached copy of ourselves so the terminal is free
+    // immediately (like `gitk &`). Returns false if that copy couldn't be started.
+    const bool detach = !parser.isSet(waitOpt) && !parser.isSet(exportOpt) && qEnvironmentVariableIsEmpty("YADIFF_NO_DETACH");
+    auto startDetachedCopy = [&] {
+        QProcess child;
+        child.setProgram(QCoreApplication::applicationFilePath());
+        QStringList args = rawArgs.mid(1);
+        args.prepend(QStringLiteral("--wait"));
+        if (!parser.isSet(dirOpt))
+            args = QStringList{QStringLiteral("-C"), cwd} + args; // options go before a possible "--"
+        child.setArguments(args);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("YADIFF_DETACHED_CHILD"), QStringLiteral("1"));
+        child.setProcessEnvironment(env);
+        child.setStandardOutputFile(QProcess::nullDevice());
+        child.setStandardErrorFile(QProcess::nullDevice());
+        const bool started = child.startDetached();
+        Log::launched(lcApp(), child.program(), args, started);
+        return started;
+    };
+    // Where errors go to a dialog anyway (Windows: yadiff.exe is a GUI program), the copy
+    // checks the arguments itself, so the slow git checks of a large repository aren't done
+    // twice. Elsewhere they're checked first, so errors are printed in the terminal.
+    if (detach && g_gui && startDetachedCopy())
+        return 0;
     // A pull request opens in the window, which shows its progress: fetching one can take
     // a while (signing in, the API, git), and nothing should sit there with no window.
     // A report (--export) has no window, so it resolves here.
@@ -404,6 +483,7 @@ int main(int argc, char *argv[])
     }
 
     if (parser.isSet(exportOpt)) {
+        logGitVersion();
         // Headless report: same comparison, written straight to a file.
         QVector<FileChange> changes = repo->listChanges(cmp, &error);
         if (!error.isEmpty())
@@ -434,28 +514,10 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // By default, hand the window to a detached copy of ourselves so the
-    // terminal is free immediately (like `gitk &`). Arguments were validated above,
-    // so errors are still reported in the terminal.
-    if (!parser.isSet(waitOpt) && qEnvironmentVariableIsEmpty("YADIFF_NO_DETACH")) {
-        QProcess child;
-        child.setProgram(QCoreApplication::applicationFilePath());
-        QStringList args = rawArgs.mid(1);
-        args.prepend(QStringLiteral("--wait"));
-        if (!parser.isSet(dirOpt))
-            args = QStringList{QStringLiteral("-C"), cwd} + args; // options go before a possible "--"
-        child.setArguments(args);
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert(QStringLiteral("YADIFF_DETACHED_CHILD"), QStringLiteral("1"));
-        child.setProcessEnvironment(env);
-        child.setStandardOutputFile(QProcess::nullDevice());
-        child.setStandardErrorFile(QProcess::nullDevice());
-        const bool started = child.startDetached();
-        Log::launched(lcApp(), child.program(), args, started);
-        if (started)
-            return 0;
-        // Fall through and run in the foreground if detaching failed.
-    }
+    // Arguments were validated above, so errors are still reported in the terminal.
+    if (detach && !g_gui && startDetachedCopy())
+        return 0; // else run in the foreground
+    logGitVersion();
 
 #ifdef Q_OS_WIN
     // A window in the foreground: let go of the console, so a Ctrl+C typed there later
@@ -471,8 +533,11 @@ int main(int argc, char *argv[])
     else if (parser.isSet(sideOpt))
         Settings::setSideBySide(true);
 
+    logStartupTime("building the window");
     MainWindow w(std::move(*repo), cmp);
+    logStartupTime("showing the window");
     w.show();
+    QTimer::singleShot(0, [] { logStartupTime("window shown"); });
     if (prInWindow)
         w.openInBackground(req, session);
     else if (session)

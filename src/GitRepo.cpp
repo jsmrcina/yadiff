@@ -386,8 +386,11 @@ QStringList DiffOptions::whitespaceArgs() const
 std::optional<GitRepo> GitRepo::open(const QString &dir, QString *error)
 {
     QByteArray out;
-    if (runGit(dir, {QStringLiteral("rev-parse"), QStringLiteral("--is-bare-repository")}, &out, nullptr)
-        && out.trimmed() == "true") {
+    // Not a repository at all: say so now, without asking git a second time (each git
+    // can take half a second on Windows, and a failing --show-toplevel far longer).
+    if (!runGit(dir, {QStringLiteral("rev-parse"), QStringLiteral("--is-bare-repository")}, &out, error))
+        return std::nullopt;
+    if (out.trimmed() == "true") {
         if (!runGit(dir, {QStringLiteral("rev-parse"), QStringLiteral("--absolute-git-dir")}, &out, error))
             return std::nullopt;
         return GitRepo(QDir::cleanPath(QString::fromUtf8(out).trimmed()), true);

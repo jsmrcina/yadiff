@@ -465,7 +465,9 @@ Help → Check for update now looks up the latest GitHub release. If it is newer
 release notes and asks before installing it. Help → Automatically install updates (off by
 default) checks once a day, a few seconds after start-up, and installs without asking. Either way,
 the new version starts the next time yadiff does. A "Restart now" button in the status bar starts
-it straight away.
+it straight away. The status bar shows each step while an update installs. Closing the window
+meanwhile asks whether to finish the update in the background (yadiff exits when it's done) or to
+stop it.
 
 Releases are read with the `gh` CLI when it's installed, and otherwise with GitHub's REST API,
 sending `GH_TOKEN` or `GITHUB_TOKEN` when one is set.
@@ -507,7 +509,10 @@ yadiff looks for a credential in this order and uses the first that works:
 2. **A personal access token saved by yadiff** in the system keyring. On Linux that's the Secret
    Service, through `secret-tool`, so KDE Wallet or GNOME Keyring. On Windows it's the Credential
    Manager.
-3. **The Azure CLI** (`az login`), if it's installed. Its Microsoft Entra token is used.
+3. **The Azure CLI** (`az login`), if it's installed. Its Microsoft Entra token is used, and saved
+   in the keyring until five minutes before it expires, because `az` can take several seconds to
+   answer. The saved token is used only while `az` is signed in as it was when the token was
+   saved: `az login`, `az logout` and `az account set` make yadiff ask `az` again.
 4. **Git's credential helper** for the organization, such as Git Credential Manager. It's only
    asked when one is configured for that URL.
 
@@ -542,6 +547,8 @@ At the default level, `info`, the log has:
 
 - the version, command line, system, Qt and git versions, and which yadiff-related environment
   variables are set (names only, except harmless ones like `YADIFF_LOG`);
+- `startup:` lines with the milliseconds since the process started at each step of opening the
+  window, which show where a slow start goes;
 - every comparison opened, and every git, `gh`, `az`, `secret-tool` and `git apply` command, with
   its folder, exit status, time and output size, and its error output when it failed;
 - every HTTP request, with its method, URL, status, time and size. A failed request also gets the

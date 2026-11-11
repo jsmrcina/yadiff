@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.1 (2026-11-11)
+
+- **Faster start on Windows**, where each git command can take half a second or more:
+  - yadiff no longer checks the comparison twice when it starts a copy of itself for the window.
+    In a large repository that was several seconds.
+  - Opening a folder that isn't a git repository asks git once instead of twice. The second
+    question could take five seconds, on every Azure DevOps pull request opened from outside a
+    clone.
+  - git's version, which only goes in the log, is looked up in the background.
+- **Azure DevOps pull requests open faster.** The Azure CLI's token is saved in the keyring until
+  it expires, so `az` (several seconds on Windows) is asked once an hour instead of every time.
+- **Startup timings in the log:** `startup:` lines say how long each step of opening the window
+  took.
+- **Fix: updates seemed to stop.** Moving the mouse over a menu replaced the "Building…" status
+  with the menu's tips, and closing the window stopped the update without a word. The progress has
+  its own place in the status bar now, and closing the window asks whether to finish the update in
+  the background or stop it.
+
 ## 1.2.0 (2026-11-10)
 
 - **Choose the GitHub account per owner.** When gh is signed in to several GitHub accounts,

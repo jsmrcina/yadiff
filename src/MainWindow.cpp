@@ -394,12 +394,44 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    if (m_updating && !m_quitAfterUpdate) {
+        // Quitting stops the update's build, so ask first.
+        QMessageBox box(this);
+        box.setWindowTitle(tr("Update"));
+        box.setIcon(QMessageBox::Question);
+        box.setText(tr("yadiff is installing an update."));
+        box.setInformativeText(tr("It can finish without the window; the new version starts next time. "
+                                  "Quitting now stops the update."));
+        QPushButton *finish = box.addButton(tr("Finish in the background"), QMessageBox::AcceptRole);
+        QPushButton *stop = box.addButton(tr("Stop the update"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(finish);
+        box.exec();
+        if (box.clickedButton() == finish) {
+            qCInfo(lcApp) << "window closed; finishing the update before exiting";
+            saveWindowState();
+            m_quitAfterUpdate = true;
+            event->ignore();
+            hide();
+            return;
+        }
+        if (box.clickedButton() != stop) {
+            event->ignore();
+            return;
+        }
+        qCInfo(lcApp) << "stopping the update";
+    }
     qCInfo(lcApp) << "window closed";
+    saveWindowState();
+    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::saveWindowState()
+{
     QSettings s;
     s.setValue(QStringLiteral("window/geometry"), saveGeometry());
     if (auto *splitter = qobject_cast<QSplitter *>(centralWidget()))
         s.setValue(QStringLiteral("window/splitter"), splitter->saveState());
-    QMainWindow::closeEvent(event);
 }
 
 QString MainWindow::describeComparison() const
@@ -4865,13 +4897,21 @@ void MainWindow::checkForUpdates(bool interactive)
 void MainWindow::installUpdate(const Updater::Release &release, bool interactive)
 {
     m_updating = true;
+    // A label of its own: a temporary status message is replaced by any menu's status tip.
+    if (!m_updateLabel) {
+        m_updateLabel = new QLabel(this);
+        statusBar()->insertPermanentWidget(0, m_updateLabel);
+    }
+    m_updateLabel->setText(tr("Installing yadiff %1…").arg(release.tag));
+    m_updateLabel->setToolTip(tr("yadiff keeps working while the update installs"));
+    m_updateLabel->show();
     QPointer<MainWindow> self(this);
     auto progress = [self](const QString &message) {
         QMetaObject::invokeMethod(
             qApp,
             [self, message] {
-                if (self)
-                    self->statusBar()->showMessage(message);
+                if (self && self->m_updateLabel)
+                    self->m_updateLabel->setText(message);
             },
             Qt::QueuedConnection);
     };
@@ -4884,7 +4924,13 @@ void MainWindow::installUpdate(const Updater::Release &release, bool interactive
         },
         [this, release, interactive](Result r) {
             m_updating = false;
-            statusBar()->clearMessage();
+            m_updateLabel->hide();
+            if (m_quitAfterUpdate) {
+                // The window was closed meanwhile; the outcome is in the log.
+                qCInfo(lcApp) << "exiting after the update";
+                qApp->quit();
+                return;
+            }
             if (!r.first) {
                 if (interactive)
                     QMessageBox::warning(this, tr("Update"), tr("Installing yadiff %1 failed.\n\n%2").arg(release.tag, r.second));

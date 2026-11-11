@@ -75,6 +75,42 @@ std::wstring target(const QString &key)
 {
     return (QStringLiteral("yadiff:") + key).toStdWString();
 }
+
+// A credential holds at most CRED_MAX_CREDENTIAL_BLOB_SIZE (2560) bytes, less than an Entra
+// access token can take. A longer secret is split: the key's own credential says how many
+// parts there are, and the parts are "<key>#1", "<key>#2", ...
+const QByteArray kPartsPrefix = "yadiff-parts:";
+const int kPartSize = CRED_MAX_CREDENTIAL_BLOB_SIZE;
+
+std::optional<QByteArray> readBlob(const std::wstring &t)
+{
+    PCREDENTIALW cred = nullptr;
+    if (!CredReadW(t.c_str(), CRED_TYPE_GENERIC, 0, &cred))
+        return std::nullopt;
+    QByteArray blob(reinterpret_cast<const char *>(cred->CredentialBlob), int(cred->CredentialBlobSize));
+    CredFree(cred);
+    return blob;
+}
+
+bool writeBlob(const std::wstring &t, const QString &label, const QByteArray &blob)
+{
+    const std::wstring comment = label.toStdWString();
+    CREDENTIALW cred{};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = const_cast<LPWSTR>(t.c_str());
+    cred.Comment = const_cast<LPWSTR>(comment.c_str());
+    cred.CredentialBlobSize = DWORD(blob.size());
+    cred.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<char *>(blob.constData()));
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+    return CredWriteW(&cred, 0);
+}
+
+// How many parts the secret under `key` is split into (0: not split).
+int partCount(const QString &key)
+{
+    const auto head = readBlob(target(key));
+    return head && head->startsWith(kPartsPrefix) ? head->mid(kPartsPrefix.size()).toInt() : 0;
+}
 #endif
 
 } // namespace
@@ -114,14 +150,25 @@ std::optional<QString> read(const QString &key, QString *error)
         return o.value(key).toString();
     }
 #ifdef Q_OS_WIN
-    Q_UNUSED(error); // a missing credential isn't an error
-    PCREDENTIALW cred = nullptr;
-    if (!CredReadW(target(key).c_str(), CRED_TYPE_GENERIC, 0, &cred)) {
+    auto blob = readBlob(target(key));
+    if (!blob) {
         qCInfo(lcAuth).noquote() << "Credential Manager has no" << key << "(error" << GetLastError() << ")";
-        return std::nullopt;
+        return std::nullopt; // a missing credential isn't an error
     }
-    const QString secret = QString::fromUtf8(reinterpret_cast<const char *>(cred->CredentialBlob), int(cred->CredentialBlobSize));
-    CredFree(cred);
+    if (blob->startsWith(kPartsPrefix)) {
+        const int parts = blob->mid(kPartsPrefix.size()).toInt();
+        blob->clear();
+        for (int i = 1; i <= parts; ++i) {
+            const auto part = readBlob(target(key + u'#' + QString::number(i)));
+            if (!part) {
+                if (error)
+                    *error = QStringLiteral("Part %1 of %2 is missing from the Credential Manager.").arg(i).arg(key);
+                return std::nullopt;
+            }
+            blob->append(*part);
+        }
+    }
+    const QString secret = QString::fromUtf8(*blob);
     Log::addSecret(secret);
     return secret;
 #else
@@ -144,21 +191,25 @@ bool write(const QString &key, const QString &label, const QString &secret, QStr
         return writeTestFile(o);
     }
 #ifdef Q_OS_WIN
-    const std::wstring t = target(key);
-    const std::wstring comment = label.toStdWString();
     const QByteArray blob = secret.toUtf8();
-    CREDENTIALW cred{};
-    cred.Type = CRED_TYPE_GENERIC;
-    cred.TargetName = const_cast<LPWSTR>(t.c_str());
-    cred.Comment = const_cast<LPWSTR>(comment.c_str());
-    cred.CredentialBlobSize = DWORD(blob.size());
-    cred.CredentialBlob = reinterpret_cast<LPBYTE>(const_cast<char *>(blob.constData()));
-    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-    if (!CredWriteW(&cred, 0)) {
+    const int oldParts = partCount(key);
+    int parts = 0;
+    bool ok = true;
+    if (blob.size() <= kPartSize && !blob.startsWith(kPartsPrefix)) {
+        ok = writeBlob(target(key), label, blob);
+    } else {
+        parts = int((blob.size() + kPartSize - 1) / kPartSize);
+        for (int i = 1; ok && i <= parts; ++i)
+            ok = writeBlob(target(key + u'#' + QString::number(i)), label, blob.mid(qsizetype(i - 1) * kPartSize, kPartSize));
+        ok = ok && writeBlob(target(key), label, kPartsPrefix + QByteArray::number(parts));
+    }
+    if (!ok) {
         if (error)
             *error = QStringLiteral("Windows Credential Manager refused the secret (error %1).").arg(GetLastError());
         return false;
     }
+    for (int i = parts + 1; i <= oldParts; ++i) // left from a longer secret
+        CredDeleteW(target(key + u'#' + QString::number(i)).c_str(), CRED_TYPE_GENERIC, 0);
     return true;
 #else
     return secretTool({QStringLiteral("store"), QStringLiteral("--label=") + label, QStringLiteral("application"),
@@ -176,6 +227,9 @@ bool remove(const QString &key, QString *error)
         return writeTestFile(o);
     }
 #ifdef Q_OS_WIN
+    const int parts = partCount(key);
+    for (int i = 1; i <= parts; ++i)
+        CredDeleteW(target(key + u'#' + QString::number(i)).c_str(), CRED_TYPE_GENERIC, 0);
     if (!CredDeleteW(target(key).c_str(), CRED_TYPE_GENERIC, 0) && GetLastError() != ERROR_NOT_FOUND) {
         if (error)
             *error = QStringLiteral("Could not remove the credential (error %1).").arg(GetLastError());

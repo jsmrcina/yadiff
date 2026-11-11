@@ -4,7 +4,10 @@
 #include "Log.h"
 #include "SecretStore.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -49,9 +52,73 @@ bool run(const QString &program, const QStringList &args, const QByteArray &inpu
     return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
 }
 
+// The az program: YADIFF_AZ when set (tests; empty for none), else az on PATH.
+QString azProgram()
+{
+    if (qEnvironmentVariableIsSet("YADIFF_AZ"))
+        return qEnvironmentVariable("YADIFF_AZ");
+    return QStandardPaths::findExecutable(QStringLiteral("az"));
+}
+
+// The Azure CLI's token is saved between runs, since az takes several seconds to answer
+// (Windows). It is the same for every organisation: az signs in to Entra ID, not to one.
+const char kSavedAzureCliToken[] = "ado-azure-cli-token";
+
+// A fingerprint of az's signed-in account(s). az login, logout and account set rewrite
+// azureProfile.json, and a saved token is only used while the fingerprint matches.
+QString azureProfileFingerprint()
+{
+    QString dir = qEnvironmentVariable("AZURE_CONFIG_DIR");
+    if (dir.isEmpty())
+        dir = QDir::homePath() + QStringLiteral("/.azure");
+    QFile f(dir + QStringLiteral("/azureProfile.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return QStringLiteral("none");
+    return QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex());
+}
+
+std::optional<AdoAuth::Credential> savedAzureCliToken()
+{
+    if (!SecretStore::available())
+        return std::nullopt;
+    const auto saved = SecretStore::read(QString::fromLatin1(kSavedAzureCliToken));
+    if (!saved)
+        return std::nullopt;
+    const QJsonObject o = QJsonDocument::fromJson(saved->toUtf8()).object();
+    const QString token = o.value(QStringLiteral("token")).toString();
+    const QDateTime expires = QDateTime::fromSecsSinceEpoch(qint64(o.value(QStringLiteral("expires")).toDouble()), QTimeZone::UTC);
+    if (token.isEmpty())
+        return std::nullopt;
+    Log::addSecret(token);
+    if (o.value(QStringLiteral("profile")).toString() != azureProfileFingerprint()) {
+        qCInfo(lcAuth) << "the saved Azure CLI token is for another az sign-in; asking az again";
+        return std::nullopt;
+    }
+    if (QDateTime::currentDateTimeUtc().addSecs(300) >= expires) {
+        qCInfo(lcAuth) << "the saved Azure CLI token has expired; asking az again";
+        return std::nullopt;
+    }
+    AdoAuth::Credential c{AdoAuth::Credential::Kind::Bearer, token, QStringLiteral("Azure CLI (saved)")};
+    c.expires = expires;
+    return c;
+}
+
+void saveAzureCliToken(const AdoAuth::Credential &c)
+{
+    if (!c.expires.isValid() || !SecretStore::available())
+        return;
+    const QJsonObject o{{QStringLiteral("token"), c.secret},
+                        {QStringLiteral("expires"), double(c.expires.toSecsSinceEpoch())},
+                        {QStringLiteral("profile"), azureProfileFingerprint()}};
+    QString error;
+    if (!SecretStore::write(QString::fromLatin1(kSavedAzureCliToken), QStringLiteral("yadiff: Azure CLI token for Azure DevOps"),
+                            QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)), &error))
+        qCInfo(lcAuth).noquote() << "could not save the Azure CLI token:" << error;
+}
+
 std::optional<AdoAuth::Credential> fromAzureCli()
 {
-    const QString az = QStandardPaths::findExecutable(QStringLiteral("az"));
+    const QString az = azProgram();
     if (az.isEmpty())
         return std::nullopt;
     QByteArray out;
@@ -240,6 +307,12 @@ std::optional<Credential> findCached(const QUrl &collectionUrl, QString *diagnos
 
 void rejected(const QUrl &collectionUrl, const Credential &cred)
 {
+    if (cred.source.startsWith(QLatin1String("Azure CLI"))) {
+        if (const auto saved = SecretStore::read(QString::fromLatin1(kSavedAzureCliToken)); saved && saved->contains(cred.secret)) {
+            qCInfo(lcAuth) << "forgetting the saved Azure CLI token";
+            SecretStore::remove(QString::fromLatin1(kSavedAzureCliToken));
+        }
+    }
     QMutexLocker lock(&g_cacheMutex);
     const auto it = g_cache.find(keyFor(collectionUrl));
     if (it != g_cache.end() && it->credential.secret == cred.secret) {
@@ -285,8 +358,12 @@ std::optional<Credential> findCredential(const QUrl &collectionUrl, QString *dia
             return Credential{Credential::Kind::Pat, *pat, SecretStore::backendName()};
         tried << SecretStore::backendName();
     }
-    if (const auto c = fromAzureCli())
+    if (const auto c = savedAzureCliToken())
         return c;
+    if (const auto c = fromAzureCli()) {
+        saveAzureCliToken(*c);
+        return c;
+    }
     tried << (azureCliAvailable() ? QStringLiteral("Azure CLI (not signed in?)") : QStringLiteral("Azure CLI (not installed)"));
     if (const auto c = fromGitCredential(organizationUrl(collectionUrl)))
         return c;
@@ -387,12 +464,12 @@ std::optional<Credential> azureCliCredential()
 
 bool azureCliAvailable()
 {
-    return !QStandardPaths::findExecutable(QStringLiteral("az")).isEmpty();
+    return !azProgram().isEmpty();
 }
 
 bool azureCliLogin(QString *error)
 {
-    const QString az = QStandardPaths::findExecutable(QStringLiteral("az"));
+    const QString az = azProgram();
     if (az.isEmpty()) {
         if (error)
             *error = QStringLiteral("The Azure CLI (az) is not installed.");

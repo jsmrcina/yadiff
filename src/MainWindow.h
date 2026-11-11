@@ -69,6 +69,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void saveWindowState();
     void changeEvent(QEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -308,6 +309,8 @@ private:
     QAction *m_blameAct = nullptr;
     quint64 m_blameGen = 0;
     bool m_updating = false;
+    bool m_quitAfterUpdate = false; // the window was closed while an update installs
+    QLabel *m_updateLabel = nullptr; // the install's progress; status tips can't hide it
     QPushButton *m_restartButton = nullptr;
     QAction *m_trimPrefixAct = nullptr;
     QAction *m_clickWordAct = nullptr;

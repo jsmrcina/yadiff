@@ -255,6 +255,7 @@ private slots:
         qputenv("YADIFF_SECRET_STORE_FILE", m_secrets->filePath(QStringLiteral("secrets.json")).toUtf8());
         for (const char *v : {"YADIFF_ADO_TOKEN", "SYSTEM_ACCESSTOKEN", "YADIFF_ADO_PAT", "AZURE_DEVOPS_EXT_PAT"})
             qunsetenv(v);
+        qputenv("YADIFF_AZ", ""); // not the machine's own az, which may be signed in
     }
 
     void parsesLinks()
@@ -353,6 +354,101 @@ private slots:
         QCOMPARE(its.size(), 2);
         QCOMPARE(its.first().id, 1); // oldest first
         QCOMPARE(its.first().created, QStringLiteral("2026-01-01T00:00:00Z"));
+    }
+
+    void savesTheAzureCliTokenUntilAzSignsInAgain()
+    {
+        // A fake az that counts its calls, and az's account file.
+        QTemporaryDir dir;
+        const QString count = dir.filePath(QStringLiteral("count.txt"));
+#ifdef Q_OS_WIN
+        const QString az = dir.filePath(QStringLiteral("az.cmd"));
+        const QByteArray script = "@echo off\r\necho x>>\"%~dp0count.txt\"\r\n"
+                                  "echo {\"accessToken\":\"az-token\",\"expires_on\":4102444800}\r\n";
+#else
+        const QString az = dir.filePath(QStringLiteral("az"));
+        const QByteArray script = "#!/bin/sh\necho x >> \"$(dirname \"$0\")/count.txt\"\n"
+                                  "echo '{\"accessToken\":\"az-token\",\"expires_on\":4102444800}'\n";
+#endif
+        QFile f(az);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(script);
+        f.close();
+        f.setPermissions(f.permissions() | QFileDevice::ExeOwner);
+        auto calls = [&] {
+            QFile c(count);
+            return c.open(QIODevice::ReadOnly) ? int(c.readAll().count('x')) : 0;
+        };
+        auto setProfile = [&](const QByteArray &json) {
+            QFile p(dir.filePath(QStringLiteral("azureProfile.json")));
+            QVERIFY(p.open(QIODevice::WriteOnly));
+            p.write(json);
+        };
+        setProfile(R"({"subscriptions":[{"user":{"name":"a@example.com"}}]})");
+        qputenv("YADIFF_AZ", az.toUtf8());
+        qputenv("AZURE_CONFIG_DIR", dir.path().toUtf8());
+        AdoAuth::clearCache();
+        const QUrl org(QStringLiteral("https://dev.azure.com/aztest"));
+
+        auto c = AdoAuth::find(org);
+        QVERIFY(c);
+        QCOMPARE(c->secret, QStringLiteral("az-token"));
+        QCOMPARE(calls(), 1);
+        // A new run (no in-memory cache), and another organisation: the saved token.
+        AdoAuth::clearCache();
+        c = AdoAuth::find(QUrl(QStringLiteral("https://dev.azure.com/other")));
+        QVERIFY(c);
+        QCOMPARE(c->source, QStringLiteral("Azure CLI (saved)"));
+        QCOMPARE(c->kind, AdoAuth::Credential::Kind::Bearer);
+        QCOMPARE(calls(), 1);
+        // az login / account set rewrites azureProfile.json: ask az again.
+        setProfile(R"({"subscriptions":[{"user":{"name":"b@example.com"}}]})");
+        AdoAuth::clearCache();
+        QCOMPARE(AdoAuth::find(org)->source, QStringLiteral("Azure CLI"));
+        QCOMPARE(calls(), 2);
+        // Rejected by the server: forgotten, here and in the store.
+        AdoAuth::clearCache();
+        c = AdoAuth::find(org);
+        QCOMPARE(c->source, QStringLiteral("Azure CLI (saved)"));
+        AdoAuth::rejected(org, *c);
+        QVERIFY(!SecretStore::read(QStringLiteral("ado-azure-cli-token")));
+        AdoAuth::clearCache();
+        QCOMPARE(AdoAuth::find(org)->source, QStringLiteral("Azure CLI"));
+        QCOMPARE(calls(), 3);
+
+        SecretStore::remove(QStringLiteral("ado-azure-cli-token"));
+        AdoAuth::clearCache();
+        qputenv("YADIFF_AZ", "");
+        qunsetenv("AZURE_CONFIG_DIR");
+    }
+
+    void credentialManagerHoldsLongSecrets()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Windows only: the Credential Manager splits secrets over 2560 bytes");
+#else
+        const QByteArray file = qgetenv("YADIFF_SECRET_STORE_FILE");
+        qunsetenv("YADIFF_SECRET_STORE_FILE");
+        const QString key = QStringLiteral("yadiff-test-long-secret");
+        QString error;
+        QString longSecret;
+        for (int i = 0; i < 700; ++i)
+            longSecret += QString::number(i % 10);
+        longSecret = longSecret.repeated(9); // 6300 bytes: three parts
+        const bool wrote = SecretStore::write(key, QStringLiteral("yadiff test"), longSecret, &error);
+        if (!wrote) {
+            qputenv("YADIFF_SECRET_STORE_FILE", file);
+            QSKIP(qPrintable(QStringLiteral("no Credential Manager here: ") + error));
+        }
+        QCOMPARE(SecretStore::read(key).value_or(QString()), longSecret);
+        QVERIFY(SecretStore::write(key, QStringLiteral("yadiff test"), QStringLiteral("short"), &error)); // parts go
+        QCOMPARE(SecretStore::read(key).value_or(QString()), QStringLiteral("short"));
+        QVERIFY(SecretStore::write(key, QStringLiteral("yadiff test"), longSecret, &error));
+        QVERIFY(SecretStore::remove(key, &error));
+        QVERIFY(!SecretStore::read(key));
+        QVERIFY(!SecretStore::read(key + QStringLiteral("#1")));
+        qputenv("YADIFF_SECRET_STORE_FILE", file);
+#endif
     }
 
     void reusesCredentialsUntilTheyExpire()
