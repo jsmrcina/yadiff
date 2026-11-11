@@ -457,8 +457,20 @@ bool downloadChanges(const Ref &ref, const AdoAuth::Credential &cred, int to, in
             files.push_back({id, side + u'/' + rel});
         }
     }
-    QDir().mkpath(baseDir);
-    QDir().mkpath(headDir);
+    // Every folder first, from this thread: Qt's mkpath on Windows fails when another
+    // thread creates one of the same parent folders at the same moment.
+    QStringList folders{baseDir, headDir};
+    for (const auto &f : std::as_const(files))
+        folders << QFileInfo(f.second).absolutePath();
+    folders.removeDuplicates();
+    for (const QString &folder : std::as_const(folders)) {
+        if (!QDir().mkpath(folder)) {
+            if (error)
+                *error = QStringLiteral("Could not create the folder %1").arg(QDir::toNativeSeparators(folder));
+            QDir(dir).removeRecursively();
+            return false;
+        }
+    }
 
     // A few at a time: each file is its own request.
     std::atomic<int> done{0};
@@ -475,7 +487,6 @@ bool downloadChanges(const Ref &ref, const AdoAuth::Credential &cred, int to, in
         QString err;
         const Http::Response blob = call("GET", repoApiUrl(ref, QStringLiteral("/blobs/%1?$format=octetstream").arg(f.first)), cred,
                                          {}, &err, nullptr, "application/octet-stream");
-        QDir().mkpath(QFileInfo(f.second).absolutePath());
         QFile out(f.second);
         if (blob.error.isEmpty() && !(out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(blob.body) == blob.body.size()))
             err = QStringLiteral("Could not write %1: %2").arg(QDir::toNativeSeparators(f.second), out.errorString());

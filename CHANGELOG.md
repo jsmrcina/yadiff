@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.3 (2026-11-11)
+
+- **Fix: opening some Azure DevOps PRs on Windows failed with "Could not write …: The system
+  cannot find the path specified".** The files download on 8 threads, and Qt's folder creation on
+  Windows fails when two threads create the same new parent folder at once, so a file's folder
+  could be missing. All the folders are now created first, on one thread.
+
 ## 1.2.2 (2026-11-11)
 
 - **Fix: the window could freeze at the end of an update.** The "Restart now?" question is modal,

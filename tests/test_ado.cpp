@@ -590,18 +590,22 @@ private slots:
                 e.insert(QStringLiteral("originalPath"), original);
             return e;
         };
-        ado.changesJson = QJsonDocument(QJsonObject{
-            {QStringLiteral("changeEntries"),
-             QJsonArray{entry("edit", QStringLiteral("/a.txt"), blobId(source, "a.txt"), blobId(target, "a.txt")),
-                        entry("add", QStringLiteral("/new.txt"), blobId(source, "new.txt"), {}),
-                        entry("delete", QStringLiteral("/gone.txt"), {}, blobId(target, "gone.txt")),
-                        entry("rename", QStringLiteral("/sub/r2.txt"), blobId(source, "sub/r2.txt"), blobId(target, "sub/r.txt"),
-                              QStringLiteral("/sub/r.txt")),
-                        QJsonObject{{QStringLiteral("changeType"), QStringLiteral("edit")},
-                                    {QStringLiteral("item"), QJsonObject{{QStringLiteral("path"), QStringLiteral("/sub")},
-                                                                         {QStringLiteral("isFolder"), true}}}},
-                        entry("add", QStringLiteral("/../escape.txt"), blobId(source, "new.txt"), {})}},
-            {QStringLiteral("nextSkip"), 0}}).toJson();
+        QJsonArray entries{entry("edit", QStringLiteral("/a.txt"), blobId(source, "a.txt"), blobId(target, "a.txt")),
+                           entry("add", QStringLiteral("/new.txt"), blobId(source, "new.txt"), {}),
+                           entry("delete", QStringLiteral("/gone.txt"), {}, blobId(target, "gone.txt")),
+                           entry("rename", QStringLiteral("/sub/r2.txt"), blobId(source, "sub/r2.txt"), blobId(target, "sub/r.txt"),
+                                 QStringLiteral("/sub/r.txt")),
+                           QJsonObject{{QStringLiteral("changeType"), QStringLiteral("edit")},
+                                       {QStringLiteral("item"), QJsonObject{{QStringLiteral("path"), QStringLiteral("/sub")},
+                                                                            {QStringLiteral("isFolder"), true}}}},
+                           entry("add", QStringLiteral("/../escape.txt"), blobId(source, "new.txt"), {})};
+        // Many new files in sibling folders under new shared parents: the download threads
+        // must not trip over each other creating them (Qt's mkpath on Windows did).
+        ado.blobs.insert("deepblob", "deep\n");
+        for (int i = 0; i < 48; ++i)
+            entries.append(entry("add", QStringLiteral("/deep/er/still/d%1/f.h").arg(i), QStringLiteral("deepblob"), {}));
+        ado.changesJson =
+            QJsonDocument(QJsonObject{{QStringLiteral("changeEntries"), entries}, {QStringLiteral("nextSkip"), 0}}).toJson();
         const auto ref = AdoPr::parse(ado.base() + QStringLiteral("/org/My%20Project/_git/repo/pullrequest/7"));
         QVERIFY(ref);
         const AdoAuth::Credential cred{AdoAuth::Credential::Kind::Pat, QString::fromLatin1(kPat), QStringLiteral("test")};
@@ -645,6 +649,8 @@ private slots:
         QVERIFY(!QFile::exists(pr->headDir + QStringLiteral("/gone.txt")));
         QCOMPARE(read(pr->baseDir + QStringLiteral("/sub/r.txt")), QByteArray("renamed\n"));
         QCOMPARE(read(pr->headDir + QStringLiteral("/sub/r2.txt")), QByteArray("renamed\n"));
+        for (int i = 0; i < 48; ++i)
+            QCOMPARE(read(pr->headDir + QStringLiteral("/deep/er/still/d%1/f.h").arg(i)), QByteArray("deep\n"));
         // "/../escape.txt" was refused: nothing outside the two folders.
         QVERIFY(!QFile::exists(pr->repoPath + QStringLiteral("/escape.txt")));
         QVERIFY(!QFile::exists(QFileInfo(pr->repoPath).absolutePath() + QStringLiteral("/escape.txt")));
