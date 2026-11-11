@@ -1,5 +1,6 @@
 #include "GitHubPr.h"
 
+#include "GitHubAccount.h"
 #include "Log.h"
 
 #include <QDir>
@@ -13,12 +14,14 @@
 namespace {
 
 bool runProcess(const QString &program, const QStringList &args, const QString &workDir, QByteArray *out,
-                QString *error)
+                QString *error, const QString &ghAccount = {})
 {
     QProcess p;
     if (!workDir.isEmpty())
         p.setWorkingDirectory(workDir);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!GitHubAccount::applyTo(env, ghAccount, error))
+        return false;
     env.insert(QStringLiteral("GIT_TERMINAL_PROMPT"), QStringLiteral("0")); // never hang on a password prompt
     env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
     p.setProcessEnvironment(env);
@@ -173,7 +176,7 @@ std::optional<Resolved> resolve(const Ref &ref, const QString &localDir, QString
     if (runProcess(QStringLiteral("gh"),
                    {QStringLiteral("pr"), QStringLiteral("view"), prUrl, QStringLiteral("--json"),
                     QStringLiteral("title,baseRefName,headRefName,headRefOid,baseRefOid")},
-                   QString(), &json, &ghError)) {
+                   QString(), &json, &ghError, GitHubAccount::forOwner(ref.owner))) {
         const QJsonObject o = QJsonDocument::fromJson(json).object();
         title = o.value(QStringLiteral("title")).toString();
         baseRef = o.value(QStringLiteral("baseRefName")).toString();

@@ -2,6 +2,7 @@
 
 #include "AdoAuth.h"
 #include "AdoPr.h"
+#include "GitHubAccount.h"
 #include "GitHubPr.h"
 #include "Log.h"
 
@@ -15,9 +16,11 @@ bool isAdo(const Comparison &cmp)
     return cmp.prHost == QLatin1String("ado");
 }
 
+// Run as the account chosen for the owner when this is called, so a switch applies to
+// everything after it.
 GitHubReview::PrId gh(const Comparison &cmp)
 {
-    return {cmp.prOwner, cmp.prRepo, cmp.prNumber};
+    return {cmp.prOwner, cmp.prRepo, cmp.prNumber, GitHubAccount::forOwner(cmp.prOwner)};
 }
 
 AdoPr::Ref ado(const Comparison &cmp)
@@ -109,7 +112,7 @@ bool setThreadStatus(const Comparison &cmp, const GitHubReview::Comment &root, T
                 *error = QStringLiteral("GitHub threads are only resolved or unresolved.");
             return false;
         }
-        return GitHubReview::setResolved(root.threadNode, status == ThreadStatus::Resolved, error);
+        return GitHubReview::setResolved(gh(cmp), root.threadNode, status == ThreadStatus::Resolved, error);
     }
     const auto cred = adoCredential(cmp, error);
     return cred && AdoPr::setThreadStatus(ado(cmp), *cred, AdoPr::threadOf(root.id), status, error);

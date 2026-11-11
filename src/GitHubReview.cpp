@@ -1,5 +1,6 @@
 #include "GitHubReview.h"
 
+#include "GitHubAccount.h"
 #include "Log.h"
 
 #include <QDateTime>
@@ -14,9 +15,14 @@
 
 namespace {
 
-bool gh(const QStringList &args, const QByteArray &input, QByteArray *out, QString *error)
+// Runs gh as `pr`'s account.
+bool gh(const GitHubReview::PrId &pr, const QStringList &args, const QByteArray &input, QByteArray *out, QString *error)
 {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!GitHubAccount::applyTo(env, pr.account, error))
+        return false;
     QProcess p;
+    p.setProcessEnvironment(env);
     Log::ProcessTrace trace(lcGitHub());
     p.start(QStringLiteral("gh"), args);
     if (!p.waitForStarted()) {
@@ -258,25 +264,11 @@ QByteArray reviewPayload(Verdict verdict, const QString &body)
 
 namespace {
 
-// Who gh is signed in as doesn't change while yadiff runs: ask once.
-std::optional<QString> myLogin(QString *error)
-{
-    static QMutex mutex;
-    static QString login;
-    QMutexLocker lock(&mutex);
-    if (login.isEmpty()) {
-        QByteArray out;
-        if (!gh({QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")}, {}, &out, error))
-            return std::nullopt;
-        login = QString::fromUtf8(out).trimmed();
-    }
-    return login;
-}
 
 std::optional<QByteArray> reviews(const PrId &pr, QString *error)
 {
     QByteArray out;
-    if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/reviews")},
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/reviews")},
             {}, &out, error))
         return std::nullopt;
     return out;
@@ -284,16 +276,34 @@ std::optional<QByteArray> reviews(const PrId &pr, QString *error)
 
 } // namespace
 
+// Who an account is doesn't change while yadiff runs: ask once per account.
+std::optional<QString> myLogin(const PrId &pr, QString *error)
+{
+    static QMutex mutex;
+    static QHash<QString, QString> logins; // account ("" for gh's active one) -> login
+    QMutexLocker lock(&mutex);
+    QString login = logins.value(pr.account.toLower());
+    if (login.isEmpty()) {
+        QByteArray out;
+        if (!gh(pr, {QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")}, {}, &out, error))
+            return std::nullopt;
+        login = QString::fromUtf8(out).trimmed();
+        logins.insert(pr.account.toLower(), login);
+        GitHubAccount::remember(login);
+    }
+    return login;
+}
+
 std::optional<Vote> myVote(const PrId &pr, QString *error)
 {
-    const auto login = myLogin(error);
+    const auto login = myLogin(pr, error);
     const auto json = login ? reviews(pr, error) : std::nullopt;
     return json ? std::optional<Vote>(latestVote(*json, *login)) : std::nullopt;
 }
 
 std::optional<QString> myLastReviewedCommit(const PrId &pr, QString *error)
 {
-    const auto login = myLogin(error);
+    const auto login = myLogin(pr, error);
     const auto json = login ? reviews(pr, error) : std::nullopt;
     return json ? std::optional<QString>(lastReviewedCommit(*json, *login)) : std::nullopt;
 }
@@ -305,7 +315,7 @@ std::optional<QByteArray> overviewJson(const PrId &pr, QString *error)
                                     "latestReviews,statusCheckRollup,comments,closingIssuesReferences");
     QByteArray out;
     QString err;
-    if (gh({QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, &err))
+    if (gh(pr, {QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, &err))
         return out;
     // Older gh doesn't know closingIssuesReferences.
     if (!err.contains(QLatin1String("closingIssuesReferences"))) {
@@ -314,7 +324,7 @@ std::optional<QByteArray> overviewJson(const PrId &pr, QString *error)
         return std::nullopt;
     }
     fields.remove(QStringLiteral(",closingIssuesReferences"));
-    if (!gh({QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, error))
+    if (!gh(pr, {QStringLiteral("pr"), QStringLiteral("view"), url, QStringLiteral("--json"), fields}, {}, &out, error))
         return std::nullopt;
     return out;
 }
@@ -322,7 +332,7 @@ std::optional<QByteArray> overviewJson(const PrId &pr, QString *error)
 std::optional<QVector<PrCommit>> commits(const PrId &pr, QString *error)
 {
     QByteArray out;
-    if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/commits")},
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/commits")},
             {}, &out, error))
         return std::nullopt;
     return parseCommits(out);
@@ -348,7 +358,7 @@ QHash<qint64, ThreadState> fetchThreadStates(const PrId &pr)
             args << QStringLiteral("-f") << QStringLiteral("after=") + cursor;
         QByteArray out;
         QString error;
-        if (!gh(args, {}, &out, &error)) {
+        if (!gh(pr, args, {}, &out, &error)) {
             qCWarning(lcGitHub).noquote() << "could not read which review threads are resolved:" << error;
             return {};
         }
@@ -364,7 +374,7 @@ QHash<qint64, ThreadState> fetchThreadStates(const PrId &pr)
 std::optional<QVector<Comment>> fetch(const PrId &pr, QString *error)
 {
     QByteArray out;
-    if (!gh({QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/comments")},
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("--paginate"), QStringLiteral("--slurp"), base(pr) + QStringLiteral("/comments")},
             {}, &out, error))
         return std::nullopt;
     QVector<Comment> comments = parseComments(out);
@@ -378,7 +388,7 @@ std::optional<QVector<Comment>> fetch(const PrId &pr, QString *error)
     return comments;
 }
 
-bool setResolved(const QString &threadNode, bool resolved, QString *error)
+bool setResolved(const PrId &pr, const QString &threadNode, bool resolved, QString *error)
 {
     if (threadNode.isEmpty()) {
         if (error)
@@ -389,7 +399,7 @@ bool setResolved(const QString &threadNode, bool resolved, QString *error)
                                  ? QStringLiteral("mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}")
                                  : QStringLiteral("mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}");
     QByteArray out;
-    if (!gh({QStringLiteral("api"), QStringLiteral("graphql"), QStringLiteral("-f"), QStringLiteral("query=") + mutation,
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("graphql"), QStringLiteral("-f"), QStringLiteral("query=") + mutation,
              QStringLiteral("-f"), QStringLiteral("id=") + threadNode},
             {}, &out, error))
         return false;
@@ -406,7 +416,7 @@ std::optional<Comment> post(const PrId &pr, const QString &commitId, const QStri
                             int startLine, const QString &body, QString *error)
 {
     QByteArray out;
-    if (!gh({QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"), base(pr) + QStringLiteral("/comments"),
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"), base(pr) + QStringLiteral("/comments"),
              QStringLiteral("--input"), QStringLiteral("-")},
             commentPayload(commitId, path, side, line, startLine, body), &out, error))
         return std::nullopt;
@@ -417,7 +427,7 @@ std::optional<Comment> reply(const PrId &pr, qint64 threadId, const QString &bod
 {
     QByteArray out;
     const QByteArray payload = QJsonDocument(QJsonObject{{QStringLiteral("body"), body}}).toJson(QJsonDocument::Compact);
-    if (!gh({QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"),
+    if (!gh(pr, {QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"),
              base(pr) + QStringLiteral("/comments/%1/replies").arg(threadId), QStringLiteral("--input"), QStringLiteral("-")},
             payload, &out, error))
         return std::nullopt;
@@ -426,7 +436,7 @@ std::optional<Comment> reply(const PrId &pr, qint64 threadId, const QString &bod
 
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error)
 {
-    return gh({QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"), base(pr) + QStringLiteral("/reviews"),
+    return gh(pr, {QStringLiteral("api"), QStringLiteral("-X"), QStringLiteral("POST"), base(pr) + QStringLiteral("/reviews"),
                QStringLiteral("--input"), QStringLiteral("-")},
               reviewPayload(verdict, body), nullptr, error);
 }

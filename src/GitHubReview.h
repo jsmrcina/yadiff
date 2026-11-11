@@ -13,6 +13,7 @@ namespace GitHubReview {
 struct PrId {
     QString owner, repo;
     int number = 0;
+    QString account; // the GitHub login gh runs as (GitHubAccount); empty: gh's active account
     bool isValid() const { return number > 0 && !owner.isEmpty() && !repo.isEmpty(); }
 };
 
@@ -86,8 +87,10 @@ std::optional<Comment> post(const PrId &pr, const QString &commitId, const QStri
                             int startLine, const QString &body, QString *error);
 std::optional<Comment> reply(const PrId &pr, qint64 threadId, const QString &body, QString *error);
 // Resolves or unresolves a thread (`threadNode` from the fetched comments).
-bool setResolved(const QString &threadNode, bool resolved, QString *error);
+bool setResolved(const PrId &pr, const QString &threadNode, bool resolved, QString *error);
 bool submitReview(const PrId &pr, Verdict verdict, const QString &body, QString *error);
+// The login gh runs as for `pr` (pr.account, or gh's active account).
+std::optional<QString> myLogin(const PrId &pr, QString *error);
 // The signed-in gh user's current vote on the PR.
 std::optional<Vote> myVote(const PrId &pr, QString *error);
 // The PR's overview (gh pr view), as PrOverview::parseGitHubPullRequest reads it.

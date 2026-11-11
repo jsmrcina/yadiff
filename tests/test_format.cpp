@@ -2,6 +2,7 @@
 #include "GitHubPr.h"
 #include "Difftool.h"
 #include "FileFilter.h"
+#include "GitHubAccount.h"
 #include "GitHubReview.h"
 #include "PrInbox.h"
 #include "PrOverview.h"
@@ -16,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -23,6 +25,39 @@ class TestFormat : public QObject
 {
     Q_OBJECT
 private slots:
+    void gitHubAccountsPerOwner()
+    {
+        // Settings in a temporary folder, never the user's.
+        QTemporaryDir dir;
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, dir.path());
+        auto restore = qScopeGuard([] { QSettings::setDefaultFormat(QSettings::NativeFormat); });
+
+        QVERIFY(GitHubAccount::forOwner(QStringLiteral("acme")).isEmpty());
+        QVERIFY(GitHubAccount::used().isEmpty());
+        GitHubAccount::remember(QStringLiteral("reader"));
+        GitHubAccount::setForOwner(QStringLiteral("Acme"), QStringLiteral("writer"));
+        QCOMPARE(GitHubAccount::forOwner(QStringLiteral("acme")), QStringLiteral("writer")); // owners ignore case
+        QVERIFY(GitHubAccount::forOwner(QStringLiteral("other")).isEmpty());
+        QCOMPARE(GitHubAccount::used(), (QStringList{QStringLiteral("writer"), QStringLiteral("reader")}));
+        GitHubAccount::remember(QStringLiteral("Reader")); // most recent first, no duplicates
+        QCOMPARE(GitHubAccount::used(), (QStringList{QStringLiteral("Reader"), QStringLiteral("writer")}));
+        GitHubAccount::setForOwner(QStringLiteral("acme"), QString()); // back to gh's active account
+        QVERIFY(GitHubAccount::forOwner(QStringLiteral("acme")).isEmpty());
+
+        // No login: gh is left to its own account.
+        QProcessEnvironment env;
+        QVERIFY(GitHubAccount::applyTo(env, QString(), nullptr));
+        QVERIFY(!env.contains(QStringLiteral("GH_TOKEN")));
+
+        const auto status = GitHubAccount::parseStatus(R"({"hosts":{"github.com":[
+            {"state":"success","active":false,"host":"github.com","login":"reader"},
+            {"state":"success","active":true,"host":"github.com","login":"writer"}],
+            "ghe.example.com":[{"active":true,"login":"elsewhere"}]}})");
+        QCOMPARE(status.logins, (QStringList{QStringLiteral("reader"), QStringLiteral("writer")}));
+        QCOMPARE(status.active, QStringLiteral("writer"));
+    }
+
     void findsPullRequestsToReview()
     {
         auto src = PrInbox::parseSource(QStringLiteral("https://dev.azure.com/contoso/My%20Project/_git/web/pullrequest/4"));

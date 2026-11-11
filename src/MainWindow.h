@@ -3,6 +3,7 @@
 #include "ComparisonArgs.h"
 #include "DiffPane.h"
 #include "FileFilter.h"
+#include "GitHubAccount.h"
 #include "GitHubReview.h"
 #include "GitRepo.h"
 #include "PrReview.h"
@@ -134,6 +135,9 @@ private:
     void updateVoteButton();
     void loadMyVote();
     void castVote(GitHubReview::Vote vote);
+    // Review > GitHub account: which of gh's accounts runs this owner's commands.
+    void rebuildAccountMenu();
+    void switchGitHubAccount(const QString &login);
     // Background loading of every file's diff, for comparisons whose files can't change
     // (revisions, PRs), so picking a file shows it at once. Restarts from scratch.
     void startPrefetch();
@@ -327,6 +331,10 @@ private:
     QComboBox *m_versionCombo = nullptr;
     QAction *m_versionComboAction = nullptr;
     QAction *m_sinceReviewAct = nullptr;        // Review > Open at the changes since my last review
+    QMenu *m_accountMenu = nullptr;             // Review > GitHub account
+    std::optional<GitHubAccount::SignedIn> m_ghAccounts; // gh auth status, read when the menu first opens
+    QString m_ghAccountsError;
+    bool m_ghAccountsBusy = false;
     std::optional<PrReview::History> m_prHistory;
     QString m_prKey;                            // the PR the history and m_prWhole belong to
     Comparison m_prWhole;                       // the whole PR, to come back to

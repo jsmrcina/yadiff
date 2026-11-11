@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-11-10)
 
+- **Choose the GitHub account per owner.** When gh is signed in to several GitHub accounts,
+  Review > GitHub account switches the one yadiff uses for the pull request's owner, for example
+  when one account can view a PR but not comment on it. The switch takes effect at once and is
+  remembered for that owner. The menu lists the accounts used before and the ones gh is signed in
+  to. gh's own active account doesn't change.
 - **The Windows build uses clang** (llvm-mingw) instead of MSVC, and the zip is cross-compiled on
   Linux by `packaging/windows/package.sh`, so it can be built without a Windows machine. It ships
   LLVM's C++ runtime instead of the Visual C++ one, and is about half the size.

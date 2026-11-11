@@ -447,7 +447,8 @@ computed by yadiff.
   - Automatic reload, and remembering scroll positions per file.
 - **Marking:** see above.
 - **Review:** for pull requests only. Votes, a comment on the PR, Reload comments, Compare pushes,
-  Open at the changes since my last review, and Open in browser.
+  Open at the changes since my last review, and Open in browser. For GitHub, also GitHub account
+  (see [Signing in to GitHub](#signing-in-to-github)).
 - **Help:**
   - Register and Unregister as git difftool and as git mergetool, and add yadiff to (or remove it
     from) the file manager's menu.
@@ -479,6 +480,22 @@ Installing depends on how yadiff was installed:
   in place. Files in use are renamed to `*.old` first and deleted on the next start.
 - **Anything else,** such as the Linux zip, a package manager or a build tree: yadiff says a release is available
   and links to it, but doesn't install it.
+
+## Signing in to GitHub
+
+yadiff talks to GitHub through the GitHub CLI, so it uses the accounts `gh auth login` signed in.
+By default that's gh's active account. When gh is signed in to several accounts, and the active one
+can read a pull request but not comment on it, pick another in Review > GitHub account:
+
+- The menu lists the accounts yadiff has used before, most recent first, then any others gh is
+  signed in to. An account gh no longer has a token for is shown but can't be picked.
+- The choice is per repository owner (a user or an organization). It applies straight away:
+  comments, votes and the overview are read again as that account, and everything posted after
+  it goes out as that account. It is remembered for that owner's pull requests from then on.
+- yadiff runs gh with that account's token (`GH_TOKEN`, from `gh auth token --user`). gh's own
+  active account, which `gh auth switch` changes, is left alone.
+- Add an account with `gh auth login` in a terminal; it then shows in the menu. File > Open pull
+  request lists the PRs waiting for gh's active account.
 
 ## Signing in to Azure DevOps
 
@@ -722,6 +739,7 @@ overview and pushes).
 | `src/TableDiff.*`, `src/TableDiffView.*` | CSV/TSV parsing, row and cell comparison, and the table view |
 | `src/Report.*` | HTML report |
 | `src/GitHubReview.*` | PR review comments through `gh` |
+| `src/GitHubAccount.*` | Which `gh` account runs each owner's commands, and the accounts used before |
 | `src/AdoPr.*`, `src/AdoAuth.*`, `src/AdoLoginDialog.*` | Azure DevOps PRs, credentials, sign-in |
 | `src/PrReview.*` | Review operations for whichever host a PR is on |
 | `src/PrOverview.*`, `src/PrOverviewPanel.*` | A PR's overview (reviewers, checks, work items, comments) and its panel |

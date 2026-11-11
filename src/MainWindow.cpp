@@ -1038,6 +1038,9 @@ void MainWindow::createActions()
     connect(m_sinceReviewAct, &QAction::toggled, this, [](bool on) { Settings::setOpenSinceLastReview(on); });
     m_reviewMenu->addAction(tr("&Open pull request in browser"), this,
                             [this] { QDesktopServices::openUrl(QUrl(PrReview::webUrl(m_cmp))); });
+    m_reviewMenu->addSeparator();
+    m_accountMenu = m_reviewMenu->addMenu(tr("GitHub &account"));
+    connect(m_accountMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildAccountMenu);
 
     // ---- Help --------------------------------------------------------------
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -1270,6 +1273,7 @@ void MainWindow::updateModeUi()
     m_vsHeadAct->setEnabled(working);
     m_historyAct->setEnabled(m_repo.isRepository());
     m_reviewMenuAction->setVisible(m_cmp.prNumber > 0);
+    m_accountMenu->menuAction()->setVisible(m_cmp.prNumber > 0 && m_cmp.prHost != QLatin1String("ado"));
     m_expandCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_collapseCommentsAct->setVisible(m_cmp.prNumber > 0);
     m_hideResolvedAct->setVisible(m_cmp.prNumber > 0);
@@ -3190,6 +3194,105 @@ void MainWindow::rebuildVoteActions()
             previous = a;
     }
     updateVoteButton();
+}
+
+void MainWindow::rebuildAccountMenu()
+{
+    qDeleteAll(m_accountMenu->findChildren<QActionGroup *>(Qt::FindDirectChildrenOnly));
+    m_accountMenu->clear();
+    const QString owner = m_cmp.prOwner;
+    if (!m_ghAccounts && !m_ghAccountsBusy && m_ghAccountsError.isEmpty()) {
+        m_ghAccountsBusy = true;
+        runJob<std::pair<std::optional<GitHubAccount::SignedIn>, QString>>(
+            [] {
+                QString error;
+                auto accounts = GitHubAccount::signedIn(&error);
+                return std::make_pair(accounts, error);
+            },
+            [this](std::pair<std::optional<GitHubAccount::SignedIn>, QString> r) {
+                m_ghAccountsBusy = false;
+                m_ghAccounts = r.first;
+                m_ghAccountsError = r.first ? QString() : r.second;
+                if (m_accountMenu->isVisible())
+                    rebuildAccountMenu();
+            });
+    }
+
+    // The accounts used before, most recent first, then any other gh is signed in to.
+    QStringList logins = GitHubAccount::used();
+    auto has = [](const QStringList &list, const QString &login) {
+        return std::any_of(list.begin(), list.end(), [&](const QString &l) { return l.compare(login, Qt::CaseInsensitive) == 0; });
+    };
+    if (m_ghAccounts)
+        for (const QString &l : std::as_const(m_ghAccounts->logins))
+            if (!has(logins, l))
+                logins << l;
+    const QString chosen = GitHubAccount::forOwner(owner);
+    const QString current = !chosen.isEmpty() ? chosen : m_ghAccounts ? m_ghAccounts->active : QString();
+
+    auto *group = new QActionGroup(m_accountMenu);
+    for (const QString &login : std::as_const(logins)) {
+        QString text = login;
+        const bool signedIn = !m_ghAccounts || has(m_ghAccounts->logins, login);
+        if (!signedIn)
+            text += tr(" (gh isn't signed in to it)");
+        else if (m_ghAccounts && login.compare(m_ghAccounts->active, Qt::CaseInsensitive) == 0)
+            text += tr(" (gh's active account)");
+        QAction *a = m_accountMenu->addAction(text);
+        a->setCheckable(true);
+        a->setChecked(login.compare(current, Qt::CaseInsensitive) == 0);
+        a->setEnabled(signedIn);
+        a->setProperty("yadiffNotASetting", true);
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, login] { switchGitHubAccount(login); });
+    }
+    if (m_ghAccountsBusy)
+        m_accountMenu->addAction(tr("Asking gh for its accounts…"))->setEnabled(false);
+    else if (!m_ghAccountsError.isEmpty())
+        m_accountMenu->addAction(tr("gh couldn't list its accounts: %1").arg(m_ghAccountsError.section(u'\n', 0, 0)))->setEnabled(false);
+    else if (logins.isEmpty())
+        m_accountMenu->addAction(tr("gh isn't signed in to GitHub"))->setEnabled(false);
+    m_accountMenu->addSeparator();
+    m_accountMenu->addAction(tr("Add an account…"), this, [this] {
+        QMessageBox::information(
+            this, tr("Add a GitHub account"),
+            tr("yadiff uses the accounts the GitHub CLI is signed in to. To add one, run this in a terminal:\n\n"
+               "    gh auth login\n\n"
+               "It then shows in Review > GitHub account. gh makes the new account its active one, but "
+               "pull requests from owners you picked an account for keep using that account."));
+        m_ghAccounts.reset(); // read them again next time
+        m_ghAccountsError.clear();
+    });
+    m_accountMenu->setTitle(current.isEmpty() ? tr("GitHub &account") : tr("GitHub &account: %1").arg(current));
+}
+
+void MainWindow::switchGitHubAccount(const QString &login)
+{
+    const QString owner = m_cmp.prOwner;
+    if (login.compare(GitHubAccount::forOwner(owner), Qt::CaseInsensitive) == 0)
+        return;
+    // Check that gh has a token for it before committing to it.
+    runJob<QString>(
+        [login] {
+            QProcessEnvironment env;
+            QString error;
+            return GitHubAccount::applyTo(env, login, &error) ? QString() : error;
+        },
+        [this, owner, login](QString error) {
+            if (!error.isEmpty()) {
+                QMessageBox::warning(this, tr("GitHub account"), error);
+                return;
+            }
+            GitHubAccount::setForOwner(owner, login);
+            m_accountMenu->setTitle(tr("GitHub &account: %1").arg(login));
+            statusBar()->showMessage(tr("Using the GitHub account %1 for %2's pull requests").arg(login, owner), 6000);
+            if (m_cmp.prNumber <= 0 || m_cmp.prOwner != owner)
+                return;
+            ++m_commentsGen; // a fetch already running is the old account's
+            loadComments();
+            loadMyVote();
+            loadOverview();
+        });
 }
 
 void MainWindow::updateVoteButton()

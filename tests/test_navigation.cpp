@@ -2128,6 +2128,12 @@ private slots:
                                                 QStringLiteral("Wait for author…"), QStringLiteral("Reject…"),
                                                 QStringLiteral("Reset vote…")}));
         QVERIFY(action(w3, QStringLiteral("Approve with suggestions…")));
+        // Choosing a GitHub account is for GitHub pull requests only.
+        QMenu *accounts = nullptr;
+        for (auto *m : w3.findChildren<QMenu *>())
+            if (m->title().startsWith(QStringLiteral("GitHub &account")))
+                accounts = m;
+        QVERIFY(accounts && !accounts->menuAction()->isVisible());
         // A GitHub PR offers GitHub's two (checked without a window, which would call gh).
         Comparison ghPr = one;
         ghPr.prHost = QStringLiteral("github");

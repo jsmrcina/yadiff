@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(yadiff VERSION 1.1.0 LANGUAGES CXX)
+project(yadiff VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,7 @@ add_library(yadiffcore STATIC
     src/ShellMenu.cpp src/ShellMenu.h
     src/Difftool.cpp src/Difftool.h
     src/FileFilter.cpp src/FileFilter.h
+    src/GitHubAccount.cpp src/GitHubAccount.h
     src/GitHubPr.cpp src/GitHubPr.h
     src/GitHubReview.cpp src/GitHubReview.h
     src/GitRepo.cpp src/GitRepo.h
